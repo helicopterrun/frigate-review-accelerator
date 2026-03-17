@@ -11,6 +11,10 @@
  *
  * Key invariant: video decode ONLY happens in step 5/6.
  * Steps 1-4 are pure image + metadata operations.
+ *
+ * v3 additions:
+ *   - POST /api/preview/request on camera/range change (on-demand hint)
+ *   - Health badge shows "pending" instead of "generating" (accurate label)
  */
 
 import { useState, useEffect, useCallback } from 'react';
@@ -23,6 +27,7 @@ import {
   fetchPreviewStrip,
   fetchPlaybackTarget,
   fetchHealth,
+  requestPreviews,
 } from './utils/api.js';
 import { todayStartTs, nowTs, formatDateTime } from './utils/time.js';
 
@@ -83,6 +88,12 @@ export default function App() {
         setTimelineData(tl);
         setPreviewFrames(strip.frames || []);
         setError(null);
+
+        // Signal the backend to prioritize this viewport for preview generation.
+        // Fire-and-forget — we don't await or surface errors from this.
+        // The worker will drain the queue next cycle (within scan_interval_sec).
+        requestPreviews(selectedCamera, rangeStart, rangeEnd).catch(() => {});
+
       } catch (err) {
         if (!cancelled) setError(`Timeline load failed: ${err.message}`);
       }
@@ -161,10 +172,14 @@ export default function App() {
                 marginRight: 6,
               }}
             />
-            {health.total_segments} segs · {health.total_previews} previews
+            {health.total_segments.toLocaleString()} segs
+            {' · '}
+            {health.total_previews.toLocaleString()} previews
             {health.pending_previews > 0 && (
-              <span style={{ color: '#FF9800' }}>
-                {' '}· {health.pending_previews} generating
+              // "pending" is accurate — the worker processes these in priority
+              // order (recency-first), not all at once.
+              <span style={{ color: '#888' }}>
+                {' · '}{health.pending_previews.toLocaleString()} pending
               </span>
             )}
           </div>
