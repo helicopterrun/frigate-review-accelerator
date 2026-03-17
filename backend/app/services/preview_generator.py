@@ -181,8 +181,17 @@ def generate_previews_for_segment(
 def process_pending_segments(
     db_path: Path | None = None,
     limit: int = 50,
+    min_start_ts: float | None = None,
 ) -> int:
     """Process segments that don't have previews yet.
+
+    Args:
+        db_path:      Override database path (uses settings default if None).
+        limit:        Maximum number of segments to process in this call.
+        min_start_ts: If provided, only process segments with start_ts >= this
+                      value. Used to implement recency-first prioritization —
+                      pass (now - recency_hours * 3600) to restrict to recent
+                      footage, or None to crawl the full backlog.
 
     Returns number of segments processed.
     """
@@ -191,21 +200,35 @@ def process_pending_segments(
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
-    rows = conn.execute(
-        """SELECT id, camera, start_ts, end_ts, duration, path
-           FROM segments
-           WHERE previews_generated = 0
-           ORDER BY start_ts DESC
-           LIMIT ?""",
-        (limit,),
-    ).fetchall()
+    if min_start_ts is not None:
+        rows = conn.execute(
+            """SELECT id, camera, start_ts, end_ts, duration, path
+               FROM segments
+               WHERE previews_generated = 0 AND start_ts >= ?
+               ORDER BY start_ts DESC
+               LIMIT ?""",
+            (min_start_ts, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT id, camera, start_ts, end_ts, duration, path
+               FROM segments
+               WHERE previews_generated = 0
+               ORDER BY start_ts DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
 
     if not rows:
-        log.debug("No pending segments for preview generation")
+        log.debug("No pending segments for preview generation (min_start_ts=%s)", min_start_ts)
         conn.close()
         return 0
 
-    log.info("Generating previews for %d segments", len(rows))
+    log.info(
+        "Generating previews for %d segments%s",
+        len(rows),
+        f" (recency filter: {min_start_ts:.0f})" if min_start_ts else " (background crawl)",
+    )
     processed = 0
 
     for row in rows:
@@ -247,10 +270,21 @@ def process_pending_segments(
     return processed
 
 
-async def process_pending_async(limit: int = 50) -> int:
-    """Async wrapper for preview generation."""
+async def process_pending_async(
+    limit: int = 50,
+    min_start_ts: float | None = None,
+) -> int:
+    """Async wrapper for preview generation.
+
+    Args:
+        limit:        Maximum segments to process.
+        min_start_ts: Recency filter — only process segments newer than this
+                      Unix timestamp. Pass None to process the full backlog.
+    """
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, process_pending_segments, None, limit)
+    return await loop.run_in_executor(
+        None, process_pending_segments, None, limit, min_start_ts
+    )
 
 
 # CLI entry point
