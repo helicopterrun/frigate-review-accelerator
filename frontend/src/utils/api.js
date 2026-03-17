@@ -55,6 +55,27 @@ export async function fetchPlaybackTarget(camera, ts) {
 }
 
 /**
+ * POST /api/preview/request?camera=X&start=Y&end=Z
+ *
+ * On-demand hint: tell the backend to prioritize preview generation for
+ * this viewport. Non-blocking — returns immediately, worker processes
+ * it next cycle. Fire-and-forget; errors are silently ignored by callers.
+ *
+ * Call this when:
+ *   - User selects a camera
+ *   - User changes the time range
+ *   - User scrubs into a region with no previews
+ */
+export async function requestPreviews(camera, startTs, endTs) {
+  const params = new URLSearchParams({
+    camera,
+    start: String(startTs),
+    end: String(endTs),
+  });
+  return apiFetch(`/preview/request?${params}`, { method: 'POST' });
+}
+
+/**
  * Build the URL for a single preview frame.
  * Used directly in <img> src for scrubbing — no fetch() needed.
  */
