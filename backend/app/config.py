@@ -24,6 +24,17 @@ class Settings(BaseSettings):
     preview_quality: int = 5  # ffmpeg JPEG quality (1-31, lower = better)
     preview_workers: int = 2
 
+    # Preview prioritization
+    # Only eagerly generate previews for segments newer than this many hours.
+    # Segments outside this window are crawled slowly in the background.
+    preview_recency_hours: int = 48
+
+    # Whether to crawl older segments at all (disable to reduce disk/CPU load)
+    preview_background_enabled: bool = True
+
+    # Segments per background crawl cycle (runs every BACKGROUND_INTERVAL worker loops)
+    preview_background_batch: int = 20
+
     # Scanning
     scan_interval_sec: int = 30
 
