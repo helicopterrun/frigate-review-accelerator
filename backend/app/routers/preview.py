@@ -10,6 +10,11 @@ v2 changes:
     eliminates disk I/O for recent scrub positions
   - DB is only used for the /preview-strip batch endpoint (cold path)
 
+v3 changes:
+  - POST /api/preview/request: on-demand generation hint
+    Frontend calls this when the user opens a camera or changes range.
+    The worker drains the queue next cycle, prioritizing this viewport.
+
 The key insight: preview filenames ARE the timestamp (e.g. 1700000002.00.jpg).
 So lookup is just math + path construction. No index needed.
 """
@@ -26,6 +31,7 @@ from fastapi.responses import FileResponse, Response
 from app.config import settings
 from app.models.database import get_db
 from app.models.schemas import PreviewFrame, PreviewStrip
+from app.services.worker import enqueue_preview_request
 
 router = APIRouter(prefix="/api", tags=["preview"])
 log = logging.getLogger(__name__)
@@ -206,6 +212,34 @@ async def _fallback_db_lookup(camera: str, timestamp: float):
                 "X-Cache": "FALLBACK",
             },
         )
+
+
+@router.post("/preview/request")
+async def request_previews(
+    camera: str = Query(..., description="Camera name"),
+    start: float = Query(..., description="Viewport start timestamp (Unix)"),
+    end: float = Query(..., description="Viewport end timestamp (Unix)"),
+):
+    """On-demand hint: prioritize preview generation for this time window.
+
+    Call this when:
+      - User selects a camera
+      - User changes the time range
+      - User scrubs into a region with no previews
+
+    Non-blocking — returns immediately. The background worker drains the
+    queue at the start of its next cycle (within scan_interval_sec seconds).
+
+    This is the mechanism that makes the system feel responsive on first use:
+    instead of waiting for the recency crawler to reach the right segments,
+    the frontend signals exactly which window it needs right now.
+    """
+    enqueue_preview_request(camera, start, end)
+    log.info(
+        "On-demand preview request: camera=%s start=%.0f end=%.0f",
+        camera, start, end,
+    )
+    return {"queued": True, "camera": camera, "start": start, "end": end}
 
 
 @router.get("/preview-strip/{camera}", response_model=PreviewStrip)
