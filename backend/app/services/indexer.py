@@ -1,7 +1,7 @@
 """Segment Indexer — scans Frigate's recording directory and builds the segment index.
 
 Frigate recording path structure:
-  {recordings_root}/{camera}/{YYYY-MM}/{DD}/{HH}/{MM}.{SS}.mp4
+  {recordings_root}/{YYYY-MM-DD}/{HH}/{camera}/{MM}.{SS}.mp4
 
 Each MP4 is a short segment (typically 10 seconds). The indexer:
   1. Walks the directory tree
@@ -26,10 +26,11 @@ from app.config import settings
 
 log = logging.getLogger(__name__)
 
-# Regex to parse: {camera}/{YYYY-MM}/{DD}/{HH}/{MM}.{SS}.mp4
+# Regex to parse: {YYYY-MM-DD}/{HH}/{camera}/{MM}.{SS}.mp4
 SEGMENT_PATTERN = re.compile(
-    r"^(?P<camera>[^/]+)/(?P<year>\d{4})-(?P<month>\d{2})/(?P<day>\d{2})/"
-    r"(?P<hour>\d{2})/(?P<minute>\d{2})\.(?P<second>\d{2})\.mp4$"
+    r"^(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})/"
+    r"(?P<hour>\d{2})/(?P<camera>[^/]+)/"
+    r"(?P<minute>\d{2})\.(?P<second>\d{2})\.mp4$"
 )
 
 
