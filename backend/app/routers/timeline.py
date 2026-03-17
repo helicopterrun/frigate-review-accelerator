@@ -362,6 +362,9 @@ async def health_check():
         prev_count = (await db.execute_fetchall(
             "SELECT COUNT(*) FROM previews"
         ))[0][0]
+        # Segments with no previews yet — "pending", not "generating".
+        # The worker processes these in priority order (recency-first);
+        # they are NOT all being processed simultaneously.
         pending = (await db.execute_fetchall(
             "SELECT COUNT(*) FROM segments WHERE previews_generated = 0"
         ))[0][0]
