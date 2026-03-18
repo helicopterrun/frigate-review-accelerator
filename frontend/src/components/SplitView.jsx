@@ -124,6 +124,7 @@ function CameraPane({
           events={timelineData?.events || []}
           activity={timelineData?.activity || []}
           frames={previewFrames}
+          camera={camera}
           cursorTs={activeCursor}
           onScrub={handleScrub}
           onSeek={handleSeek}
