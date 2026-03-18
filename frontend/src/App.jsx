@@ -42,8 +42,8 @@ export default function App() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const [rangeStart, setRangeStart] = useState(todayStartTs);
-  const [rangeEnd, setRangeEnd] = useState(nowTs);
+  const [rangeStart, setRangeStart] = useState(todayStartTs());
+  const [rangeEnd, setRangeEnd] = useState(nowTs());
 
   // ─── Init: load cameras + health ───
   useEffect(() => {

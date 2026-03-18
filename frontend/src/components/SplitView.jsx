@@ -17,6 +17,7 @@ import {
   fetchTimeline,
   fetchPreviewStrip,
   fetchPlaybackTarget,
+  fetchSegmentInfo,
   requestPreviews,
 } from '../utils/api.js';
 
@@ -88,19 +89,9 @@ function CameraPane({
 
   const handleSegmentAdvance = useCallback(async (nextSegmentId) => {
     try {
-      // Fetch playback for the segment start (offset 0)
-      const target = await fetchPlaybackTarget(camera, null);
-      // We don't have start_ts here — use the stream URL directly
-      setPlaybackTarget((prev) => prev
-        ? {
-            ...prev,
-            segment_id: nextSegmentId,
-            stream_url: `/api/segment/${nextSegmentId}/stream`,
-            offset_sec: 0,
-            next_segment_id: null,
-          }
-        : null
-      );
+      const info = await fetchSegmentInfo(nextSegmentId);
+      const target = await fetchPlaybackTarget(camera, info.start_ts + 0.1);
+      setPlaybackTarget(target);
     } catch {}
   }, [camera]);
 

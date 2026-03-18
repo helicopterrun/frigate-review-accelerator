@@ -55,6 +55,16 @@ export async function fetchPlaybackTarget(camera, ts) {
 }
 
 /**
+ * GET /api/segment/{id}/info
+ *
+ * Returns segment metadata + stream_url + hls_url + next_segment_id.
+ * Used to resolve a segment ID → start_ts so we can call fetchPlaybackTarget.
+ */
+export async function fetchSegmentInfo(segmentId) {
+  return apiFetch(`/segment/${segmentId}/info`);
+}
+
+/**
  * POST /api/preview/request?camera=X&start=Y&end=Z
  *
  * On-demand hint: tell the backend to prioritize preview generation for

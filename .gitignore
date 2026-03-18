@@ -39,6 +39,8 @@ yarn-error.log*
 ############################
 # Runtime data (IMPORTANT)
 ############################
+logs/
+.pids/
 data/
 *.db
 *.sqlite
