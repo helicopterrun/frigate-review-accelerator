@@ -386,6 +386,43 @@ export default function Timeline({
 
   const showPreview = scrubTs != null || cursorTs != null;
 
+  // Last successfully loaded preview URL — stays visible until the next
+  // frame is ready. Avoids the black flash caused by unmounting the old
+  // <img> before the new one has loaded.
+  const [displayedUrl, setDisplayedUrl] = useState(null);
+  const loadingImgRef = useRef(null);
+
+  useEffect(() => {
+    if (!previewUrl) return;
+
+    if (loadingImgRef.current) {
+      loadingImgRef.current.onload = null;
+      loadingImgRef.current.onerror = null;
+      loadingImgRef.current = null;
+    }
+
+    const img = new Image();
+    loadingImgRef.current = img;
+
+    img.onload = () => {
+      setDisplayedUrl(previewUrl);
+      loadingImgRef.current = null;
+    };
+    img.onerror = () => {
+      // Do not update displayedUrl — keep the last good frame visible
+      // rather than going blank when a frame has not been generated yet.
+      loadingImgRef.current = null;
+    };
+
+    img.src = previewUrl;
+
+    return () => {
+      // Cancel on cleanup (rapid scrubbing or unmount)
+      img.onload = null;
+      img.onerror = null;
+    };
+  }, [previewUrl]);
+
   return (
     <div ref={containerRef} style={{ width: '100%', userSelect: 'none' }}>
       {/* Preview thumbnail */}
@@ -403,13 +440,11 @@ export default function Timeline({
           transition: 'height 0.15s ease',
         }}
       >
-        {showPreview && previewUrl ? (
+        {showPreview && displayedUrl ? (
           <img
-            key={previewUrl}
-            src={previewUrl}
+            src={displayedUrl}
             alt="Preview"
             style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-            onError={(e) => { e.currentTarget.style.display = 'none'; }}
           />
         ) : null}
         {showPreview && displayTs != null && (
