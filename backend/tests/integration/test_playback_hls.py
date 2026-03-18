@@ -43,7 +43,7 @@ async def test_playback_hls_url_present(client, test_app, monkeypatch):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.head = AsyncMock(return_value=mock_response)
 
-    with patch("app.routers.timeline.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get(
             "/api/playback",
             params={"camera": "hls-test-cam", "ts": start_ts + 5.0},
@@ -53,7 +53,7 @@ async def test_playback_hls_url_present(client, test_app, monkeypatch):
     data = resp.json()
     assert "hls_url" in data
     assert data["hls_url"] is not None
-    assert "/vod/hls-test-cam/start/" in data["hls_url"]
+    assert "/api/vod/hls-test-cam/start/" in data["hls_url"]
     assert config.settings.frigate_api_url in data["hls_url"]
 
 
@@ -73,7 +73,7 @@ async def test_playback_hls_url_none_when_frigate_down(client, test_app, monkeyp
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.head = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
 
-    with patch("app.routers.timeline.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get(
             "/api/playback",
             params={"camera": "hls-down-cam", "ts": start_ts + 5.0},
@@ -113,7 +113,7 @@ async def test_segment_info_endpoint(client, test_app):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.head = AsyncMock(return_value=mock_response)
 
-    with patch("app.routers.timeline.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
         resp = await client.get(f"/api/segment/{seg_id}/info")
 
     assert resp.status_code == 200

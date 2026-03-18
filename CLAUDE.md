@@ -53,6 +53,8 @@ frigate-review-accelerator/
         indexer.py            # Filesystem walker → segments table
         preview_generator.py  # ffmpeg thumbnail extractor
         worker.py             # Background task: index → on-demand → recency → background
+        event_sync.py         # Frigate event poller → events table
+        hls.py                # Frigate VOD URL construction + reachability cache
     requirements.txt
     .env                      # Not in git — copy from .env.example
   frontend/
@@ -174,69 +176,57 @@ CORS_ORIGINS=["http://localhost:5173"]
 - 0 previews generated (worker running, recency pass active)
 - Backend stable, frontend stable
 - Admin panel (⚙ Ops button, bottom-right) operational
+- HLS VOD playback via Frigate's /api/vod/ API (hls.js in frontend)
+- MP4 segment fallback when Frigate VOD unreachable
 
 -----
 
-## Known bugs to fix (v2)
+## Known bugs — v2 (all fixed)
 
-### 1. Playback cursor drift  ← fix this first
+All v2 bugs are resolved. See git log for details.
 
-`VideoPlayer.handleEnded` auto-advances segments by swapping video src directly.
-`playbackTarget` in `App.jsx` is never updated. After crossing a segment boundary,
-`absoluteTs = playbackTarget.segment_start_ts + video.currentTime` uses the old
-segment’s start_ts and the timeline cursor drifts by one full segment duration.
+## Known issues — v3
 
-**Fix:** Add `onSegmentAdvance(nextSegmentId)` prop to VideoPlayer. On segment end,
-call it instead of swapping src. In App.jsx fetch `/api/playback` for the new
-segment and update `playbackTarget` state.
+### 1. HLS seek offset edge case (low priority)
 
-### 2. Full filesystem scan every 30s
+In VideoPlayer.jsx the seek offset into the HLS window is capped at 30s:
+  const seekOffset = Math.min(playbackTarget.offset_sec, 30)
+This is correct because _build_hls_url starts the window at max(seg_start, requested_ts - 30).
+Edge case: if requested_ts - seg_start > 30, offset_sec > 30 and the cap kicks in,
+placing the seek slightly before the requested position. Frigate segments are ~10s
+so this never triggers in practice, but it’s worth noting.
 
-`scan_recordings_dir` does `root.rglob("*.mp4")` on every worker cycle.
-`scan_state` table exists but is never written to.
+### 2. HLS reachability cache is process-local
 
-**Fix:** Write `last_scanned_ts` per camera to `scan_state` after each scan.
-Use `os.scandir` + `st_mtime` filtering on subsequent cycles. Full rglob only
-on first run (empty `scan_state`).
+_hls_reachable_cache lives in the uvicorn process. Do NOT run uvicorn with
+--workers > 1 (this was already a constraint for the demand queue). This is documented.
 
-### 3. One ffmpeg subprocess per preview frame
+### 3. Frigate VOD URL uses /api/vod/ path
 
-`_extract_frame_at_offset` is called in a loop. 5 subprocesses per segment,
-~7.5M total at current scale.
-
-**Fix:** Single ffmpeg call per segment using the `select` filter. Write to
-temp dir, rename to aligned bucket timestamps, move to final location.
-Keep single-frame as fallback.
-
-### 4. Minor
-
-- `asyncio.get_event_loop()` → `asyncio.get_running_loop()` (deprecated 3.10+)
-- CORS origins hardcoded in main.py → use `settings.cors_origins`
-- `logs/` and `.pids/` missing from `.gitignore`
-- Admin panel restart button gets stuck when uvicorn kills itself mid-stream
-  (fetch errors before `done` SSE fires) — show reconnect state + poll `/api/health`
+Frigate exposes VOD at `{frigate_api_url}/api/vod/{camera}/start/{t}/end/{t}`.
+The path `/vod/` (without /api/ prefix) returns nginx 400. _build_hls_url in
+hls.py uses the correct /api/vod/ path.
 
 -----
 
-## Planned v2 features
+## Planned v3 features
 
-1. **Timeline zoom** — scroll wheel zooms time range centred on cursor. Min 15m, max 7d.
-   Add `onRangeChange(newStart, newEnd)` callback. Range state stays in App.jsx.
-1. **Frigate event sync** — new `backend/app/services/event_sync.py`.
-   Poll `GET {frigate_api}/api/events`, upsert into `events` table,
-   track `last_event_sync_ts` in `scan_state`. Run in worker after indexing.
-   This makes the event overlay markers on the timeline actually populate.
-1. **Per-camera preview progress** — `GET /api/preview/progress` returning
-   `[{camera, total_segments, previews_done, pending_recent, pending_historical}]`.
-   Progress bars in AdminPanel status tab.
-1. **Preview retention cleanup** — delete previews older than `preview_retention_days`
-   (default 30). Background job, runs once daily in small batches.
+1. **HLS window extension** — When playback reaches within 60s of the end of the
+   current HLS window, fetch a new PlaybackTarget centered on the current absoluteTs
+   and reload the hls.js source. This gives effectively unlimited continuous playback.
+   Add onWindowExhausting(currentTs) callback from VideoPlayer → App.jsx.
+
+2. **Frigate event sync paging** — event_sync.py fetches one page of 100 events.
+   If a camera has >100 new events since last sync, older ones are silently skipped.
+   Fix: paginate using Frigate's after/before params until response length < _LIMIT.
+
+3. **Preview retention verification** — At 2s intervals, 9 cameras, 30 days:
+   ~175GB of preview JEPGs. Confirm delete_old_previews runs and verify disk usage
+   is stable before increasing preview_retention_days.
 
 -----
 
 ## Testing
-
-No tests exist yet. When writing tests:
 
 ```bash
 # Run all tests
@@ -249,7 +239,7 @@ cd backend && pytest tests/unit/test_preview.py::test_quantize_ts_alignment -v
 cd backend && pytest --cov=app tests/
 ```
 
-Planned structure:
+Test structure:
 
 ```
 backend/tests/
@@ -257,25 +247,17 @@ backend/tests/
     test_indexer.py        # parse_segment_path, _global_bucket_timestamps
     test_preview.py        # _quantize_ts, _bucket_path — the O(1) invariants
     test_timeline.py       # _compute_gaps, _compute_activity, coverage_pct
+    test_scan_state.py     # incremental scan state per camera
   integration/
     test_api.py            # httpx AsyncClient against real in-memory SQLite
+    test_playback_hls.py   # HLS URL construction + reachability cache
     conftest.py            # fixtures
-```
-
-Most critical tests (write these first):
-
-```python
-test_quantize_ts_alignment()     # bucket math must be globally aligned — everything depends on this
-test_global_bucket_timestamps()  # boundary conditions, empty range
-test_parse_segment_path_valid()  # indexer foundation
-test_gap_detection()             # gaps drive timeline rendering
-test_playback_gap_snapping()     # ts in gap → nearest segment, not 404
-test_preview_no_db_on_hit()      # mock get_db — assert never called on cache hit
 ```
 
 Use `pytest` + `pytest-asyncio` + `httpx.AsyncClient`.
 Use SQLite `:memory:` for integration tests.
 Mock `subprocess.run` at the boundary in unit tests — never call real ffmpeg.
+Patch `app.services.hls.httpx.AsyncClient` when mocking Frigate reachability.
 
 -----
 
