@@ -295,6 +295,7 @@ export default function App() {
               events={timelineData?.events || []}
               activity={timelineData?.activity || []}
               frames={previewFrames}
+              camera={selectedCamera}
               cursorTs={cursorTs}
               onScrub={handleScrub}
               onSeek={handleSeek}

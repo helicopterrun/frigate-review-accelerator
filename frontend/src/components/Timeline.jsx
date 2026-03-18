@@ -115,6 +115,7 @@ export default function Timeline({
   events = [],
   activity = [],
   frames = [],
+  camera,
   cursorTs,
   onScrub,
   onSeek,
@@ -379,9 +380,9 @@ export default function Timeline({
   // ───────────────────────────────────────────────
   const displayTs = scrubTs ?? hoverTs ?? cursorTs;
   const nearestFrame = displayTs != null ? findNearestFrame(frames, displayTs) : null;
-  const previewImg = nearestFrame
-    ? imageCacheRef.current.get(nearestFrame.url)
-    : null;
+  const previewUrl = (camera && displayTs != null)
+    ? `/api/preview/${camera}/${displayTs}`
+    : nearestFrame?.url ?? null;
 
   const showPreview = scrubTs != null || cursorTs != null;
 
@@ -402,16 +403,14 @@ export default function Timeline({
           transition: 'height 0.15s ease',
         }}
       >
-        {showPreview && previewImg && previewImg.complete ? (
+        {showPreview && previewUrl ? (
           <img
-            src={previewImg.src}
+            key={previewUrl}
+            src={previewUrl}
             alt="Preview"
             style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+            onError={(e) => { e.currentTarget.style.display = 'none'; }}
           />
-        ) : showPreview ? (
-          <span style={{ color: '#555', fontSize: 13 }}>
-            {displayTs != null ? 'Loading...' : ''}
-          </span>
         ) : null}
         {showPreview && displayTs != null && (
           <div
