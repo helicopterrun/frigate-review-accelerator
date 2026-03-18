@@ -74,8 +74,8 @@ if $DO_BACKEND; then
   # shellcheck disable=SC1091
   source "$VENV/bin/activate"
 
-  pip install -q --upgrade pip
-  pip install -q -r "$BACKEND_DIR/requirements.txt"
+  pip install -q --no-cache-dir --upgrade pip
+  pip install -q --no-cache-dir -r "$BACKEND_DIR/requirements.txt"
 
   info "Backend dependencies up to date."
   deactivate
