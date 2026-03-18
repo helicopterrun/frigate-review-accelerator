@@ -15,6 +15,7 @@ Designed to run both as a one-shot CLI and as a periodic background task.
 import asyncio
 import json
 import logging
+import os
 import re
 import sqlite3
 import subprocess
@@ -107,11 +108,33 @@ def probe_durations_batch(file_paths: list[Path], max_workers: int = 4) -> dict[
     return results
 
 
-def scan_recordings_dir(recordings_path: Path) -> list[dict]:
-    """Walk the recordings directory and find all segment files.
+def _get_scan_state(conn: sqlite3.Connection) -> dict[str, float]:
+    """Load last_scanned_ts per camera from scan_state table."""
+    rows = conn.execute("SELECT camera, last_scanned_ts FROM scan_state").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def _write_scan_state(conn: sqlite3.Connection, camera: str, last_ts: float, last_path: str) -> None:
+    """Upsert scan state for a camera after indexing."""
+    conn.execute(
+        """INSERT INTO scan_state (camera, last_scanned_ts, last_file_path)
+           VALUES (?, ?, ?)
+           ON CONFLICT(camera) DO UPDATE SET
+             last_scanned_ts = excluded.last_scanned_ts,
+             last_file_path  = excluded.last_file_path""",
+        (camera, last_ts, last_path),
+    )
+
+
+def scan_recordings_dir(recordings_path: Path, since_ts: float | None = None) -> list[dict]:
+    """Walk the recordings directory and find segment files.
+
+    Args:
+        recordings_path: Root directory of Frigate recordings.
+        since_ts: If provided, skip directories whose mtime predates this
+                  timestamp (incremental scan). Pass None for a full rglob.
 
     Returns list of dicts with: camera, start_ts, path (relative), file_size.
-    Only returns files not yet in the database.
     """
     segments = []
     root = recordings_path
@@ -120,7 +143,36 @@ def scan_recordings_dir(recordings_path: Path) -> list[dict]:
         log.error("Recordings path does not exist: %s", root)
         return segments
 
-    for mp4 in root.rglob("*.mp4"):
+    if since_ts is None:
+        # Full scan — used on first run when scan_state is empty
+        mp4_files = list(root.rglob("*.mp4"))
+    else:
+        # Incremental scan — only visit day/hour directories modified recently.
+        # We walk two levels deep (YYYY-MM-DD/HH) and filter by mtime, then
+        # do a targeted glob within qualifying directories.
+        mp4_files = []
+        try:
+            for day_entry in os.scandir(root):
+                if not day_entry.is_dir():
+                    continue
+                if day_entry.stat().st_mtime < since_ts - 600:
+                    # Day directory untouched (with 10min buffer) — skip
+                    continue
+                for hour_entry in os.scandir(day_entry.path):
+                    if not hour_entry.is_dir():
+                        continue
+                    if hour_entry.stat().st_mtime < since_ts - 60:
+                        continue
+                    for cam_entry in os.scandir(hour_entry.path):
+                        if not cam_entry.is_dir():
+                            continue
+                        for entry in os.scandir(cam_entry.path):
+                            if entry.name.endswith(".mp4") and entry.is_file():
+                                mp4_files.append(Path(entry.path))
+        except PermissionError as exc:
+            log.warning("Scan permission error: %s", exc)
+
+    for mp4 in mp4_files:
         rel = mp4.relative_to(root)
         parsed = parse_segment_path(str(rel))
         if parsed is None:
@@ -133,7 +185,6 @@ def scan_recordings_dir(recordings_path: Path) -> list[dict]:
             "file_size": mp4.stat().st_size,
         })
 
-    # Sort by camera then timestamp for consistent processing
     segments.sort(key=lambda s: (s["camera"], s["start_ts"]))
     return segments
 
@@ -165,17 +216,30 @@ def index_segments_sync(
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
 
+    # Load incremental scan state — if any camera has a prior scan_ts, use it
+    scan_state = _get_scan_state(conn)
+    since_ts = min(scan_state.values()) if scan_state else None
+
     # Get already-indexed paths
     existing = set(
         row[0] for row in conn.execute("SELECT path FROM segments").fetchall()
     )
 
-    # Scan filesystem
-    all_segments = scan_recordings_dir(recordings_path)
+    # Scan filesystem (incremental if we have prior state, full on first run)
+    all_segments = scan_recordings_dir(recordings_path, since_ts=since_ts)
     new_segments = [s for s in all_segments if s["path"] not in existing]
 
     if not new_segments:
-        log.info("No new segments found")
+        log.debug("No new segments found")
+        # Still update scan_state so next scan uses current timestamp
+        now_ts = time.time()
+        conn.execute(
+            """INSERT INTO scan_state (camera, last_scanned_ts, last_file_path)
+               VALUES ('__global__', ?, NULL)
+               ON CONFLICT(camera) DO UPDATE SET last_scanned_ts = excluded.last_scanned_ts""",
+            (now_ts,),
+        )
+        conn.commit()
         conn.close()
         return {}
 
@@ -218,6 +282,22 @@ def index_segments_sync(
         conn.commit()
         log.info("Indexed batch %d-%d / %d", i, i + len(batch), len(new_segments))
 
+    # Update scan_state per camera with the latest file timestamp we saw
+    now_ts = time.time()
+    for camera in camera_counts:
+        camera_segs = [s for s in new_segments if s["camera"] == camera]
+        if camera_segs:
+            latest = max(s["start_ts"] for s in camera_segs)
+            latest_path = max(camera_segs, key=lambda s: s["start_ts"])["path"]
+            _write_scan_state(conn, camera, latest, latest_path)
+    # Also update the global marker
+    conn.execute(
+        """INSERT INTO scan_state (camera, last_scanned_ts, last_file_path)
+           VALUES ('__global__', ?, NULL)
+           ON CONFLICT(camera) DO UPDATE SET last_scanned_ts = excluded.last_scanned_ts""",
+        (now_ts,),
+    )
+    conn.commit()
     conn.close()
     log.info("Indexing complete: %s", camera_counts)
     return camera_counts
@@ -225,7 +305,7 @@ def index_segments_sync(
 
 async def index_segments_async():
     """Async wrapper for indexing — runs in thread pool."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, index_segments_sync)
 
 

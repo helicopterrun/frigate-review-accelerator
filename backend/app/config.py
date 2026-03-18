@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # Scanning
     scan_interval_sec: int = 30
 
+    # CORS — list of allowed origins; defaults cover Vite dev + common alternatives
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
+    # Preview retention — delete previews older than this many days (0 = keep forever)
+    preview_retention_days: int = 30
+
     def ensure_dirs(self):
         """Create required directories if they don't exist."""
         self.preview_output_path.mkdir(parents=True, exist_ok=True)

@@ -1,41 +1,29 @@
 /**
- * Timeline — Canvas-based timeline with thumbnail scrubbing.
+ * Timeline — Canvas-based timeline with thumbnail scrubbing and scroll-to-zoom.
  *
  * ═══════════════════════════════════════════════════════════════
- * SCRUB BEHAVIOR CONTRACT (the thing that makes this feel fast)
+ * SCRUB BEHAVIOR CONTRACT
  * ═══════════════════════════════════════════════════════════════
  *
- * HOVER (mouse over timeline, no button):
- *   1. Calculate timestamp from X position
- *   2. Show cursor line on canvas
- *   3. Show timestamp badge
- *   4. DO NOT update preview (too chatty)
+ * HOVER  → cursor line + timestamp badge only. No preview fetch.
+ * DRAG   → swap preview image. Call onScrub(ts). No video decode.
+ * RELEASE/CLICK → call onSeek(ts). Only moment video decode starts.
  *
- * DRAG (mouseDown + mouseMove):
- *   1. Calculate timestamp from X position
- *   2. Show cursor line on canvas
- *   3. Find nearest cached preview image → swap <img> src
- *   4. Call onScrub(ts) — parent tracks position
- *   5. DO NOT TOUCH VIDEO. No decode. No fetch. Images only.
- *
- * RELEASE (mouseUp after drag):
- *   1. Final timestamp from X position
- *   2. Call onSeek(ts) — parent calls /api/playback and starts video
- *   3. This is the ONLY moment video decode is triggered
- *
- * CLICK (mouseDown + mouseUp without significant move):
- *   1. Same as RELEASE — treat as instant seek
+ * SCROLL → zoom time range centred on cursor position.
+ *   Scroll up   → zoom in (min 15 minutes)
+ *   Scroll down → zoom out (max 7 days)
+ *   Range stays in App.jsx — Timeline calls onRangeChange(newStart, newEnd).
  *
  * ═══════════════════════════════════════════════════════════════
  *
  * Canvas layers (bottom to top):
- *   1. Background (#1a1d27)
- *   2. Activity heatmap (translucent colored bars)
- *   3. Segment bars (blue = recording exists)
- *   4. Gap hatching (diagonal lines = no recording)
- *   5. Event markers (colored by label)
+ *   1. Background
+ *   2. Activity heatmap
+ *   3. Segment bars (blue)
+ *   4. Gap hatching (diagonal lines, dark red)
+ *   5. Event markers
  *   6. Time tick labels
- *   7. Cursor line (red vertical)
+ *   7. Cursor line (red)
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react';
@@ -60,12 +48,15 @@ const EVENT_COLORS = {
   default: '#607D8B',
 };
 
-// Minimum pixel distance to distinguish drag from click
 const DRAG_THRESHOLD_PX = 3;
+
+// Zoom constraints
+const MIN_RANGE_SEC = 15 * 60;       // 15 minutes
+const MAX_RANGE_SEC = 7 * 24 * 3600; // 7 days
+const ZOOM_FACTOR = 0.25;            // 25% zoom per scroll tick
 
 /**
  * Preload and cache preview images in memory.
- * Returns a ref to Map<timestamp, HTMLImageElement>.
  */
 function useImageCache(frames) {
   const cacheRef = useRef(new Map());
@@ -76,7 +67,6 @@ function useImageCache(frames) {
     const cache = cacheRef.current;
     const activeTs = new Set(frames.map((f) => f.ts));
 
-    // Load new frames
     for (const frame of frames) {
       if (!cache.has(frame.ts)) {
         const img = new Image();
@@ -85,7 +75,6 @@ function useImageCache(frames) {
       }
     }
 
-    // Evict stale frames (keep memory bounded)
     for (const key of cache.keys()) {
       if (!activeTs.has(key)) {
         cache.delete(key);
@@ -97,8 +86,7 @@ function useImageCache(frames) {
 }
 
 /**
- * Binary search for nearest frame — O(log n) instead of O(n).
- * Frames must be sorted by ts (they are from the API).
+ * Binary search for nearest frame — O(log n).
  */
 function findNearestFrame(frames, ts) {
   if (!frames || frames.length === 0) return null;
@@ -130,19 +118,19 @@ export default function Timeline({
   cursorTs,
   onScrub,
   onSeek,
+  onRangeChange,
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const [isDragging, setIsDragging] = useState(false);
   const [hoverTs, setHoverTs] = useState(null);
-  const [scrubTs, setScrubTs] = useState(null); // only set during drag
+  const [scrubTs, setScrubTs] = useState(null);
   const [mouseDownX, setMouseDownX] = useState(null);
   const [containerWidth, setContainerWidth] = useState(800);
   const imageCacheRef = useImageCache(frames);
 
   const range = endTs - startTs;
 
-  // Timestamp ↔ pixel conversion
   const tsToX = useCallback(
     (ts) => ((ts - startTs) / range) * containerWidth,
     [startTs, range, containerWidth]
@@ -164,6 +152,43 @@ export default function Timeline({
     obs.observe(el);
     return () => obs.disconnect();
   }, []);
+
+  // ───────────────────────────────────────────────
+  // Scroll-to-zoom
+  // ───────────────────────────────────────────────
+  const handleWheel = useCallback(
+    (e) => {
+      if (!onRangeChange) return;
+      e.preventDefault();
+
+      // Determine zoom cursor position
+      const rect = canvasRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const x = e.clientX - rect.left;
+      const cursorFrac = Math.max(0, Math.min(1, x / containerWidth));
+      const pivotTs = startTs + cursorFrac * range;
+
+      // Zoom direction: negative deltaY = scroll up = zoom in
+      const zoomIn = e.deltaY < 0;
+      const factor = zoomIn ? (1 - ZOOM_FACTOR) : (1 + ZOOM_FACTOR);
+      const newRange = Math.min(MAX_RANGE_SEC, Math.max(MIN_RANGE_SEC, range * factor));
+
+      // Keep the pivot timestamp at the same screen fraction
+      const newStart = pivotTs - cursorFrac * newRange;
+      const newEnd = pivotTs + (1 - cursorFrac) * newRange;
+
+      onRangeChange(newStart, newEnd);
+    },
+    [startTs, range, containerWidth, onRangeChange]
+  );
+
+  // Attach wheel listener with { passive: false } so preventDefault works
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [handleWheel]);
 
   // ───────────────────────────────────────────────
   // Canvas render
@@ -198,8 +223,6 @@ export default function Timeline({
         const x1 = Math.max(0, tsToX(bucket.bucket_ts));
         const x2 = Math.min(containerWidth, tsToX(bucketEnd));
         if (x2 <= x1) continue;
-
-        // Orange heatmap with intensity-based alpha
         ctx.fillStyle = `rgba(255, 152, 0, ${0.15 + intensity * 0.55})`;
         ctx.fillRect(x1, HEATMAP_Y, x2 - x1, HEATMAP_HEIGHT);
       }
@@ -215,18 +238,16 @@ export default function Timeline({
       }
     }
 
-    // 4. Gap hatching (diagonal lines)
+    // 4. Gap hatching
     ctx.save();
     for (const gap of gaps) {
       const x1 = Math.max(0, tsToX(gap.start_ts));
       const x2 = Math.min(containerWidth, tsToX(gap.end_ts));
       if (x2 - x1 < 2) continue;
 
-      // Dark background
       ctx.fillStyle = 'rgba(50, 20, 20, 0.6)';
       ctx.fillRect(x1, SEGMENT_Y, x2 - x1, SEGMENT_HEIGHT);
 
-      // Diagonal hatch lines
       ctx.strokeStyle = 'rgba(255, 60, 60, 0.2)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -289,7 +310,7 @@ export default function Timeline({
   ]);
 
   // ───────────────────────────────────────────────
-  // Mouse handlers — implementing the scrub contract
+  // Mouse handlers
   // ───────────────────────────────────────────────
   const getTimestamp = useCallback(
     (e) => {
@@ -320,11 +341,9 @@ export default function Timeline({
       if (ts == null) return;
 
       if (isDragging) {
-        // DRAG: update preview, call onScrub. No video.
         setScrubTs(ts);
         if (onScrub) onScrub(ts);
       } else {
-        // HOVER: cursor line + timestamp only
         setHoverTs(ts);
       }
     },
@@ -336,14 +355,12 @@ export default function Timeline({
       if (!isDragging) return;
 
       const ts = getTimestamp(e);
-      const dx = Math.abs(e.clientX - (mouseDownX ?? 0));
 
       setIsDragging(false);
       setScrubTs(null);
       setMouseDownX(null);
 
       if (ts != null && onSeek) {
-        // RELEASE or CLICK: trigger playback
         onSeek(ts);
       }
     },
@@ -366,12 +383,11 @@ export default function Timeline({
     ? imageCacheRef.current.get(nearestFrame.ts)
     : null;
 
-  // Show preview only during drag (not bare hover — too chatty per your critique)
   const showPreview = scrubTs != null || cursorTs != null;
 
   return (
     <div ref={containerRef} style={{ width: '100%', userSelect: 'none' }}>
-      {/* Preview thumbnail — shown during drag scrub */}
+      {/* Preview thumbnail */}
       <div
         style={{
           height: showPreview ? 180 : 0,
@@ -390,11 +406,7 @@ export default function Timeline({
           <img
             src={previewImg.src}
             alt="Preview"
-            style={{
-              maxWidth: '100%',
-              maxHeight: '100%',
-              objectFit: 'contain',
-            }}
+            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
           />
         ) : showPreview ? (
           <span style={{ color: '#555', fontSize: 13 }}>
@@ -420,7 +432,7 @@ export default function Timeline({
         )}
       </div>
 
-      {/* Hover timestamp (shown when not dragging) */}
+      {/* Hover timestamp */}
       {!isDragging && hoverTs != null && (
         <div
           style={{
@@ -444,7 +456,14 @@ export default function Timeline({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
+        title="Scroll to zoom · drag to scrub · click to seek"
       />
+
+      {onRangeChange && (
+        <div style={{ textAlign: 'right', color: '#333', fontSize: 10, marginTop: 2 }}>
+          scroll to zoom
+        </div>
+      )}
     </div>
   );
 }

@@ -109,3 +109,8 @@ export async function triggerScan() {
 export async function fetchCacheStats() {
   return apiFetch('/preview/stats');
 }
+
+/** GET /api/preview/progress — per-camera preview generation progress */
+export async function fetchPreviewProgress() {
+  return apiFetch('/preview/progress');
+}

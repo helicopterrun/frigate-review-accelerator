@@ -1,23 +1,19 @@
 /**
  * VideoPlayer — plays MP4 segments based on PlaybackTarget from backend.
  *
- * v2 changes:
- *   - Receives a PlaybackTarget object (from /api/playback), not raw segments
- *   - Backend resolves timestamp → segment + offset, frontend just plays
- *   - Preloads next segment for gapless advance
- *   - No client-side segment math = no race conditions
- *
  * Playback lifecycle:
  *   1. Parent calls /api/playback?camera=X&ts=Y
  *   2. Parent passes PlaybackTarget as prop
  *   3. VideoPlayer sets <video src="{stream_url}#t={offset}">
- *   4. On segment end, auto-advances using next_segment_id
+ *   4. On segment end, calls onSegmentAdvance(nextSegmentId)
+ *   5. Parent fetches /api/playback for the next segment and updates playbackTarget
+ *      (fixes the v1 cursor drift bug — segment_start_ts stays accurate)
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { formatTime } from '../utils/time.js';
 
-export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate }) {
+export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSegmentAdvance }) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null); // hidden <video> for next segment preload
   const [isPlaying, setIsPlaying] = useState(false);
@@ -36,10 +32,8 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate }) {
     const url = playbackTarget.stream_url;
     const offset = playbackTarget.offset_sec;
 
-    // Set source — use #t= fragment for initial seek
     const fullUrl = offset > 0 ? `${url}#t=${offset.toFixed(2)}` : url;
 
-    // Only reload if the segment actually changed
     const currentBase = video.src ? new URL(video.src, window.location.origin).pathname : '';
     const newBase = url;
 
@@ -47,7 +41,6 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate }) {
       video.src = fullUrl;
       video.load();
     } else if (Math.abs(video.currentTime - offset) > 0.5) {
-      // Same segment, different position — just seek
       video.currentTime = offset;
     }
 
@@ -63,7 +56,7 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate }) {
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
-      video.play().catch((err) => {
+      video.play().catch(() => {
         setError('Playback failed — segment may be unavailable');
       });
     } else {
@@ -78,32 +71,35 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate }) {
     const absoluteTs = playbackTarget.segment_start_ts + video.currentTime;
     setDisplayTime(absoluteTs);
 
-    // Notify parent so timeline cursor can track playback position
     if (onTimeUpdate) onTimeUpdate(absoluteTs);
   }, [playbackTarget, onTimeUpdate]);
 
   const handleEnded = useCallback(() => {
-    // Auto-advance: swap preloaded next segment into main player
     if (!playbackTarget?.next_segment_id) {
       setIsPlaying(false);
       return;
     }
 
-    const video = videoRef.current;
-    const preload = preloadRef.current;
-    if (!video || !preload || !preload.src) {
-      setIsPlaying(false);
-      return;
+    // v2 fix: instead of swapping src directly (which breaks cursor tracking),
+    // notify the parent so it can fetch /api/playback for the new segment and
+    // update playbackTarget state. The parent's updated playbackTarget will
+    // flow back here via the useEffect above.
+    if (onSegmentAdvance) {
+      onSegmentAdvance(playbackTarget.next_segment_id);
+    } else {
+      // Fallback for backwards compat (no parent handler)
+      const video = videoRef.current;
+      const preload = preloadRef.current;
+      if (video && preload && preload.src) {
+        video.src = preload.src;
+        video.load();
+        video.play().catch(() => {});
+        preload.src = '';
+      } else {
+        setIsPlaying(false);
+      }
     }
-
-    // Swap: preloaded becomes active
-    video.src = preload.src;
-    video.load();
-    video.play().catch(() => {});
-
-    // Clear preload (parent will provide new target if needed)
-    preload.src = '';
-  }, [playbackTarget]);
+  }, [playbackTarget, onSegmentAdvance]);
 
   const handleError = useCallback(() => {
     setError('Failed to load video segment');

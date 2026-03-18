@@ -30,7 +30,7 @@ from fastapi.responses import FileResponse, Response
 
 from app.config import settings
 from app.models.database import get_db
-from app.models.schemas import PreviewFrame, PreviewStrip
+from app.models.schemas import CameraPreviewStatus, PreviewFrame, PreviewStrip
 from app.services.worker import enqueue_preview_request
 
 router = APIRouter(prefix="/api", tags=["preview"])
@@ -325,6 +325,46 @@ async def stream_segment(segment_id: int):
                 "Cache-Control": "public, max-age=3600",
             },
         )
+
+
+@router.get("/preview/progress", response_model=list[CameraPreviewStatus])
+async def preview_progress():
+    """Per-camera breakdown of preview generation progress.
+
+    Returns counts of done/pending-recent/pending-historical segments per camera.
+    Suitable for polling in AdminPanel status tab (call every 10-30s, not hot path).
+    """
+    import time as _time
+    recency_cutoff = _time.time() - settings.preview_recency_hours * 3600
+
+    async with get_db() as db:
+        # Total and done per camera
+        seg_rows = await db.execute_fetchall(
+            """SELECT camera,
+                      COUNT(*) as total,
+                      SUM(CASE WHEN previews_generated = 1 THEN 1 ELSE 0 END) as done,
+                      SUM(CASE WHEN previews_generated = 0 AND start_ts >= ? THEN 1 ELSE 0 END) as pending_recent,
+                      SUM(CASE WHEN previews_generated = 0 AND start_ts < ? THEN 1 ELSE 0 END) as pending_hist
+               FROM segments
+               GROUP BY camera
+               ORDER BY camera""",
+            (recency_cutoff, recency_cutoff),
+        )
+
+    results = []
+    for r in seg_rows:
+        camera, total, done, p_recent, p_hist = r[0], r[1], r[2], r[3], r[4]
+        recent_total = (done or 0) + (p_recent or 0)
+        pct = ((done or 0) / recent_total * 100) if recent_total > 0 else 100.0
+        results.append(CameraPreviewStatus(
+            camera=camera,
+            total_segments=total or 0,
+            previews_done=done or 0,
+            pending_recent=p_recent or 0,
+            pending_historical=p_hist or 0,
+            pct_recent_complete=round(min(pct, 100.0), 1),
+        ))
+    return results
 
 
 @router.get("/preview/stats")
