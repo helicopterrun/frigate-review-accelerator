@@ -32,6 +32,7 @@ from app.config import settings
 from app.models.database import get_db
 from app.models.schemas import CameraPreviewStatus, PreviewFrame, PreviewStrip
 from app.services.worker import enqueue_preview_request
+from app.routers.timeline import _build_hls_url, _resolve_hls_url
 
 router = APIRouter(prefix="/api", tags=["preview"])
 log = logging.getLogger(__name__)
@@ -325,6 +326,48 @@ async def stream_segment(segment_id: int):
                 "Cache-Control": "public, max-age=3600",
             },
         )
+
+
+@router.get("/segment/{segment_id}/info")
+async def segment_info(segment_id: int):
+    """Get segment metadata and playback URLs by segment ID.
+
+    Used by SplitView.handleSegmentAdvance to resolve the next segment's
+    start_ts so it can call /api/playback with an accurate timestamp.
+    """
+    async with get_db() as db:
+        rows = await db.execute_fetchall(
+            "SELECT id, camera, start_ts, end_ts, duration FROM segments WHERE id = ?",
+            (segment_id,),
+        )
+        if not rows:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Segment not found")
+
+        seg = rows[0]
+        seg_id, camera, start_ts, end_ts, duration = seg
+
+        next_rows = await db.execute_fetchall(
+            """SELECT id FROM segments
+               WHERE camera = ? AND start_ts > ?
+               ORDER BY start_ts
+               LIMIT 1""",
+            (camera, end_ts - 0.5),
+        )
+        next_id = next_rows[0][0] if next_rows else None
+
+    hls_url = await _resolve_hls_url(camera, start_ts, start_ts)
+
+    return {
+        "id": seg_id,
+        "camera": camera,
+        "start_ts": start_ts,
+        "end_ts": end_ts,
+        "duration": duration,
+        "stream_url": f"/api/segment/{seg_id}/stream",
+        "hls_url": hls_url,
+        "next_segment_id": next_id,
+    }
 
 
 @router.get("/preview/progress", response_model=list[CameraPreviewStatus])

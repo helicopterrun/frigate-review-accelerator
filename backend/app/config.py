@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     # Preview retention — delete previews older than this many days (0 = keep forever)
     preview_retention_days: int = 30
 
+    # Frigate VOD/HLS playback
+    frigate_vod_enabled: bool = True
+    frigate_vod_window_sec: int = 7200  # width of HLS window to request from Frigate
+
     def ensure_dirs(self):
         """Create required directories if they don't exist."""
         self.preview_output_path.mkdir(parents=True, exist_ok=True)

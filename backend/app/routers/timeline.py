@@ -12,8 +12,10 @@ All timestamp parameters are Unix timestamps (float).
 import math
 from collections import defaultdict
 
+import httpx
 from fastapi import APIRouter, Query, HTTPException
 
+from app.config import settings
 from app.models.database import get_db
 from app.models.schemas import (
     ActivityBucket,
@@ -33,6 +35,40 @@ router = APIRouter(prefix="/api", tags=["timeline"])
 # Minimum gap duration to report (seconds).
 # Gaps shorter than this are segment boundary jitter, not real outages.
 MIN_GAP_SEC = 2.0
+
+
+def _build_hls_url(camera: str, requested_ts: float, seg_start: float) -> str:
+    """Construct a Frigate VOD HLS playlist URL.
+
+    Pure function — no DB calls, no async, no side effects.
+    Window starts 30s before requested_ts (or at seg_start, whichever is later)
+    and spans frigate_vod_window_sec seconds.
+    """
+    window_start = max(seg_start, requested_ts - 30)
+    window_end = window_start + settings.frigate_vod_window_sec
+    return (
+        f"{settings.frigate_api_url}/vod/{camera}"
+        f"/start/{window_start:.0f}/end/{window_end:.0f}"
+    )
+
+
+async def _resolve_hls_url(camera: str, requested_ts: float, seg_start: float) -> str | None:
+    """Build the HLS URL and verify Frigate VOD is reachable.
+
+    Returns the URL if Frigate responds 2xx, None otherwise.
+    Never raises — any failure yields None so /api/playback never breaks.
+    """
+    if not settings.frigate_vod_enabled:
+        return None
+    url = _build_hls_url(camera, requested_ts, seg_start)
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.head(url)
+            if r.status_code < 300:
+                return url
+    except Exception:
+        pass
+    return None
 
 
 def _compute_gaps(
@@ -324,6 +360,8 @@ async def get_playback_target(
         )
         next_id = next_rows[0][0] if next_rows else None
 
+        hls_url = await _resolve_hls_url(camera, ts, seg_start)
+
         return PlaybackTarget(
             camera=camera,
             requested_ts=ts,
@@ -333,6 +371,7 @@ async def get_playback_target(
             offset_sec=round(offset, 3),
             stream_url=f"/api/segment/{seg_id}/stream",
             next_segment_id=next_id,
+            hls_url=hls_url,
         )
 
 
@@ -357,9 +396,6 @@ async def trigger_scan():
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check with system stats."""
-    import httpx
-    from app.config import settings
-
     async with get_db() as db:
         cam_count = (await db.execute_fetchall(
             "SELECT COUNT(DISTINCT camera) FROM segments"

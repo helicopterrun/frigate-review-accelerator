@@ -85,6 +85,7 @@ class PlaybackTarget(BaseModel):
     offset_sec: float        # seek position within the segment
     stream_url: str          # ready-to-use <video> src
     next_segment_id: int | None  # for preloading / gapless advance
+    hls_url: str | None = None  # Frigate VOD HLS playlist URL (None = Frigate unreachable)
 
 
 class CameraInfo(BaseModel):

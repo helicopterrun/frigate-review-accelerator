@@ -1,24 +1,51 @@
 /**
- * VideoPlayer — plays MP4 segments based on PlaybackTarget from backend.
+ * VideoPlayer — plays video via Frigate HLS VOD (preferred) or MP4 segments (fallback).
  *
- * Playback lifecycle:
- *   1. Parent calls /api/playback?camera=X&ts=Y
- *   2. Parent passes PlaybackTarget as prop
- *   3. VideoPlayer sets <video src="{stream_url}#t={offset}">
- *   4. On segment end, calls onSegmentAdvance(nextSegmentId)
- *   5. Parent fetches /api/playback for the next segment and updates playbackTarget
- *      (fixes the v1 cursor drift bug — segment_start_ts stays accurate)
+ * Playback priority:
+ *   1. playbackTarget.hls_url + Hls.isSupported()  → hls.js
+ *   2. playbackTarget.hls_url + native HLS (Safari) → video.src directly
+ *   3. Fallback: stream_url + offset fragment (existing MP4 segment path)
+ *
+ * When HLS is active:
+ *   - Segment-advance logic (handleEnded, preloadRef) is suppressed —
+ *     Frigate HLS stitches segments automatically.
+ *   - absoluteTs = requested_ts + (currentTime - hlsStartOffset)
+ *     Maps HLS stream-relative time back to wall-clock timestamps.
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react';
+import Hls from 'hls.js';
 import { formatTime } from '../utils/time.js';
+
+const HLS_CONFIG = {
+  enableWorker: true,
+  lowLatencyMode: false,
+  backBufferLength: 60,
+  maxBufferLength: 30,
+  maxMaxBufferLength: 60,
+  startPosition: -1,
+};
 
 export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSegmentAdvance }) {
   const videoRef = useRef(null);
-  const preloadRef = useRef(null); // hidden <video> for next segment preload
+  const preloadRef = useRef(null);
+  const hlsRef = useRef(null);
+  const hlsStartOffset = useRef(0);
+  const isHlsActive = useRef(false);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [displayTime, setDisplayTime] = useState(null);
   const [error, setError] = useState(null);
+  const [hlsMode, setHlsMode] = useState(false); // for UI indicator only
+
+  /** Destroy existing hls.js instance if any. */
+  function _destroyHls() {
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+    isHlsActive.current = false;
+  }
 
   /**
    * Load a new playback target into the video element.
@@ -29,15 +56,80 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
 
     setError(null);
 
+    // ── Path 1 & 2: Frigate HLS VOD ──────────────────────────────────────────
+    if (playbackTarget.hls_url) {
+      // Compute seek offset within the HLS stream.
+      // The HLS window starts at max(seg_start, requested_ts - 30).
+      // So: seekOffset = requested_ts - window_start = min(offset_sec, 30)
+      const seekOffset = Math.min(playbackTarget.offset_sec, 30);
+
+      if (Hls.isSupported()) {
+        // hls.js path (Chrome, Firefox, Edge, …)
+        _destroyHls();
+        setHlsMode(true);
+
+        const hls = new Hls(HLS_CONFIG);
+        hlsRef.current = hls;
+        isHlsActive.current = true;
+
+        hls.loadSource(playbackTarget.hls_url);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          if (seekOffset > 0) {
+            video.currentTime = seekOffset;
+          }
+          hlsStartOffset.current = video.currentTime;
+          video.play().catch(() => {});
+        });
+
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data.fatal) {
+            setError('HLS playback error — trying fallback');
+            _destroyHls();
+            setHlsMode(false);
+            // Fall through to MP4 in the next render (hls_url cleared by error state)
+          }
+        });
+
+        return () => { _destroyHls(); };
+
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Native HLS path (Safari)
+        _destroyHls();
+        setHlsMode(true);
+        isHlsActive.current = true;
+
+        video.src = playbackTarget.hls_url;
+        video.load();
+
+        const onMeta = () => {
+          if (seekOffset > 0) {
+            video.currentTime = seekOffset;
+          }
+          hlsStartOffset.current = video.currentTime;
+          video.play().catch(() => {});
+        };
+        video.addEventListener('loadedmetadata', onMeta, { once: true });
+
+        return () => {
+          video.removeEventListener('loadedmetadata', onMeta);
+          isHlsActive.current = false;
+          setHlsMode(false);
+        };
+      }
+    }
+
+    // ── Path 3: MP4 segment fallback ─────────────────────────────────────────
+    _destroyHls();
+    setHlsMode(false);
+
     const url = playbackTarget.stream_url;
     const offset = playbackTarget.offset_sec;
-
     const fullUrl = offset > 0 ? `${url}#t=${offset.toFixed(2)}` : url;
 
     const currentBase = video.src ? new URL(video.src, window.location.origin).pathname : '';
-    const newBase = url;
-
-    if (currentBase !== newBase) {
+    if (currentBase !== url) {
       video.src = fullUrl;
       video.load();
     } else if (Math.abs(video.currentTime - offset) > 0.5) {
@@ -51,6 +143,11 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
       preloadRef.current.preload = 'auto';
     }
   }, [playbackTarget]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { _destroyHls(); };
+  }, []);
 
   const handlePlay = useCallback(() => {
     const video = videoRef.current;
@@ -68,22 +165,32 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
     const video = videoRef.current;
     if (!video || !playbackTarget) return;
 
-    const absoluteTs = playbackTarget.segment_start_ts + video.currentTime;
-    setDisplayTime(absoluteTs);
+    let absoluteTs;
+    if (isHlsActive.current) {
+      // HLS: map stream-relative time back to wall-clock
+      absoluteTs = playbackTarget.requested_ts +
+                   (video.currentTime - hlsStartOffset.current);
+    } else {
+      // MP4: segment_start_ts + offset within segment
+      absoluteTs = playbackTarget.segment_start_ts + video.currentTime;
+    }
 
+    setDisplayTime(absoluteTs);
     if (onTimeUpdate) onTimeUpdate(absoluteTs);
   }, [playbackTarget, onTimeUpdate]);
 
   const handleEnded = useCallback(() => {
+    // When HLS is active, Frigate handles continuity — no manual advance needed
+    if (isHlsActive.current) {
+      setIsPlaying(false);
+      return;
+    }
+
     if (!playbackTarget?.next_segment_id) {
       setIsPlaying(false);
       return;
     }
 
-    // v2 fix: instead of swapping src directly (which breaks cursor tracking),
-    // notify the parent so it can fetch /api/playback for the new segment and
-    // update playbackTarget state. The parent's updated playbackTarget will
-    // flow back here via the useEffect above.
     if (onSegmentAdvance) {
       onSegmentAdvance(playbackTarget.next_segment_id);
     } else {
@@ -128,7 +235,7 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
         muted
       />
 
-      {/* Hidden preload element for next segment */}
+      {/* Hidden preload element for next MP4 segment */}
       <video
         ref={preloadRef}
         style={{ display: 'none' }}
@@ -170,9 +277,25 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
         {hasTarget && (
           <span style={{ color: '#555', fontSize: 11, marginLeft: 'auto' }}>
             segment {playbackTarget.segment_id}
-            {playbackTarget.next_segment_id && ' → ' + playbackTarget.next_segment_id}
+            {!hlsMode && playbackTarget.next_segment_id && ' → ' + playbackTarget.next_segment_id}
             {' · '}
             {camera}
+          </span>
+        )}
+
+        {hasTarget && (
+          <span
+            style={{
+              fontSize: 10,
+              padding: '2px 6px',
+              borderRadius: 10,
+              background: hlsMode ? 'rgba(76,175,80,0.15)' : 'rgba(100,100,100,0.15)',
+              color: hlsMode ? '#4CAF50' : '#888',
+              fontFamily: 'monospace',
+              flexShrink: 0,
+            }}
+          >
+            {hlsMode ? '● HLS' : '● MP4'}
           </span>
         )}
 
