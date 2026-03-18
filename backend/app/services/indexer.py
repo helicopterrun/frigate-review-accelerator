@@ -126,13 +126,15 @@ def _write_scan_state(conn: sqlite3.Connection, camera: str, last_ts: float, las
     )
 
 
-def scan_recordings_dir(recordings_path: Path, since_ts: float | None = None) -> list[dict]:
+def scan_recordings_dir(recordings_path: Path, scan_state: dict | None = None) -> list[dict]:
     """Walk the recordings directory and find segment files.
 
     Args:
         recordings_path: Root directory of Frigate recordings.
-        since_ts: If provided, skip directories whose mtime predates this
-                  timestamp (incremental scan). Pass None for a full rglob.
+        scan_state: Per-camera dict {camera_name: last_scanned_ts} from
+                    _get_scan_state(). If None, performs a full rglob.
+                    Each camera uses its own cutoff so a slow camera
+                    doesn't force faster cameras to re-scan old directories.
 
     Returns list of dicts with: camera, start_ts, path (relative), file_size.
     """
@@ -143,28 +145,33 @@ def scan_recordings_dir(recordings_path: Path, since_ts: float | None = None) ->
         log.error("Recordings path does not exist: %s", root)
         return segments
 
-    if since_ts is None:
+    if scan_state is None:
         # Full scan — used on first run when scan_state is empty
         mp4_files = list(root.rglob("*.mp4"))
     else:
-        # Incremental scan — only visit day/hour directories modified recently.
-        # We walk two levels deep (YYYY-MM-DD/HH) and filter by mtime, then
-        # do a targeted glob within qualifying directories.
+        # Incremental scan — per-camera cutoffs at the camera directory level.
+        # Day/hour directories are filtered with the global minimum cutoff;
+        # individual camera directories are filtered with their own cutoff.
+        global_since = min(scan_state.values()) if scan_state else 0
         mp4_files = []
         try:
             for day_entry in os.scandir(root):
                 if not day_entry.is_dir():
                     continue
-                if day_entry.stat().st_mtime < since_ts - 600:
-                    # Day directory untouched (with 10min buffer) — skip
+                if global_since > 0 and day_entry.stat().st_mtime < global_since - 600:
+                    # Day directory untouched for all cameras — skip
                     continue
                 for hour_entry in os.scandir(day_entry.path):
                     if not hour_entry.is_dir():
                         continue
-                    if hour_entry.stat().st_mtime < since_ts - 60:
+                    if global_since > 0 and hour_entry.stat().st_mtime < global_since - 60:
                         continue
                     for cam_entry in os.scandir(hour_entry.path):
                         if not cam_entry.is_dir():
+                            continue
+                        cam_since = scan_state.get(cam_entry.name, 0)
+                        if cam_since > 0 and cam_entry.stat().st_mtime < cam_since - 60:
+                            # This camera's dir hasn't changed since our last scan
                             continue
                         for entry in os.scandir(cam_entry.path):
                             if entry.name.endswith(".mp4") and entry.is_file():
@@ -216,9 +223,8 @@ def index_segments_sync(
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=WAL")
 
-    # Load incremental scan state — if any camera has a prior scan_ts, use it
+    # Load incremental scan state — each camera gets its own cutoff timestamp
     scan_state = _get_scan_state(conn)
-    since_ts = min(scan_state.values()) if scan_state else None
 
     # Get already-indexed paths
     existing = set(
@@ -226,7 +232,7 @@ def index_segments_sync(
     )
 
     # Scan filesystem (incremental if we have prior state, full on first run)
-    all_segments = scan_recordings_dir(recordings_path, since_ts=since_ts)
+    all_segments = scan_recordings_dir(recordings_path, scan_state=scan_state if scan_state else None)
     new_segments = [s for s in all_segments if s["path"] not in existing]
 
     if not new_segments:
