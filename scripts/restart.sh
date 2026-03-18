@@ -154,7 +154,7 @@ if $DO_FRONTEND; then
     info "Starting Vite dev server..."
     cd "$FRONTEND_DIR"
 
-    nohup npm run dev \
+    nohup npm run dev -- --host \
       >> "$LOG_DIR/frontend.log" 2>&1 &
 
     echo $! > "$PID_DIR/frontend.pid"

@@ -32,6 +32,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -98,6 +99,8 @@ def _extract_frames_batch(
             out_pattern = str(tmp_path / "frame_%04d.jpg")
 
             cmd = [
+                "nice", "-n", "19",
+                "ionice", "-c", "3",
                 "ffmpeg",
                 "-v", "quiet",
                 "-i", str(video_path),
@@ -194,6 +197,8 @@ def _extract_frame_at_offset(
     Returns True on success.
     """
     cmd = [
+        "nice", "-n", "19",
+        "ionice", "-c", "3",
         "ffmpeg",
         "-v", "quiet",
         "-ss", f"{offset_sec:.3f}",
@@ -367,6 +372,11 @@ def process_pending_segments(
 
         if processed % 10 == 0:
             log.info("Progress: %d / %d segments", processed, len(rows))
+
+        # Brief pause between segments to avoid starving Frigate's ffmpeg
+        # processes for I/O. 100ms is imperceptible at scale but prevents
+        # us from pegging the disk at 100%.
+        time.sleep(0.1)
 
     conn.close()
     log.info(

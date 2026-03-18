@@ -126,7 +126,7 @@ async def _worker_loop():
             # ── Tier 1: recency window ──────────────────────────────────────
             recency_cutoff = time.time() - settings.preview_recency_hours * 3600
             recent_count = await process_pending_async(
-                limit=100,
+                limit=20,
                 min_start_ts=recency_cutoff,
             )
             if recent_count:
