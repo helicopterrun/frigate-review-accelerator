@@ -16,10 +16,10 @@ NOT at:
 If these drift, every scrub request will miss the bucket and fall through
 to the DB fallback path — defeating the entire O(1) lookup design.
 
-Implementation: we compute which global bucket timestamps fall within each
-segment's time range, then use ffmpeg -ss to seek to the exact offset
-within the segment for each frame. This is slightly more ffmpeg calls than
-the fps filter approach, but guarantees alignment.
+v2 batch extraction: single ffmpeg call per segment using the `select` filter
+to extract all frames at once. Frames are written to a temp dir, then renamed
+to their globally-aligned bucket timestamp and moved to the final location.
+The per-frame fallback is retained for edge cases.
 
 Output structure:
   {preview_output_path}/{camera}/{YYYY-MM-DD}/{bucket_ts:.2f}.jpg
@@ -28,8 +28,10 @@ Output structure:
 import asyncio
 import logging
 import math
+import shutil
 import sqlite3
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -57,6 +59,128 @@ def _global_bucket_timestamps(start_ts: float, end_ts: float, interval: float) -
     return buckets
 
 
+def _extract_frames_batch(
+    video_path: Path,
+    buckets: list[float],
+    start_ts: float,
+    day_dir: Path,
+    width: int,
+    quality: int,
+) -> list[dict]:
+    """Extract all preview frames for a segment in a single ffmpeg call.
+
+    Uses the `select` filter to pick frames at the exact offsets corresponding
+    to globally-aligned bucket timestamps. Frames are written to a temp
+    directory, then renamed and moved to their final path.
+
+    Returns list of frame metadata dicts on success.
+    Falls back to per-frame extraction if the batch call fails.
+    """
+    if not buckets:
+        return []
+
+    offsets = [round(b - start_ts, 3) for b in buckets]
+    n = len(offsets)
+
+    # Build a select expression that picks frames at specified offsets.
+    # We use gte(t, offset) conditions joined by OR so ffmpeg emits exactly
+    # one frame per bucket (the first frame at or after each offset).
+    # setpts=N/TB resets pts so -vframes N works correctly with -vsync vfr.
+    select_expr = "+".join(f"gte(t,{o:.3f})*lte(t,{o+0.5:.3f})" for o in offsets)
+    vf = f"select='{select_expr}',scale={width}:-1"
+
+    est_height = int(width * 9 / 16)
+    results = []
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            out_pattern = str(tmp_path / "frame_%04d.jpg")
+
+            cmd = [
+                "ffmpeg",
+                "-v", "quiet",
+                "-i", str(video_path),
+                "-vf", vf,
+                "-vsync", "vfr",
+                "-q:v", str(quality),
+                "-vframes", str(n),
+                "-y",
+                out_pattern,
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                log.debug(
+                    "Batch ffmpeg failed for %s (rc=%d), falling back to per-frame",
+                    video_path, result.returncode,
+                )
+                return _extract_frames_fallback(
+                    video_path, buckets, start_ts, day_dir, width, quality
+                )
+
+            # Rename temp frames to bucket timestamps
+            tmp_frames = sorted(tmp_path.glob("frame_*.jpg"))
+            for i, (tmp_frame, bucket_ts) in enumerate(zip(tmp_frames, buckets)):
+                filename = f"{bucket_ts:.2f}.jpg"
+                final_path = day_dir / filename
+                try:
+                    shutil.move(str(tmp_frame), str(final_path))
+                    rel_path = str(final_path.relative_to(settings.preview_output_path))
+                    results.append({
+                        "ts": bucket_ts,
+                        "image_path": rel_path,
+                        "width": width,
+                        "height": est_height,
+                    })
+                except OSError as exc:
+                    log.debug("Could not move frame %s: %s", tmp_frame, exc)
+
+    except subprocess.TimeoutExpired:
+        log.warning("Batch ffmpeg timed out for %s, falling back", video_path)
+        return _extract_frames_fallback(
+            video_path, buckets, start_ts, day_dir, width, quality
+        )
+    except Exception as exc:
+        log.debug("Batch extraction error for %s: %s", video_path, exc)
+        return _extract_frames_fallback(
+            video_path, buckets, start_ts, day_dir, width, quality
+        )
+
+    return results
+
+
+def _extract_frames_fallback(
+    video_path: Path,
+    buckets: list[float],
+    start_ts: float,
+    day_dir: Path,
+    width: int,
+    quality: int,
+) -> list[dict]:
+    """Per-frame fallback — one ffmpeg subprocess per bucket timestamp."""
+    est_height = int(width * 9 / 16)
+    results = []
+    for bucket_ts in buckets:
+        offset = round(bucket_ts - start_ts, 3)
+        if offset < 0:
+            continue
+        filename = f"{bucket_ts:.2f}.jpg"
+        output_path = day_dir / filename
+        if output_path.exists():
+            rel_path = str(output_path.relative_to(settings.preview_output_path))
+            results.append({"ts": bucket_ts, "image_path": rel_path,
+                            "width": width, "height": est_height})
+            continue
+        success = _extract_frame_at_offset(video_path, offset, output_path, width, quality)
+        if success:
+            rel_path = str(output_path.relative_to(settings.preview_output_path))
+            results.append({"ts": bucket_ts, "image_path": rel_path,
+                            "width": width, "height": est_height})
+    return results
+
+
 def _extract_frame_at_offset(
     video_path: Path,
     offset_sec: float,
@@ -77,7 +201,7 @@ def _extract_frame_at_offset(
         "-frames:v", "1",
         "-vf", f"scale={width}:-1",
         "-q:v", str(quality),
-        "-y",  # overwrite if exists
+        "-y",
         str(output_path),
     ]
 
@@ -124,44 +248,19 @@ def generate_previews_for_segment(
     day_dir = output_root / camera / dt.strftime("%Y-%m-%d")
     day_dir.mkdir(parents=True, exist_ok=True)
 
-    frames = []
+    # Separate already-existing frames from those needing extraction
+    missing_buckets = []
+    existing_frames = []
     est_height = int(width * 9 / 16)
 
     for bucket_ts in buckets:
-        # Offset within the segment file
-        offset = bucket_ts - start_ts
-
-        # Skip if offset is negative or past segment end (shouldn't happen
-        # given _global_bucket_timestamps, but defensive)
-        if offset < 0 or offset > duration + 0.5:
+        if bucket_ts - start_ts < 0 or bucket_ts - start_ts > duration + 0.5:
             continue
-
-        # Output filename IS the bucket timestamp — this is what makes
-        # O(1) lookup work in preview.py
         filename = f"{bucket_ts:.2f}.jpg"
         output_path = day_dir / filename
-
-        # Skip if already generated (idempotent)
         if output_path.exists():
             rel_path = str(output_path.relative_to(output_root))
-            frames.append({
-                "ts": bucket_ts,
-                "image_path": rel_path,
-                "width": width,
-                "height": est_height,
-                "segment_id": segment_id,
-                "camera": camera,
-            })
-            continue
-
-        # Extract the frame
-        success = _extract_frame_at_offset(
-            abs_path, offset, output_path, width, quality
-        )
-
-        if success:
-            rel_path = str(output_path.relative_to(output_root))
-            frames.append({
+            existing_frames.append({
                 "ts": bucket_ts,
                 "image_path": rel_path,
                 "width": width,
@@ -170,12 +269,22 @@ def generate_previews_for_segment(
                 "camera": camera,
             })
         else:
-            log.debug(
-                "Failed to extract frame at offset %.2f from %s",
-                offset, segment_path,
-            )
+            missing_buckets.append(bucket_ts)
 
-    return frames
+    if not missing_buckets:
+        return existing_frames
+
+    # Extract missing frames in one batch ffmpeg call
+    new_frames = _extract_frames_batch(
+        abs_path, missing_buckets, start_ts, day_dir, width, quality
+    )
+
+    # Annotate with segment_id and camera
+    for f in new_frames:
+        f["segment_id"] = segment_id
+        f["camera"] = camera
+
+    return existing_frames + new_frames
 
 
 def process_pending_segments(
@@ -189,9 +298,7 @@ def process_pending_segments(
         db_path:      Override database path (uses settings default if None).
         limit:        Maximum number of segments to process in this call.
         min_start_ts: If provided, only process segments with start_ts >= this
-                      value. Used to implement recency-first prioritization —
-                      pass (now - recency_hours * 3600) to restrict to recent
-                      footage, or None to crawl the full backlog.
+                      value. Used to implement recency-first prioritization.
 
     Returns number of segments processed.
     """
@@ -250,8 +357,7 @@ def process_pending_segments(
                   f["image_path"], f["width"], f["height"]) for f in frames],
             )
 
-        # Mark as processed (even if 0 frames — segment may be too short
-        # to contain any global bucket timestamps)
+        # Mark as processed (even if 0 frames — segment may be too short)
         conn.execute(
             "UPDATE segments SET previews_generated = 1 WHERE id = ?",
             (row["id"],),
@@ -270,21 +376,76 @@ def process_pending_segments(
     return processed
 
 
+def delete_old_previews(db_path: Path | None = None, retention_days: int | None = None) -> int:
+    """Delete preview files and DB rows older than retention_days.
+
+    Returns number of preview rows deleted.
+    Runs in small batches to avoid disk I/O spikes.
+    """
+    db_path = db_path or settings.database_path
+    retention_days = retention_days if retention_days is not None else settings.preview_retention_days
+
+    if retention_days <= 0:
+        return 0
+
+    import time
+    cutoff_ts = time.time() - retention_days * 86400
+    output_root = settings.preview_output_path
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    batch_size = 500
+    total_deleted = 0
+
+    while True:
+        rows = conn.execute(
+            """SELECT p.id, p.image_path
+               FROM previews p
+               JOIN segments s ON p.segment_id = s.id
+               WHERE s.start_ts < ?
+               LIMIT ?""",
+            (cutoff_ts, batch_size),
+        ).fetchall()
+
+        if not rows:
+            break
+
+        ids = [r["id"] for r in rows]
+        for row in rows:
+            file_path = output_root / row["image_path"]
+            try:
+                file_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        conn.execute(
+            f"DELETE FROM previews WHERE id IN ({','.join('?' * len(ids))})", ids
+        )
+        conn.commit()
+        total_deleted += len(ids)
+
+    conn.close()
+    if total_deleted:
+        log.info("Retention cleanup: deleted %d preview rows (cutoff=%d days)", total_deleted, retention_days)
+    return total_deleted
+
+
 async def process_pending_async(
     limit: int = 50,
     min_start_ts: float | None = None,
 ) -> int:
-    """Async wrapper for preview generation.
-
-    Args:
-        limit:        Maximum segments to process.
-        min_start_ts: Recency filter — only process segments newer than this
-                      Unix timestamp. Pass None to process the full backlog.
-    """
-    loop = asyncio.get_event_loop()
+    """Async wrapper for preview generation."""
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, process_pending_segments, None, limit, min_start_ts
     )
+
+
+async def delete_old_previews_async() -> int:
+    """Async wrapper for retention cleanup."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, delete_old_previews)
 
 
 # CLI entry point

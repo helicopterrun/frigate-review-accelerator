@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # Frigate Review Accelerator — Claude Code Context
 
 ## What this project is
@@ -72,21 +76,41 @@ frigate-review-accelerator/
 
 ## Running the project
 
+**External dependencies required:** `ffmpeg` and `ffprobe` must be on PATH.
+
 ```bash
-# Backend
+# First-time setup
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # then edit .env
+
+# Backend (dev)
 cd backend
 source .venv/bin/activate
 uvicorn app.main:app --host 0.0.0.0 --port 8100 --reload
 
-# Frontend (separate terminal)
+# Frontend (dev, separate terminal)
 cd frontend
+npm install
 npm run dev
 
-# Or use the scripts (after first manual setup):
-./scripts/restart.sh
-./scripts/logs.sh --previews    # watch preview generation
-./scripts/logs.sh --status      # snapshot of worker state
+# Frontend (production build)
+cd frontend
+npm run build
+
+# Or use scripts after first manual setup:
+./scripts/restart.sh                  # restart everything
+./scripts/restart.sh --backend        # backend only
+./scripts/restart.sh --frontend       # frontend only
+./scripts/restart.sh --stop           # stop only
+./scripts/logs.sh --previews          # watch preview generation
+./scripts/logs.sh --status            # snapshot of worker state
+./scripts/logs.sh --errors            # errors/warnings only
 ```
+
+**Frontend → Backend proxy:** Vite proxies all `/api` requests to `http://localhost:8100`. This means `api.js` uses relative `/api` paths in dev — no CORS issue during local development.
 
 -----
 
@@ -213,6 +237,19 @@ Keep single-frame as fallback.
 ## Testing
 
 No tests exist yet. When writing tests:
+
+```bash
+# Run all tests
+cd backend && pytest
+
+# Run a single test
+cd backend && pytest tests/unit/test_preview.py::test_quantize_ts_alignment -v
+
+# Run with coverage
+cd backend && pytest --cov=app tests/
+```
+
+Planned structure:
 
 ```
 backend/tests/

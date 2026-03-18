@@ -1,40 +1,26 @@
 /**
  * AdminPanel — Operational controls and live log viewer.
  *
- * Features:
- *   - Worker status snapshot (polls /api/admin/status every 10s)
- *   - Live log stream via SSE (/api/admin/logs/stream)
- *   - Filter controls (previews, errors, or raw)
- *   - Restart / Update / Pull buttons with streaming output
- *   - Collapsible panel — hidden by default, toggle via header button
- *
- * SSE event types from the backend:
- *   line   — a log line (data: string)
- *   ready  — historical tail complete, now live
- *   ping   — keepalive (ignore)
- *   done   — script finished successfully (data: {returncode})
- *   error  — script or stream error (data: {returncode, msg})
+ * v2 additions:
+ *   - Restart reconnect UX: detects network drop during restart, polls
+ *     /api/health until the server is back, then shows "✓ Back online".
+ *   - Progress tab: per-camera preview generation progress bars.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { fetchPreviewProgress } from '../utils/api.js';
 
 const API = '/api/admin';
 const MAX_LOG_LINES = 500;
+const HEALTH_POLL_MS = 2000;
 
-// Colour-code log lines to match logs.sh output
 function colorizeLine(line) {
-  if (/ERROR|ImportError|Traceback|Exception/.test(line))
-    return '#ff6b6b';
-  if (/WARNING/.test(line))
-    return '#ffd93d';
-  if (/Recency pass|Indexed.*new|worker started/.test(line))
-    return '#6bcb77';
-  if (/On-demand/.test(line))
-    return '#4ecdc4';
-  if (/Background pass/.test(line))
-    return '#c77dff';
-  if (/GET|POST|PUT|DELETE/.test(line))
-    return '#555';
+  if (/ERROR|ImportError|Traceback|Exception/.test(line)) return '#ff6b6b';
+  if (/WARNING/.test(line)) return '#ffd93d';
+  if (/Recency pass|Indexed.*new|worker started/.test(line)) return '#6bcb77';
+  if (/On-demand/.test(line)) return '#4ecdc4';
+  if (/Background pass/.test(line)) return '#c77dff';
+  if (/GET|POST|PUT|DELETE/.test(line)) return '#555';
   return '#ccc';
 }
 
@@ -55,17 +41,13 @@ function StatusCard({ status }) {
         <div key={label} style={s.statusRow}>
           <span style={s.statusLabel}>{label}</span>
           <span style={{ ...s.statusValue, color: value ? color : '#444' }}>
-            {value
-              ? value.replace(/^\S+ \S+ \S+ — /, '') // strip log prefix
-              : 'none yet'}
+            {value ? value.replace(/^\S+ \S+ \S+ — /, '') : 'none yet'}
           </span>
         </div>
       ))}
       {status.recent_errors?.length > 0 && (
         <div style={s.errorBlock}>
-          <span style={{ color: '#ff6b6b', fontSize: 11, fontWeight: 600 }}>
-            Recent errors:
-          </span>
+          <span style={{ color: '#ff6b6b', fontSize: 11, fontWeight: 600 }}>Recent errors:</span>
           {status.recent_errors.map((e, i) => (
             <div key={i} style={{ color: '#ff6b6b', fontSize: 11, marginTop: 2 }}>
               {e.replace(/^\S+ \S+ \S+ — /, '')}
@@ -73,6 +55,73 @@ function StatusCard({ status }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── ProgressTab ───────────────────────────────────────────────────────────────
+function ProgressTab() {
+  const [progress, setProgress] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const data = await fetchPreviewProgress();
+        setProgress(data);
+      } catch { /* ignore */ }
+      finally { setLoading(false); }
+    }
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (loading) return <div style={s.statusPlaceholder}>Loading…</div>;
+  if (!progress?.length) return <div style={s.statusPlaceholder}>No camera data yet.</div>;
+
+  return (
+    <div style={{ padding: 12, overflowY: 'auto', maxHeight: 320 }}>
+      {progress.map((cam) => {
+        const pct = cam.pct_recent_complete;
+        const totalPending = cam.pending_recent + cam.pending_historical;
+        return (
+          <div key={cam.camera} style={{ marginBottom: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+              <span style={{ color: '#aaa', fontSize: 12, fontFamily: 'monospace' }}>
+                {cam.camera}
+              </span>
+              <span style={{ color: '#666', fontSize: 11 }}>
+                {cam.total_segments.toLocaleString()} segs · {totalPending.toLocaleString()} pending
+              </span>
+            </div>
+            <div style={s.progressTrack}>
+              <div
+                style={{
+                  ...s.progressBar,
+                  width: `${pct}%`,
+                  background: pct >= 100 ? '#4CAF50' : pct > 50 ? '#2196F3' : '#FF9800',
+                }}
+              />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+              <span style={{ color: '#555', fontSize: 10 }}>
+                {pct.toFixed(0)}% recent complete
+              </span>
+              {cam.pending_recent > 0 && (
+                <span style={{ color: '#FF9800', fontSize: 10 }}>
+                  {cam.pending_recent.toLocaleString()} recent pending
+                </span>
+              )}
+              {cam.pending_historical > 0 && (
+                <span style={{ color: '#555', fontSize: 10 }}>
+                  {cam.pending_historical.toLocaleString()} historical pending
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -90,7 +139,6 @@ function LogPane({ lines, isLive, filter, onFilterChange }) {
 
   return (
     <div style={s.logWrapper}>
-      {/* Log toolbar */}
       <div style={s.logToolbar}>
         <div style={s.filterButtons}>
           {['all', 'previews', 'errors'].map((f) => (
@@ -126,8 +174,6 @@ function LogPane({ lines, isLive, filter, onFilterChange }) {
           <span style={{ color: '#444', fontSize: 11 }}>{lines.length} lines</span>
         </div>
       </div>
-
-      {/* Log output */}
       <div style={s.logOutput}>
         {lines.length === 0 ? (
           <span style={{ color: '#444', fontSize: 12 }}>No log output yet…</span>
@@ -150,16 +196,17 @@ function LogPane({ lines, isLive, filter, onFilterChange }) {
 // ── AdminPanel ────────────────────────────────────────────────────────────────
 export default function AdminPanel() {
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState('logs'); // 'logs' | 'status'
+  const [tab, setTab] = useState('logs');
   const [status, setStatus] = useState(null);
   const [logLines, setLogLines] = useState([]);
   const [isLive, setIsLive] = useState(false);
   const [filter, setFilter] = useState('all');
-  const [running, setRunning] = useState(null); // 'restart' | 'update' | 'pull' | null
+  const [running, setRunning] = useState(null);
   const [scriptLines, setScriptLines] = useState([]);
+  const [reconnecting, setReconnecting] = useState(false);
 
   const sseRef = useRef(null);
-  const scriptSseRef = useRef(null);
+  const healthPollRef = useRef(null);
 
   // ── Status polling ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -201,10 +248,9 @@ export default function AdminPanel() {
     });
 
     sse.addEventListener('ready', () => setIsLive(true));
-    sse.addEventListener('ping', () => {}); // keepalive, ignore
+    sse.addEventListener('ping', () => {});
     sse.addEventListener('error', () => {
       setIsLive(false);
-      // Auto-reconnect after 3s
       setTimeout(connectLogStream, 3000);
     });
   }, [filter]);
@@ -218,18 +264,32 @@ export default function AdminPanel() {
     return () => sseRef.current?.close();
   }, [open, tab, connectLogStream]);
 
+  // ── Health polling after restart ────────────────────────────────────────────
+  const startHealthPoll = useCallback((onBack) => {
+    if (healthPollRef.current) clearInterval(healthPollRef.current);
+    healthPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          clearInterval(healthPollRef.current);
+          healthPollRef.current = null;
+          onBack();
+        }
+      } catch { /* still restarting */ }
+    }, HEALTH_POLL_MS);
+  }, []);
+
   // ── Script execution ────────────────────────────────────────────────────────
   const runScript = useCallback((action) => {
     if (running) return;
 
     setRunning(action);
+    setReconnecting(false);
     setScriptLines([`▶ Running ${action}…`]);
     setTab('script');
 
-    if (scriptSseRef.current) scriptSseRef.current.close();
+    const isRestart = action === 'restart';
 
-    // Scripts use POST — we can't use EventSource (GET only).
-    // Use fetch + ReadableStream instead.
     fetch(`${API}/${action}`, { method: 'POST' })
       .then(async (res) => {
         const reader = res.body.getReader();
@@ -270,26 +330,36 @@ export default function AdminPanel() {
         }
       })
       .catch((err) => {
-        setScriptLines((prev) => [...prev, `✗ Fetch error: ${err.message}`]);
-        setRunning(null);
+        if (isRestart) {
+          // Network drop during restart is expected — server killed itself
+          setReconnecting(true);
+          setScriptLines((prev) => [...prev, 'Server restarting… reconnecting']);
+          startHealthPoll(() => {
+            setReconnecting(false);
+            setRunning(null);
+            setScriptLines((prev) => [...prev, '✓ Back online']);
+            // Re-establish log stream
+            if (tab === 'logs') connectLogStream();
+          });
+        } else {
+          setScriptLines((prev) => [...prev, `✗ Fetch error: ${err.message}`]);
+          setRunning(null);
+        }
       });
-  }, [running]);
+  }, [running, tab, startHealthPoll, connectLogStream]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div style={s.wrapper}>
-      {/* Toggle button */}
       <button onClick={() => setOpen((v) => !v)} style={s.toggleBtn}>
         {open ? '✕ Close Ops' : '⚙ Ops'}
       </button>
 
       {open && (
         <div style={s.panel}>
-          {/* Panel header */}
           <div style={s.panelHeader}>
             <span style={s.panelTitle}>Ops Panel</span>
 
-            {/* Action buttons */}
             <div style={s.actionRow}>
               {[
                 { id: 'restart', label: '↺ Restart backend', color: '#4ecdc4' },
@@ -307,14 +377,15 @@ export default function AdminPanel() {
                     opacity: running && running !== id ? 0.4 : 1,
                   }}
                 >
-                  {running === id ? `${label}…` : label}
+                  {running === id
+                    ? reconnecting ? 'Reconnecting…' : `${label}…`
+                    : label}
                 </button>
               ))}
             </div>
 
-            {/* Tabs */}
             <div style={s.tabs}>
-              {['logs', 'status', 'script'].map((t) => (
+              {['logs', 'status', 'progress', 'script'].map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -325,15 +396,12 @@ export default function AdminPanel() {
                   }}
                 >
                   {t}
-                  {t === 'script' && running && (
-                    <span style={s.runningDot} />
-                  )}
+                  {t === 'script' && running && <span style={s.runningDot} />}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Tab content */}
           {tab === 'logs' && (
             <LogPane
               lines={logLines}
@@ -349,6 +417,8 @@ export default function AdminPanel() {
             </div>
           )}
 
+          {tab === 'progress' && <ProgressTab />}
+
           {tab === 'script' && (
             <div style={{ ...s.logOutput, height: 280 }}>
               {scriptLines.map((line, i) => (
@@ -358,6 +428,7 @@ export default function AdminPanel() {
                     color: line.startsWith('✗') ? '#ff6b6b'
                          : line.startsWith('✓') ? '#6bcb77'
                          : line.startsWith('▶') ? '#4ecdc4'
+                         : line.includes('reconnect') ? '#ffd93d'
                          : colorizeLine(line),
                     lineHeight: '1.5',
                     whiteSpace: 'pre-wrap',
@@ -366,6 +437,11 @@ export default function AdminPanel() {
                   {line}
                 </div>
               ))}
+              {reconnecting && (
+                <div style={{ color: '#ffd93d', marginTop: 8 }}>
+                  Polling /api/health every 2s…
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -423,11 +499,7 @@ const s = {
     display: 'block',
     marginBottom: 8,
   },
-  actionRow: {
-    display: 'flex',
-    gap: 8,
-    marginBottom: 10,
-  },
+  actionRow: { display: 'flex', gap: 8, marginBottom: 10 },
   actionBtn: {
     background: 'transparent',
     border: '1px solid',
@@ -438,24 +510,17 @@ const s = {
     fontFamily: 'monospace',
     transition: 'opacity 0.15s',
   },
-  tabs: {
-    display: 'flex',
-    gap: 0,
-  },
+  tabs: { display: 'flex', gap: 0 },
   tab: {
     background: 'transparent',
     border: 'none',
-    padding: '6px 16px',
+    padding: '6px 14px',
     cursor: 'pointer',
     fontSize: 12,
     fontFamily: 'monospace',
     position: 'relative',
   },
-  logWrapper: {
-    display: 'flex',
-    flexDirection: 'column',
-    height: 320,
-  },
+  logWrapper: { display: 'flex', flexDirection: 'column', height: 320 },
   logToolbar: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -464,10 +529,7 @@ const s = {
     borderBottom: '1px solid #1a1d27',
     background: '#0f1117',
   },
-  filterButtons: {
-    display: 'flex',
-    gap: 4,
-  },
+  filterButtons: { display: 'flex', gap: 4 },
   filterBtn: {
     border: '1px solid #2a2d37',
     borderRadius: 3,
@@ -476,28 +538,9 @@ const s = {
     fontSize: 11,
     fontFamily: 'monospace',
   },
-  liveBadge: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 4,
-    color: '#6bcb77',
-    fontSize: 10,
-    fontWeight: 700,
-  },
-  liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: '50%',
-    background: '#6bcb77',
-    animation: 'pulse 1.5s infinite',
-  },
-  autoScrollLabel: {
-    color: '#555',
-    fontSize: 11,
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-  },
+  liveBadge: { display: 'flex', alignItems: 'center', gap: 4, color: '#6bcb77', fontSize: 10, fontWeight: 700 },
+  liveDot: { width: 6, height: 6, borderRadius: '50%', background: '#6bcb77' },
+  autoScrollLabel: { color: '#555', fontSize: 11, cursor: 'pointer', display: 'flex', alignItems: 'center' },
   logOutput: {
     flex: 1,
     overflowY: 'auto',
@@ -506,16 +549,8 @@ const s = {
     fontSize: 11,
     lineHeight: '1.6',
   },
-  statusPane: {
-    padding: 14,
-    overflowY: 'auto',
-    maxHeight: 320,
-  },
-  statusGrid: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-  },
+  statusPane: { padding: 14, overflowY: 'auto', maxHeight: 320 },
+  statusGrid: { display: 'flex', flexDirection: 'column', gap: 8 },
   statusRow: {
     display: 'flex',
     flexDirection: 'column',
@@ -525,27 +560,10 @@ const s = {
     borderRadius: 4,
     border: '1px solid #1e2130',
   },
-  statusLabel: {
-    color: '#555',
-    fontSize: 10,
-    textTransform: 'uppercase',
-    letterSpacing: '0.05em',
-  },
-  statusValue: {
-    fontSize: 11,
-    wordBreak: 'break-all',
-  },
-  errorBlock: {
-    padding: '6px 10px',
-    background: '#1a0d0d',
-    borderRadius: 4,
-    border: '1px solid #3a1515',
-  },
-  statusPlaceholder: {
-    color: '#444',
-    fontSize: 12,
-    padding: 12,
-  },
+  statusLabel: { color: '#555', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em' },
+  statusValue: { fontSize: 11, wordBreak: 'break-all' },
+  errorBlock: { padding: '6px 10px', background: '#1a0d0d', borderRadius: 4, border: '1px solid #3a1515' },
+  statusPlaceholder: { color: '#444', fontSize: 12, padding: 12 },
   runningDot: {
     display: 'inline-block',
     width: 6,
@@ -554,5 +572,17 @@ const s = {
     background: '#ffd93d',
     marginLeft: 5,
     verticalAlign: 'middle',
+  },
+  progressTrack: {
+    height: 8,
+    background: '#1a1d27',
+    borderRadius: 4,
+    overflow: 'hidden',
+    border: '1px solid #2a2d37',
+  },
+  progressBar: {
+    height: '100%',
+    borderRadius: 4,
+    transition: 'width 0.3s ease',
   },
 };

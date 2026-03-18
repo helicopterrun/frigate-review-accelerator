@@ -66,9 +66,10 @@ CREATE INDEX IF NOT EXISTS idx_events_camera_time
 
 -- Scan state tracking
 CREATE TABLE IF NOT EXISTS scan_state (
-    camera          TEXT PRIMARY KEY,
-    last_scanned_ts REAL NOT NULL DEFAULT 0,
-    last_file_path  TEXT
+    camera              TEXT PRIMARY KEY,
+    last_scanned_ts     REAL NOT NULL DEFAULT 0,
+    last_file_path      TEXT,
+    last_event_sync_ts  REAL
 );
 """
 

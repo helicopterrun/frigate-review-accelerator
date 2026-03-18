@@ -108,3 +108,12 @@ class HealthResponse(BaseModel):
     total_previews: int
     pending_previews: int
     frigate_reachable: bool
+
+
+class CameraPreviewStatus(BaseModel):
+    camera: str
+    total_segments: int
+    previews_done: int
+    pending_recent: int       # pending within recency window
+    pending_historical: int   # pending outside recency window
+    pct_recent_complete: float
