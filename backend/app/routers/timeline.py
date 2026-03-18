@@ -137,29 +137,37 @@ def _compute_activity(
 
 @router.get("/cameras", response_model=list[CameraInfo])
 async def list_cameras():
-    """List all indexed cameras with summary stats."""
+    """List all indexed cameras with summary stats.
+
+    Uses two separate indexed queries instead of a LEFT JOIN across
+    1.5M+ rows — the join was causing 60s+ response times.
+    """
     async with get_db() as db:
-        rows = await db.execute_fetchall(
-            """SELECT
-                 s.camera,
-                 COUNT(DISTINCT s.id) as segment_count,
-                 COUNT(DISTINCT p.id) as preview_count,
-                 MIN(s.start_ts) as earliest_ts,
-                 MAX(s.end_ts) as latest_ts
-               FROM segments s
-               LEFT JOIN previews p ON p.camera = s.camera
-               GROUP BY s.camera
-               ORDER BY s.camera"""
+        seg_rows = await db.execute_fetchall(
+            """SELECT camera, COUNT(*) as segment_count,
+                      MIN(start_ts) as earliest_ts,
+                      MAX(end_ts) as latest_ts
+               FROM segments
+               GROUP BY camera
+               ORDER BY camera"""
         )
+        prev_rows = await db.execute_fetchall(
+            """SELECT camera, COUNT(*) as preview_count
+               FROM previews
+               GROUP BY camera"""
+        )
+
+        prev_map = {r[0]: r[1] for r in prev_rows}
+
         return [
             CameraInfo(
                 name=r[0],
                 segment_count=r[1],
-                preview_count=r[2],
-                earliest_ts=r[3],
-                latest_ts=r[4],
+                preview_count=prev_map.get(r[0], 0),
+                earliest_ts=r[2],
+                latest_ts=r[3],
             )
-            for r in rows
+            for r in seg_rows
         ]
 
 
