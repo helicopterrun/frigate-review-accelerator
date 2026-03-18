@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.models.database import init_db_sync
 from app.routers import timeline, preview
+from app.routers.admin import router as admin_router
 from app.services.worker import start_worker, stop_worker
 
 logging.basicConfig(
@@ -59,3 +60,4 @@ app.add_middleware(
 # Mount routers
 app.include_router(timeline.router)
 app.include_router(preview.router)
+app.include_router(admin_router)
