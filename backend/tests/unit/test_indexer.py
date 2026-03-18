@@ -1,7 +1,12 @@
 """Unit tests for the segment indexer."""
 
+import os
+import tempfile
+import time
+
 import pytest
-from app.services.indexer import parse_segment_path
+from app.services.indexer import parse_segment_path, scan_recordings_dir
+from pathlib import Path
 
 
 class TestParseSegmentPath:
@@ -113,3 +118,57 @@ class TestGlobalBucketTimestamps:
         # start at 1.5, interval 2 → first bucket at 2.0
         buckets = _global_bucket_timestamps(1.5, 9.5, 2.0)
         assert buckets[0] == pytest.approx(2.0, abs=0.01)
+
+
+class TestPerCameraScanState:
+    """scan_recordings_dir should use per-camera cutoffs, not a global minimum."""
+
+    def _make_segment(self, root: Path, camera: str, filename: str = "00.00.mp4"):
+        """Create a fake segment file in Frigate's directory structure."""
+        seg_dir = root / "2024-01-15" / "14" / camera
+        seg_dir.mkdir(parents=True, exist_ok=True)
+        seg_file = seg_dir / filename
+        seg_file.write_bytes(b"fake")
+        return seg_dir, seg_file
+
+    def test_per_camera_scan_state_independent(self):
+        """
+        cam-a has an older cutoff → its directory (with recent mtime) should be scanned.
+        cam-b has a newer cutoff → its directory (with older mtime) should be skipped.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            # cam-a: cutoff 1700000000, directory mtime 1700000500 (after cutoff)
+            cam_a_dir, _ = self._make_segment(root, "cam-a")
+            os.utime(cam_a_dir, (1700000500, 1700000500))
+            os.utime(cam_a_dir.parent, (1700000500, 1700000500))  # hour dir
+            os.utime(cam_a_dir.parent.parent, (1700000500, 1700000500))  # day dir
+
+            # cam-b: cutoff 1700001000, directory mtime 1700000900 (before cutoff - 60)
+            cam_b_dir, _ = self._make_segment(root, "cam-b")
+            os.utime(cam_b_dir, (1700000900, 1700000900))
+            os.utime(cam_b_dir.parent, (1700000500, 1700000500))  # hour dir
+            os.utime(cam_b_dir.parent.parent, (1700000500, 1700000500))  # day dir
+
+            scan_state = {
+                "cam-a": 1700000000.0,  # older cutoff
+                "cam-b": 1700001000.0,  # newer cutoff — cam-b dir mtime is before this-60
+            }
+            segments = scan_recordings_dir(root, scan_state=scan_state)
+            cameras_found = {s["camera"] for s in segments}
+
+            assert "cam-a" in cameras_found, "cam-a should be scanned (dir mtime > cutoff)"
+            assert "cam-b" not in cameras_found, "cam-b should be skipped (dir mtime < cutoff - 60)"
+
+    def test_none_scan_state_does_full_scan(self):
+        """scan_state=None → full rglob, all cameras returned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_segment(root, "cam-x")
+            self._make_segment(root, "cam-y")
+
+            segments = scan_recordings_dir(root, scan_state=None)
+            cameras_found = {s["camera"] for s in segments}
+            assert "cam-x" in cameras_found
+            assert "cam-y" in cameras_found
