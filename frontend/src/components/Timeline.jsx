@@ -65,18 +65,18 @@ function useImageCache(frames) {
     if (!frames || frames.length === 0) return;
 
     const cache = cacheRef.current;
-    const activeTs = new Set(frames.map((f) => f.ts));
+    const activeUrls = new Set(frames.map((f) => f.url));
 
     for (const frame of frames) {
-      if (!cache.has(frame.ts)) {
+      if (!cache.has(frame.url)) {
         const img = new Image();
         img.src = frame.url;
-        cache.set(frame.ts, img);
+        cache.set(frame.url, img);
       }
     }
 
     for (const key of cache.keys()) {
-      if (!activeTs.has(key)) {
+      if (!activeUrls.has(key)) {
         cache.delete(key);
       }
     }
@@ -380,7 +380,7 @@ export default function Timeline({
   const displayTs = scrubTs ?? hoverTs ?? cursorTs;
   const nearestFrame = displayTs != null ? findNearestFrame(frames, displayTs) : null;
   const previewImg = nearestFrame
-    ? imageCacheRef.current.get(nearestFrame.ts)
+    ? imageCacheRef.current.get(nearestFrame.url)
     : null;
 
   const showPreview = scrubTs != null || cursorTs != null;
