@@ -32,7 +32,7 @@ from app.config import settings
 from app.models.database import get_db
 from app.models.schemas import CameraPreviewStatus, PreviewFrame, PreviewStrip
 from app.services.worker import enqueue_preview_request
-from app.routers.timeline import _build_hls_url, _resolve_hls_url
+from app.services.hls import _build_hls_url, _resolve_hls_url
 
 router = APIRouter(prefix="/api", tags=["preview"])
 log = logging.getLogger(__name__)
