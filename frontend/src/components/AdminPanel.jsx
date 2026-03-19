@@ -451,6 +451,11 @@ export default function AdminPanel({ open, onClose }) {
     return () => clearInterval(interval);
   }, [open]);
 
+  // ── Clear health poll on unmount ────────────────────────────────────────────
+  useEffect(() => {
+    return () => { if (healthPollRef.current) clearInterval(healthPollRef.current); };
+  }, []);
+
   // ── Log SSE stream ──────────────────────────────────────────────────────────
   const connectLogStream = useCallback(() => {
     if (sseRef.current) sseRef.current.close();
@@ -517,63 +522,89 @@ export default function AdminPanel({ open, onClose }) {
 
     const isRestart = action === 'restart';
 
+    // Shared reconnect path — used by stream errors, clean EOF without a
+    // done event, and outer fetch rejections (e.g. network down before 200).
+    const triggerReconnect = () => {
+      setReconnecting(true);
+      setScriptLines((prev) => [...prev, 'Server restarting… reconnecting']);
+      startHealthPoll(() => {
+        setReconnecting(false);
+        setRunning(null);
+        setScriptLines((prev) => [...prev, '✓ Back online']);
+        if (tab === 'logs') connectLogStream();
+      });
+    };
+
     fetch(`${API}/${action}`, { method: 'POST' })
       .then(async (res) => {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let gotDoneEvent = false;
 
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
-          const frames = buffer.split('\n\n');
-          buffer = frames.pop() ?? '';
+            buffer += decoder.decode(value, { stream: true });
+            const frames = buffer.split('\n\n');
+            buffer = frames.pop() ?? '';
 
-          for (const frame of frames) {
-            const eventMatch = frame.match(/^event: (\w+)/m);
-            const dataMatch  = frame.match(/^data: (.+)/m);
-            if (!eventMatch || !dataMatch) continue;
+            for (const frame of frames) {
+              const eventMatch = frame.match(/^event: (\w+)/m);
+              const dataMatch  = frame.match(/^data: (.+)/m);
+              if (!eventMatch || !dataMatch) continue;
 
-            const event = eventMatch[1];
-            const data  = dataMatch[1];
+              const event = eventMatch[1];
+              const data  = dataMatch[1];
 
-            if (event === 'line') {
-              setScriptLines((prev) => [...prev, data]);
-            } else if (event === 'done') {
-              let returncode = 0;
-              try { returncode = JSON.parse(data).returncode ?? 0; } catch {}
-              if ((action === 'update' || action === 'pull') && returncode === 0) {
-                setScriptLines((prev) => [...prev, '✓ Update complete. Restart required to apply changes.']);
-                setRunning(null);
-                setPendingRestart({ countdown: 5 });
-              } else {
-                setScriptLines((prev) => [...prev, '✓ Done.']);
+              if (event === 'line') {
+                setScriptLines((prev) => [...prev, data]);
+              } else if (event === 'done') {
+                gotDoneEvent = true;
+                let returncode = 0;
+                try { returncode = JSON.parse(data).returncode ?? 0; } catch {}
+                if ((action === 'update' || action === 'pull') && returncode === 0) {
+                  setScriptLines((prev) => [...prev, '✓ Update complete. Restart required to apply changes.']);
+                  setRunning(null);
+                  setPendingRestart({ countdown: 5 });
+                } else {
+                  setScriptLines((prev) => [...prev, '✓ Done.']);
+                  setRunning(null);
+                }
+              } else if (event === 'error') {
+                try {
+                  const parsed = JSON.parse(data);
+                  setScriptLines((prev) => [...prev, `✗ Error: ${parsed.msg}`]);
+                } catch {
+                  setScriptLines((prev) => [...prev, `✗ Error: ${data}`]);
+                }
                 setRunning(null);
               }
-            } else if (event === 'error') {
-              try {
-                const parsed = JSON.parse(data);
-                setScriptLines((prev) => [...prev, `✗ Error: ${parsed.msg}`]);
-              } catch {
-                setScriptLines((prev) => [...prev, `✗ Error: ${data}`]);
-              }
-              setRunning(null);
             }
           }
+        } catch {
+          // reader.read() threw — connection dropped mid-stream.
+          if (isRestart) {
+            triggerReconnect();
+          } else {
+            setScriptLines((prev) => [...prev, '✗ Connection lost.']);
+            setRunning(null);
+          }
+          return;
+        }
+
+        // Stream ended cleanly (done=true) but no `done` SSE event was received.
+        // This happens when uvicorn exits before it can flush the final frame.
+        if (isRestart && !gotDoneEvent) {
+          triggerReconnect();
         }
       })
       .catch((err) => {
+        // fetch() itself rejected — network error before any response bytes.
         if (isRestart) {
-          setReconnecting(true);
-          setScriptLines((prev) => [...prev, 'Server restarting… reconnecting']);
-          startHealthPoll(() => {
-            setReconnecting(false);
-            setRunning(null);
-            setScriptLines((prev) => [...prev, '✓ Back online']);
-            if (tab === 'logs') connectLogStream();
-          });
+          triggerReconnect();
         } else {
           setScriptLines((prev) => [...prev, `✗ Fetch error: ${err.message}`]);
           setRunning(null);
