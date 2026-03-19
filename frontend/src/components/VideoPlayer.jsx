@@ -21,6 +21,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import { formatTime } from '../utils/time.js';
+import { fetchPlaybackTarget } from '../utils/api.js';
 
 const LABEL_COLORS = {
   person: '#4CAF50',
@@ -29,6 +30,13 @@ const LABEL_COLORS = {
   cat: '#9C27B0',
   default: '#607D8B',
 };
+
+const WINDOW_EXTEND_THRESHOLD_SEC = 60;
+
+function _parseHlsWindowEnd(hlsUrl) {
+  const m = hlsUrl.match(/\/end\/(\d+)/);
+  return m ? parseFloat(m[1]) : null;
+}
 
 const HLS_CONFIG = {
   enableWorker: true,
@@ -56,6 +64,9 @@ export default function VideoPlayer({
   const hlsStartOffset = useRef(0);
   const isHlsActive = useRef(false);
   const loadingImgRef = useRef(null);
+  const hlsWindowEndTs = useRef(null);
+  const _hlsExtendingRef = useRef(false);
+  const _lastExtendTs = useRef(0);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [displayTime, setDisplayTime] = useState(null);
@@ -104,6 +115,75 @@ export default function VideoPlayer({
       hlsRef.current = null;
     }
     isHlsActive.current = false;
+    hlsWindowEndTs.current = null;
+    _hlsExtendingRef.current = false;
+  }
+
+  /** Load (or reload) an HLS source into the video element via hls.js or native HLS. */
+  function _loadHls(video, hlsUrl, seekOffset) {
+    hlsWindowEndTs.current = _parseHlsWindowEnd(hlsUrl);
+
+    if (Hls.isSupported()) {
+      _destroyHls();
+      setHlsMode(true);
+
+      const hls = new Hls(HLS_CONFIG);
+      hlsRef.current = hls;
+      isHlsActive.current = true;
+      // Re-parse after _destroyHls cleared it
+      hlsWindowEndTs.current = _parseHlsWindowEnd(hlsUrl);
+
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (seekOffset > 0) {
+          video.currentTime = seekOffset;
+        }
+        hlsStartOffset.current = video.currentTime;
+        video.play().catch(() => {});
+      });
+
+      hls.on(Hls.Events.ERROR, (_evt, data) => {
+        if (data.fatal) {
+          setError('HLS playback error — trying fallback');
+          _destroyHls();
+          setHlsMode(false);
+        }
+      });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS path (Safari) — reload src in-place
+      video.src = hlsUrl;
+      video.load();
+      const onMeta = () => {
+        if (seekOffset > 0) {
+          video.currentTime = seekOffset;
+        }
+        hlsStartOffset.current = video.currentTime;
+        video.play().catch(() => {});
+      };
+      video.addEventListener('loadedmetadata', onMeta, { once: true });
+    }
+  }
+
+  /** Extend the HLS window to cover currentAbsoluteTs + 24h, preserving playback. */
+  async function _extendHlsWindow(currentAbsoluteTs) {
+    if (_hlsExtendingRef.current) return;
+    if (Math.abs(currentAbsoluteTs - _lastExtendTs.current) < 30) return;
+    _hlsExtendingRef.current = true;
+    _lastExtendTs.current = currentAbsoluteTs;
+    const video = videoRef.current;
+    if (!video) { _hlsExtendingRef.current = false; return; }
+    try {
+      const newTarget = await fetchPlaybackTarget(camera, currentAbsoluteTs);
+      if (newTarget?.hls_url) {
+        _loadHls(video, newTarget.hls_url, Math.min(newTarget.offset_sec, 30));
+      }
+    } catch (e) {
+      console.warn('HLS window extension failed:', e);
+    } finally {
+      _hlsExtendingRef.current = false;
+    }
   }
 
   /**
@@ -114,6 +194,8 @@ export default function VideoPlayer({
     if (!video || !playbackTarget) return;
 
     setError(null);
+    _hlsExtendingRef.current = false;
+    _lastExtendTs.current = 0;
 
     // ── Path 1 & 2: Frigate HLS VOD ──────────────────────────────────────────
     if (playbackTarget.hls_url) {
@@ -122,59 +204,9 @@ export default function VideoPlayer({
       // So: seekOffset = requested_ts - window_start = min(offset_sec, 30)
       const seekOffset = Math.min(playbackTarget.offset_sec, 30);
 
-      if (Hls.isSupported()) {
-        // hls.js path (Chrome, Firefox, Edge, …)
-        _destroyHls();
-        setHlsMode(true);
-
-        const hls = new Hls(HLS_CONFIG);
-        hlsRef.current = hls;
-        isHlsActive.current = true;
-
-        hls.loadSource(playbackTarget.hls_url);
-        hls.attachMedia(video);
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (seekOffset > 0) {
-            video.currentTime = seekOffset;
-          }
-          hlsStartOffset.current = video.currentTime;
-          video.play().catch(() => {});
-        });
-
-        hls.on(Hls.Events.ERROR, (_evt, data) => {
-          if (data.fatal) {
-            setError('HLS playback error — trying fallback');
-            _destroyHls();
-            setHlsMode(false);
-          }
-        });
-
+      if (Hls.isSupported() || video.canPlayType('application/vnd.apple.mpegurl')) {
+        _loadHls(video, playbackTarget.hls_url, seekOffset);
         return () => { _destroyHls(); };
-
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native HLS path (Safari)
-        _destroyHls();
-        setHlsMode(true);
-        isHlsActive.current = true;
-
-        video.src = playbackTarget.hls_url;
-        video.load();
-
-        const onMeta = () => {
-          if (seekOffset > 0) {
-            video.currentTime = seekOffset;
-          }
-          hlsStartOffset.current = video.currentTime;
-          video.play().catch(() => {});
-        };
-        video.addEventListener('loadedmetadata', onMeta, { once: true });
-
-        return () => {
-          video.removeEventListener('loadedmetadata', onMeta);
-          isHlsActive.current = false;
-          setHlsMode(false);
-        };
       }
     }
 
@@ -233,10 +265,21 @@ export default function VideoPlayer({
 
     setDisplayTime(absoluteTs);
     if (onTimeUpdate) onTimeUpdate(absoluteTs);
+
+    if (isHlsActive.current && hlsWindowEndTs.current && !_hlsExtendingRef.current) {
+      const secsUntilWindowEnd = hlsWindowEndTs.current - absoluteTs;
+      if (secsUntilWindowEnd > 0 && secsUntilWindowEnd < WINDOW_EXTEND_THRESHOLD_SEC) {
+        _extendHlsWindow(absoluteTs);
+      }
+    }
   }, [playbackTarget, onTimeUpdate]);
 
   const handleEnded = useCallback(() => {
     if (isHlsActive.current) {
+      if (displayTime && !_hlsExtendingRef.current) {
+        _extendHlsWindow(displayTime);
+        return;
+      }
       setIsPlaying(false);
       return;
     }

@@ -129,3 +129,42 @@ async def test_segment_info_endpoint(client, test_app):
 async def test_segment_info_not_found(client):
     resp = await client.get("/api/segment/999999/info")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# HLS window is at least 86000 seconds wide (24-hour default)
+# ---------------------------------------------------------------------------
+
+async def test_hls_url_has_24h_window(client, test_app, monkeypatch):
+    from app import config
+    db_path = config.settings.database_path
+    start_ts = 1700400000.0
+    end_ts = start_ts + 20.0
+    _insert_segment(db_path, "window-cam", start_ts, end_ts)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.head = AsyncMock(return_value=mock_response)
+
+    with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+        resp = await client.get(
+            "/api/playback",
+            params={"camera": "window-cam", "ts": start_ts + 5.0},
+        )
+
+    assert resp.status_code == 200
+    hls_url = resp.json()["hls_url"]
+    assert hls_url is not None
+
+    # Parse /start/{s}/end/{e} from the URL and confirm window >= 86000s
+    import re
+    m = re.search(r"/start/(\d+)/end/(\d+)", hls_url)
+    assert m is not None, f"Could not parse start/end from HLS URL: {hls_url}"
+    window_sec = int(m.group(2)) - int(m.group(1))
+    assert window_sec >= 86000, (
+        f"Expected HLS window >= 86000s (24h), got {window_sec}s in URL: {hls_url}"
+    )
