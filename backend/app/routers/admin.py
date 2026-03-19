@@ -239,31 +239,74 @@ async def admin_reindex(since_hours: float = 72.0):
 
     Bypasses scan_state entirely — does a full directory walk of all
     recording directories whose date/hour falls within the window.
-    This finds segments that were missed by the incremental scanner.
-
-    Args:
-        since_hours: How many hours back to scan. Default 72.
-
-    Returns SSE stream of progress.
+    Streams SSE progress events: discovered, progress, done/error.
     """
-    from app.services.indexer import index_segments_since_async
+    import queue
+    import threading
     import datetime as _dt
+    from app.services.indexer import index_segments_since
 
-    async def _generate():
-        since_ts = time.time() - (since_hours * 3600)
-        since_label = _dt.datetime.utcfromtimestamp(since_ts).strftime('%Y-%m-%d %H:%M')
-        yield _sse("line", f"Starting targeted reindex: last {since_hours:.0f}h "
-                           f"(since {since_label} UTC)")
+    since_ts = time.time() - (since_hours * 3600)
+    progress_q: queue.Queue = queue.Queue()
+
+    def _progress(tag, done, total, extra):
+        progress_q.put({"tag": tag, "done": done, "total": total, "extra": extra})
+
+    def _run():
         try:
-            result = await index_segments_since_async(since_ts)
-            total = sum(result.values())
-            for camera, count in sorted(result.items()):
-                if count > 0:
-                    yield _sse("line", f"  {camera}: +{count} new segments")
-            yield _sse_json("done", {"returncode": 0, "total": total, "cameras": len(result)})
+            result = index_segments_since(since_ts, progress_callback=_progress)
+            progress_q.put({"tag": "__done__", "result": result})
         except Exception as exc:
             log.exception("Reindex error: %s", exc)
-            yield _sse_json("error", {"returncode": -1, "msg": str(exc)})
+            progress_q.put({"tag": "__error__", "msg": str(exc)})
+
+    thread = threading.Thread(target=_run, daemon=True)
+
+    async def _generate():
+        since_label = _dt.datetime.utcfromtimestamp(since_ts).strftime('%Y-%m-%d %H:%M')
+        yield _sse("line", f"Scanning last {since_hours:.0f}h "
+                           f"(since {since_label} UTC)...")
+        thread.start()
+
+        while True:
+            try:
+                msg = progress_q.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.1)
+                continue
+
+            tag = msg["tag"]
+
+            if tag == "__discovered__":
+                total = msg["total"]
+                by_camera = msg["extra"]
+                if total == 0:
+                    yield _sse("line", "No new segments found in this time window.")
+                else:
+                    yield _sse("line", f"Found {total} new segments to index:")
+                    for cam, count in sorted(by_camera.items()):
+                        yield _sse("line", f"  {cam}: {count} segments")
+                yield _sse_json("discovered", {"total": total, "by_camera": by_camera})
+
+            elif tag == "__batch__":
+                done = msg["done"]
+                total = msg["total"]
+                pct = int(done / total * 100) if total > 0 else 100
+                yield _sse_json("progress", {"done": done, "total": total, "pct": pct})
+
+            elif tag == "__done__":
+                result = msg["result"]
+                total = sum(result.values())
+                yield _sse_json("done", {
+                    "returncode": 0,
+                    "total": total,
+                    "cameras": len(result),
+                })
+                break
+
+            elif tag == "__error__":
+                yield _sse_json("error", {"returncode": -1, "msg": msg["msg"]})
+                break
 
     return StreamingResponse(
         _generate(),

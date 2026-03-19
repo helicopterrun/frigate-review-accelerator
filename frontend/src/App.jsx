@@ -105,6 +105,7 @@ function LabelFilterPills({ availableLabels, activeLabels, onToggle, onToggleAll
 
 export default function App() {
   const isMobile = useIsMobile();
+  const [opsOpen, setOpsOpen] = useState(false);
   const [cameras, setCameras] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState(null);
   const [selectedCameras, setSelectedCameras] = useState([]);
@@ -123,6 +124,13 @@ export default function App() {
   const [rangeEnd, setRangeEnd] = useState(nowTs());
 
   const [gotoValue, setGotoValue] = useState(() => toDatetimeLocal(nowTs()));
+
+  // Escape key closes ops drawer
+  useEffect(() => {
+    const handler = (e) => { if (e.key === 'Escape') setOpsOpen(false); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   // Mobile header expand/collapse
   const [healthExpanded, setHealthExpanded] = useState(false);
@@ -397,10 +405,16 @@ export default function App() {
               }} />
               <span style={{ fontSize: 17, fontWeight: 600, color: '#e0e0e0' }}>Frigate</span>
             </div>
-            <button
-              onClick={() => setHealthExpanded(v => !v)}
-              style={{ background: 'none', border: 'none', color: '#666', fontSize: 18, cursor: 'pointer', padding: '0 4px' }}
-            >⋯</button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={() => setHealthExpanded(v => !v)}
+                style={{ background: 'none', border: 'none', color: '#666', fontSize: 18, cursor: 'pointer', padding: '0 4px' }}
+              >⋯</button>
+              <button
+                onClick={() => setOpsOpen(true)}
+                style={{ background: 'none', border: 'none', color: '#666', fontSize: 20, cursor: 'pointer', padding: '0 4px' }}
+              >☰</button>
+            </div>
           </div>
           {healthExpanded && health && (
             <div style={{ fontSize: 13, color: '#888', paddingBottom: 4 }}>
@@ -413,28 +427,45 @@ export default function App() {
       ) : (
         <div style={styles.header}>
           <h1 style={styles.title}>Frigate Review Accelerator</h1>
-          {health && (
-            <div style={styles.healthBadge}>
-              <span
-                style={{
-                  display: 'inline-block',
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  background: health.frigate_reachable ? '#4CAF50' : '#f44',
-                  marginRight: 6,
-                }}
-              />
-              {health.total_segments.toLocaleString()} segs
-              {' · '}
-              {health.total_previews.toLocaleString()} previews
-              {health.pending_previews > 0 && (
-                <span style={{ color: '#888' }}>
-                  {' · '}{health.pending_previews.toLocaleString()} pending
-                </span>
-              )}
-            </div>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {health && (
+              <div style={styles.healthBadge}>
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: health.frigate_reachable ? '#4CAF50' : '#f44',
+                    marginRight: 6,
+                  }}
+                />
+                {health.total_segments.toLocaleString()} segs
+                {' · '}
+                {health.total_previews.toLocaleString()} previews
+                {health.pending_previews > 0 && (
+                  <span style={{ color: '#888' }}>
+                    {' · '}{health.pending_previews.toLocaleString()} pending
+                  </span>
+                )}
+              </div>
+            )}
+            <button
+              onClick={() => setOpsOpen(true)}
+              style={{
+                background: 'none',
+                border: '1px solid #2a2d37',
+                color: '#666',
+                borderRadius: 6,
+                padding: '4px 10px',
+                cursor: 'pointer',
+                fontSize: 16,
+                lineHeight: 1,
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}
+              title="Ops panel"
+            >☰</button>
+          </div>
         </div>
       )}
 
@@ -718,7 +749,7 @@ export default function App() {
         </div>
       )}
 
-      <AdminPanel />
+      <AdminPanel open={opsOpen} onClose={() => setOpsOpen(false)} />
     </div>
   );
 }
