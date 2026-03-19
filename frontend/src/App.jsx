@@ -10,7 +10,7 @@
  *   - SplitView path unchanged
  */
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 
 function useIsMobile(breakpoint = 768) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < breakpoint);
@@ -178,6 +178,14 @@ export default function App() {
   // Event snapshot state (from prev/next navigation)
   const [activeEventSnapshot, setActiveEventSnapshot] = useState(null);
 
+  // Refs that track the latest cursorTs / playbackTarget without being deps
+  // of handleSegmentAdvance — avoids recreating the callback (and therefore
+  // VideoPlayer's onSegmentAdvance prop) on every timeupdate event.
+  const cursorTsRef = useRef(null);
+  const playbackTargetRef = useRef(null);
+  useEffect(() => { cursorTsRef.current = cursorTs; }, [cursorTs]);
+  useEffect(() => { playbackTargetRef.current = playbackTarget; }, [playbackTarget]);
+
   // ─── Init: load cameras + health ───
   useEffect(() => {
     let cancelled = false;
@@ -288,21 +296,28 @@ export default function App() {
   );
 
   // ─── Segment advance: fixes cursor drift bug ───
+  // TODO: add test verifying onSegmentAdvance prop is stable across
+  // cursorTs updates (does not change reference on timeupdate events)
   const handleSegmentAdvance = useCallback(
     async (nextSegmentId) => {
       if (!selectedCamera) return;
       try {
-        const nextTs = playbackTarget?.segment_end_ts ?? (cursorTs ?? 0);
+        const nextTs = playbackTargetRef.current?.segment_end_ts ?? (cursorTsRef.current ?? 0);
         const target = await fetchPlaybackTarget(selectedCamera, nextTs + 0.1);
         setPlaybackTarget(target);
       } catch {}
     },
-    [selectedCamera, playbackTarget, cursorTs]
+    [selectedCamera]   // no longer depends on cursorTs or playbackTarget
   );
 
   // ─── Playback time tracking ───
   const handlePlaybackTimeUpdate = useCallback((absoluteTs) => {
     setCursorTs(absoluteTs);
+  }, []);
+
+  // ─── Playback start: dismiss event snapshot overlay ───
+  const handlePlaybackStart = useCallback(() => {
+    setActiveEventSnapshot(null);
   }, []);
 
   // ─── Camera switch ───
@@ -688,7 +703,7 @@ export default function App() {
                 isMobile={isMobile}
                 eventSnapshot={activeEventSnapshot}
                 onSeek={handleSeek}
-                onPlaybackStart={() => setActiveEventSnapshot(null)}
+                onPlaybackStart={handlePlaybackStart}
               />
             </div>
 
