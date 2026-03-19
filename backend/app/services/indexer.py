@@ -319,6 +319,7 @@ def index_segments_since(
     since_ts: float,
     recordings_path: Path | None = None,
     db_path: Path | None = None,
+    progress_callback=None,  # callable(tag, done, total, extra) | None
 ) -> dict[str, int]:
     """Index all segments newer than since_ts, bypassing scan_state.
 
@@ -326,6 +327,10 @@ def index_segments_since(
     this function walks the directory tree by DATE and only enters directories
     whose date/hour falls within [since_ts, now]. This guarantees it finds
     any segments that the incremental scanner missed.
+
+    progress_callback(tag, done, total, extra) is called:
+      - Once after discovery: tag="__discovered__", done=0, total=N, extra={camera: count}
+      - After each batch commit: tag="__batch__", done=processed_so_far, total=N, extra={}
 
     Returns {camera: new_segment_count}.
     """
@@ -403,15 +408,24 @@ def index_segments_since(
     if not new_segments:
         log.info("Targeted reindex: no new segments found in last %.0f hours",
                  (now - since_ts) / 3600)
+        if progress_callback:
+            progress_callback("__discovered__", 0, 0, {})
         conn.close()
         return {}
 
     log.info("Targeted reindex: found %d new segments in last %.0f hours",
              len(new_segments), (now - since_ts) / 3600)
 
+    if progress_callback:
+        by_camera: dict[str, int] = {}
+        for seg in new_segments:
+            by_camera[seg["camera"]] = by_camera.get(seg["camera"], 0) + 1
+        progress_callback("__discovered__", 0, len(new_segments), by_camera)
+
     now_ts = time.time()
     camera_counts: dict[str, int] = {}
     batch_size = 200
+    processed_so_far = 0
 
     for i in range(0, len(new_segments), batch_size):
         batch = new_segments[i:i + batch_size]
@@ -437,17 +451,22 @@ def index_segments_since(
             rows,
         )
         conn.commit()
+        processed_so_far += len(batch)
         log.info("Reindex batch %d-%d / %d", i, i + len(batch), len(new_segments))
+        if progress_callback:
+            progress_callback("__batch__", processed_so_far, len(new_segments), {})
 
     conn.close()
     log.info("Targeted reindex complete: %s", camera_counts)
     return camera_counts
 
 
-async def index_segments_since_async(since_ts: float) -> dict[str, int]:
+async def index_segments_since_async(since_ts: float, progress_callback=None) -> dict[str, int]:
     """Async wrapper for targeted reindex — runs in thread pool."""
+    import functools
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, index_segments_since, since_ts)
+    fn = functools.partial(index_segments_since, since_ts, progress_callback=progress_callback)
+    return await loop.run_in_executor(None, fn)
 
 
 # CLI entry point

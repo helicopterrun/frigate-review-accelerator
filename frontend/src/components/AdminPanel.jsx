@@ -1,10 +1,12 @@
 /**
  * AdminPanel — Operational controls and live log viewer.
  *
- * v2 additions:
- *   - Restart reconnect UX: detects network drop during restart, polls
- *     /api/health until the server is back, then shows "✓ Back online".
- *   - Progress tab: per-camera preview generation progress bars.
+ * Rendered as a full-height side drawer from the right, opened by the
+ * hamburger button in the app header. Accepts open/onClose props.
+ *
+ * v3 additions:
+ *   - Drawer layout replaces fixed bottom-right overlay
+ *   - Reindex tab with live progress bar (discovered + batch events)
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -140,6 +142,8 @@ function ReindexTab() {
   const [running, setRunning] = useState(false);
   const [lines, setLines] = useState([]);
   const [customHours, setCustomHours] = useState('');
+  const [reindexProgress, setReindexProgress] = useState(null);
+  // null | { done: number, total: number, pct: number }
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -150,6 +154,7 @@ function ReindexTab() {
     if (running) return;
     setRunning(true);
     setLines([`▶ Reindexing last ${hours}h…`]);
+    setReindexProgress(null);
 
     try {
       const res = await fetch(`${API}/reindex?since_hours=${hours}`, { method: 'POST' });
@@ -174,7 +179,20 @@ function ReindexTab() {
 
           if (event === 'line') {
             setLines(prev => [...prev, data]);
+          } else if (event === 'discovered') {
+            try {
+              const p = JSON.parse(data);
+              if (p.total > 0) {
+                setReindexProgress({ done: 0, total: p.total, pct: 0 });
+              }
+            } catch {}
+          } else if (event === 'progress') {
+            try {
+              const p = JSON.parse(data);
+              setReindexProgress({ done: p.done, total: p.total, pct: p.pct });
+            } catch {}
           } else if (event === 'done') {
+            setReindexProgress(prev => prev ? { ...prev, pct: 100, done: prev.total } : null);
             try {
               const parsed = JSON.parse(data);
               setLines(prev => [
@@ -218,6 +236,33 @@ function ReindexTab() {
         bypassing the incremental scanner. Use this when the timeline shows
         gaps despite recordings existing in Frigate.
       </div>
+
+      {/* Progress bar — visible after discovery */}
+      {reindexProgress && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            marginBottom: 4, fontSize: 10, fontFamily: 'monospace', color: '#666',
+          }}>
+            <span>
+              {reindexProgress.done.toLocaleString()} / {reindexProgress.total.toLocaleString()} segments
+            </span>
+            <span>{reindexProgress.pct}%</span>
+          </div>
+          <div style={{
+            height: 6, background: '#1a1d27', borderRadius: 3,
+            overflow: 'hidden', border: '1px solid #2a2d37',
+          }}>
+            <div style={{
+              height: '100%',
+              width: `${reindexProgress.pct}%`,
+              background: reindexProgress.pct === 100 ? '#4CAF50' : '#4ecdc4',
+              borderRadius: 3,
+              transition: 'width 0.3s ease',
+            }} />
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
         {REINDEX_PRESETS.map(({ label, hours, description }) => {
@@ -375,8 +420,7 @@ function LogPane({ lines, isLive, filter, onFilterChange }) {
 }
 
 // ── AdminPanel ────────────────────────────────────────────────────────────────
-export default function AdminPanel() {
-  const [open, setOpen] = useState(false);
+export default function AdminPanel({ open, onClose }) {
   const [tab, setTab] = useState('logs');
   const [status, setStatus] = useState(null);
   const [logLines, setLogLines] = useState([]);
@@ -512,14 +556,12 @@ export default function AdminPanel() {
       })
       .catch((err) => {
         if (isRestart) {
-          // Network drop during restart is expected — server killed itself
           setReconnecting(true);
           setScriptLines((prev) => [...prev, 'Server restarting… reconnecting']);
           startHealthPoll(() => {
             setReconnecting(false);
             setRunning(null);
             setScriptLines((prev) => [...prev, '✓ Back online']);
-            // Re-establish log stream
             if (tab === 'logs') connectLogStream();
           });
         } else {
@@ -530,59 +572,102 @@ export default function AdminPanel() {
   }, [running, tab, startHealthPoll, connectLogStream]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
+  if (!open) return null;
+
   return (
-    <div style={s.wrapper}>
-      <button onClick={() => setOpen((v) => !v)} style={s.toggleBtn}>
-        {open ? '✕ Close Ops' : '⚙ Ops'}
-      </button>
+    <>
+      {/* Backdrop */}
+      <div
+        onClick={onClose}
+        style={{
+          position: 'fixed', inset: 0,
+          background: 'rgba(0,0,0,0.4)',
+          zIndex: 999,
+        }}
+      />
+      {/* Drawer */}
+      <div style={{
+        position: 'fixed',
+        top: 0, right: 0,
+        width: Math.min(700, window.innerWidth),
+        height: '100vh',
+        background: '#0d1017',
+        border: '1px solid #2a2d37',
+        boxShadow: '-8px 0 32px rgba(0,0,0,0.6)',
+        zIndex: 1000,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
+        fontFamily: 'monospace',
+        fontSize: 12,
+      }}>
+        {/* Drawer header */}
+        <div style={{
+          display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 16px',
+          borderBottom: '1px solid #2a2d37',
+          background: '#13161f',
+          flexShrink: 0,
+        }}>
+          <span style={{ color: '#e0e0e0', fontWeight: 600, fontSize: 14 }}>
+            ⚙ Ops Panel
+          </span>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'none', border: 'none',
+              color: '#666', fontSize: 20, cursor: 'pointer',
+              padding: '0 4px', lineHeight: 1,
+            }}
+          >✕</button>
+        </div>
 
-      {open && (
-        <div style={s.panel}>
-          <div style={s.panelHeader}>
-            <span style={s.panelTitle}>Ops Panel</span>
+        {/* Action buttons */}
+        <div style={{ ...s.actionRow, padding: '10px 14px', flexShrink: 0 }}>
+          {[
+            { id: 'restart', label: '↺ Restart backend', color: '#4ecdc4' },
+            { id: 'update',  label: '↑ Update deps',     color: '#ffd93d' },
+            { id: 'pull',    label: '⬇ Git pull',        color: '#c77dff' },
+          ].map(({ id, label, color }) => (
+            <button
+              key={id}
+              onClick={() => runScript(id)}
+              disabled={!!running}
+              style={{
+                ...s.actionBtn,
+                borderColor: color,
+                color: running === id ? color : '#888',
+                opacity: running && running !== id ? 0.4 : 1,
+              }}
+            >
+              {running === id
+                ? reconnecting ? 'Reconnecting…' : `${label}…`
+                : label}
+            </button>
+          ))}
+        </div>
 
-            <div style={s.actionRow}>
-              {[
-                { id: 'restart', label: '↺ Restart backend', color: '#4ecdc4' },
-                { id: 'update',  label: '↑ Update deps',     color: '#ffd93d' },
-                { id: 'pull',    label: '⬇ Git pull',        color: '#c77dff' },
-              ].map(({ id, label, color }) => (
-                <button
-                  key={id}
-                  onClick={() => runScript(id)}
-                  disabled={!!running}
-                  style={{
-                    ...s.actionBtn,
-                    borderColor: color,
-                    color: running === id ? color : '#888',
-                    opacity: running && running !== id ? 0.4 : 1,
-                  }}
-                >
-                  {running === id
-                    ? reconnecting ? 'Reconnecting…' : `${label}…`
-                    : label}
-                </button>
-              ))}
-            </div>
+        {/* Tab strip */}
+        <div style={{ ...s.tabs, borderBottom: '1px solid #2a2d37', flexShrink: 0 }}>
+          {['logs', 'status', 'progress', 'reindex', 'script'].map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                ...s.tab,
+                borderBottom: tab === t ? '2px solid #4ecdc4' : '2px solid transparent',
+                color: tab === t ? '#4ecdc4' : '#666',
+              }}
+            >
+              {t}
+              {t === 'script' && running && <span style={s.runningDot} />}
+            </button>
+          ))}
+        </div>
 
-            <div style={s.tabs}>
-              {['logs', 'status', 'progress', 'reindex', 'script'].map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  style={{
-                    ...s.tab,
-                    borderBottom: tab === t ? '2px solid #4ecdc4' : '2px solid transparent',
-                    color: tab === t ? '#4ecdc4' : '#666',
-                  }}
-                >
-                  {t}
-                  {t === 'script' && running && <span style={s.runningDot} />}
-                </button>
-              ))}
-            </div>
-          </div>
-
+        {/* Tab content — scrollable */}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           {tab === 'logs' && (
             <LogPane
               lines={logLines}
@@ -603,7 +688,7 @@ export default function AdminPanel() {
           {tab === 'reindex' && <ReindexTab />}
 
           {tab === 'script' && (
-            <div style={{ ...s.logOutput, height: 280 }}>
+            <div style={{ ...s.logOutput, flex: 1 }}>
               {scriptLines.map((line, i) => (
                 <div
                   key={i}
@@ -628,61 +713,14 @@ export default function AdminPanel() {
             </div>
           )}
         </div>
-      )}
-    </div>
+      </div>
+    </>
   );
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const s = {
-  wrapper: {
-    position: 'fixed',
-    bottom: 0,
-    right: 0,
-    zIndex: 1000,
-    fontFamily: 'monospace',
-    fontSize: 12,
-  },
-  toggleBtn: {
-    position: 'absolute',
-    bottom: 12,
-    right: 12,
-    background: '#1a1d27',
-    border: '1px solid #333',
-    color: '#aaa',
-    padding: '6px 14px',
-    borderRadius: 6,
-    cursor: 'pointer',
-    fontSize: 12,
-    fontFamily: 'monospace',
-  },
-  panel: {
-    position: 'fixed',
-    bottom: 48,
-    right: 12,
-    width: 680,
-    maxWidth: 'calc(100vw - 24px)',
-    background: '#0d1017',
-    border: '1px solid #2a2d37',
-    borderRadius: 8,
-    boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-    display: 'flex',
-    flexDirection: 'column',
-    overflow: 'hidden',
-  },
-  panelHeader: {
-    background: '#13161f',
-    borderBottom: '1px solid #2a2d37',
-    padding: '10px 14px 0',
-  },
-  panelTitle: {
-    color: '#e0e0e0',
-    fontWeight: 600,
-    fontSize: 13,
-    display: 'block',
-    marginBottom: 8,
-  },
-  actionRow: { display: 'flex', gap: 8, marginBottom: 10 },
+  actionRow: { display: 'flex', gap: 8 },
   actionBtn: {
     background: 'transparent',
     border: '1px solid',
@@ -693,7 +731,7 @@ const s = {
     fontFamily: 'monospace',
     transition: 'opacity 0.15s',
   },
-  tabs: { display: 'flex', gap: 0 },
+  tabs: { display: 'flex', gap: 0, background: '#13161f' },
   tab: {
     background: 'transparent',
     border: 'none',
@@ -703,7 +741,7 @@ const s = {
     fontFamily: 'monospace',
     position: 'relative',
   },
-  logWrapper: { display: 'flex', flexDirection: 'column', height: 320 },
+  logWrapper: { display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' },
   logToolbar: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -711,6 +749,7 @@ const s = {
     padding: '6px 10px',
     borderBottom: '1px solid #1a1d27',
     background: '#0f1117',
+    flexShrink: 0,
   },
   filterButtons: { display: 'flex', gap: 4 },
   filterBtn: {
@@ -732,7 +771,7 @@ const s = {
     fontSize: 11,
     lineHeight: '1.6',
   },
-  statusPane: { padding: 14, overflowY: 'auto', maxHeight: 320 },
+  statusPane: { padding: 14, overflowY: 'auto', flex: 1 },
   statusGrid: { display: 'flex', flexDirection: 'column', gap: 8 },
   statusRow: {
     display: 'flex',
