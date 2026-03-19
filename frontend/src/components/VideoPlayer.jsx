@@ -308,7 +308,7 @@ export default function VideoPlayer({
               <img
                 src={displayedPreviewUrl}
                 alt="Preview"
-                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
               />
             )}
           </div>
@@ -329,7 +329,7 @@ export default function VideoPlayer({
             }}
           >
             <span style={{ fontSize: 52, color: '#2a2d37' }}>▶</span>
-            <span style={{ color: '#3a3d47', fontSize: 13, fontFamily: 'monospace' }}>
+            <span style={{ color: '#3a3d47', fontSize: 17, fontFamily: 'monospace' }}>
               Hover timeline to preview · click to play
             </span>
           </div>
@@ -358,18 +358,18 @@ export default function VideoPlayer({
             padding: '4px 16px',
             borderRadius: 4,
             cursor: hasTarget ? 'pointer' : 'default',
-            fontSize: 13,
+            fontSize: 17,
           }}
         >
           {isPlaying ? '⏸ Pause' : '▶ Play'}
         </button>
 
-        <span style={{ color: '#aaa', fontSize: 13, fontFamily: 'monospace' }}>
+        <span style={{ color: '#aaa', fontSize: 17, fontFamily: 'monospace' }}>
           {displayTime != null ? formatTime(displayTime) : '--:--:--'}
         </span>
 
         {hasTarget && (
-          <span style={{ color: '#555', fontSize: 12, marginLeft: 'auto' }}>
+          <span style={{ color: '#555', fontSize: 16, marginLeft: 'auto' }}>
             segment {playbackTarget.segment_id}
             {!hlsMode && playbackTarget.next_segment_id && ' → ' + playbackTarget.next_segment_id}
             {' · '}
@@ -380,7 +380,7 @@ export default function VideoPlayer({
         {hasTarget && (
           <span
             style={{
-              fontSize: 11,
+              fontSize: 15,
               padding: '2px 6px',
               borderRadius: 10,
               background: hlsMode ? 'rgba(76,175,80,0.15)' : 'rgba(100,100,100,0.15)',
@@ -394,13 +394,13 @@ export default function VideoPlayer({
         )}
 
         {error && (
-          <span style={{ color: '#f44', fontSize: 12, marginLeft: 'auto' }}>
+          <span style={{ color: '#f44', fontSize: 16, marginLeft: 'auto' }}>
             {error}
           </span>
         )}
 
         {!hasTarget && !error && (
-          <span style={{ color: '#555', fontSize: 12 }}>
+          <span style={{ color: '#555', fontSize: 16 }}>
             Click timeline to seek
           </span>
         )}
