@@ -98,6 +98,30 @@ class TestEventDensity:
         assert all(d["count"] == 0 for d in density)
 
 
+class TestAutoResolution:
+    def test_auto_resolution_exact_thresholds(self):
+        """Return values for documented boundary values must match the table exactly."""
+        from app.services.time_index import TimeIndex
+        # boundary values: just inside each tier
+        assert TimeIndex.auto_resolution(1800) == 10    # < 1h → 10s
+        assert TimeIndex.auto_resolution(7200) == 30    # < 4h → 30s
+        assert TimeIndex.auto_resolution(21600) == 60   # < 12h → 60s
+        assert TimeIndex.auto_resolution(43200) == 120  # < 24h → 120s
+        assert TimeIndex.auto_resolution(86400) == 300  # < 72h → 300s
+        assert TimeIndex.auto_resolution(259200) == 600 # >= 72h → 600s
+
+    def test_auto_resolution_bucket_count_in_budget(self):
+        """For each range, bucket count must fall within 50–900."""
+        from app.services.time_index import TimeIndex
+        ranges = [3600, 14400, 43200, 86400, 259200, 604800]
+        for range_sec in ranges:
+            res = TimeIndex.auto_resolution(range_sec)
+            bucket_count = range_sec / res
+            assert 50 <= bucket_count <= 900, (
+                f"range={range_sec}s, res={res}s → {bucket_count} buckets (out of budget)"
+            )
+
+
 class TestGetTimeIndexSingleton:
     def test_get_time_index_singleton(self, monkeypatch, tmp_path):
         """Two calls to get_time_index() must return the same object."""

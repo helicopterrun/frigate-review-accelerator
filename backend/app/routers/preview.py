@@ -209,31 +209,38 @@ async def get_preview_frame(camera: str, timestamp: float):
 
 
 async def _try_frigate_event_snapshot(camera: str, timestamp: float) -> bytes | None:
-    """Phase 7: look up a Frigate event snapshot overlapping this timestamp.
+    """Serve the best Frigate event snapshot overlapping this timestamp.
 
-    Queries DB for an event with has_snapshot=1 whose window covers
-    timestamp ± 5 seconds, then fetches the snapshot JPEG from Frigate.
-    Returns bytes on success, None on any failure — never raises.
+    Selection: highest confidence score; ties broken by temporal proximity.
+    If a snapshot is returned, the caller MUST NOT enqueue a generation job —
+    Frigate already has the best available frame.
     """
     try:
         async with get_db() as db:
             rows = await db.execute_fetchall(
-                """SELECT id FROM events
+                """SELECT id, score
+                   FROM events
                    WHERE camera = ?
-                     AND has_snapshot = 1
                      AND start_ts <= ?
                      AND (end_ts IS NULL OR end_ts >= ?)
-                   ORDER BY ABS(start_ts - ?)
+                     AND has_snapshot = 1
+                   ORDER BY score DESC, ABS(start_ts - ?) ASC
                    LIMIT 1""",
                 (camera, timestamp + 5.0, timestamp - 5.0, timestamp),
             )
         if not rows:
             return None
-        event_id = rows[0][0]
+        event_id, score = rows[0]
+        # Verify this URL shape against installed Frigate version
+        # and existing working code before changing the path.
         url = f"{settings.frigate_api_url}/api/events/{event_id}/snapshot.jpg"
         async with httpx.AsyncClient(timeout=3.0) as client:
             r = await client.get(url)
             if r.status_code == 200:
+                log.debug(
+                    "Phase 7: snapshot event=%s score=%.2f ts=%.0f",
+                    event_id, score or 0.0, timestamp,
+                )
                 return r.content
     except Exception:
         pass
@@ -340,6 +347,8 @@ async def get_preview_strip(
 
 
 @router.get("/segment/{segment_id}/stream")
+# MP4 fallback — only used when Frigate VOD is unreachable (hls_url=None).
+# Preserve this endpoint. Do not delete it.
 async def stream_segment(segment_id: int):
     """Stream an MP4 segment for playback.
 

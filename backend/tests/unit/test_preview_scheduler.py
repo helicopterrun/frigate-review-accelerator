@@ -127,3 +127,86 @@ class TestEnqueueViewport:
         scheduler.enqueue_viewport("cam", 1700000000.0, 1700000010.0)
         second = scheduler.enqueue_viewport("cam", 1700000000.0, 1700000010.0)
         assert second == 0
+
+
+class TestBackpressure:
+    def _fill_to_depth(self, scheduler, depth: int):
+        """Enqueue `depth` unique VIEWPORT jobs."""
+        from app.services.preview_scheduler import Priority
+        for i in range(depth):
+            scheduler.enqueue("cam", float(i * 2), Priority.VIEWPORT)
+
+    def test_backpressure_drops_background_at_max_queue_depth(self, scheduler, monkeypatch):
+        """BACKGROUND jobs are dropped once queue reaches MAX_QUEUE_DEPTH."""
+        import app.services.preview_scheduler as sched_mod
+        from app.services.preview_scheduler import Priority
+        monkeypatch.setattr(sched_mod, "MAX_QUEUE_DEPTH", 5)
+        monkeypatch.setattr(sched_mod, "HARD_MAX_QUEUE_DEPTH", 100)
+
+        self._fill_to_depth(scheduler, 5)
+        assert scheduler.stats()["queue_depth"] == 5
+
+        result = scheduler.enqueue("cam", 99998.0, Priority.BACKGROUND)
+        assert result is False
+        assert scheduler.stats()["skipped_backpressure"] == 1
+
+    def test_backpressure_allows_viewport_at_max_queue_depth(self, scheduler, monkeypatch):
+        """VIEWPORT jobs are always admitted even at MAX_QUEUE_DEPTH."""
+        import app.services.preview_scheduler as sched_mod
+        from app.services.preview_scheduler import Priority
+        monkeypatch.setattr(sched_mod, "MAX_QUEUE_DEPTH", 5)
+        monkeypatch.setattr(sched_mod, "HARD_MAX_QUEUE_DEPTH", 100)
+
+        self._fill_to_depth(scheduler, 5)
+
+        # A new VIEWPORT job at a unique ts should be admitted
+        result = scheduler.enqueue("cam", 99998.0, Priority.VIEWPORT)
+        assert result is True
+
+    def test_hard_cap_drops_near_viewport_at_hard_max(self, scheduler, monkeypatch):
+        """At HARD_MAX_QUEUE_DEPTH, NEAR_VIEWPORT (and above) are dropped."""
+        import app.services.preview_scheduler as sched_mod
+        from app.services.preview_scheduler import Priority
+        monkeypatch.setattr(sched_mod, "MAX_QUEUE_DEPTH", 5)
+        monkeypatch.setattr(sched_mod, "HARD_MAX_QUEUE_DEPTH", 10)
+
+        self._fill_to_depth(scheduler, 10)
+
+        result = scheduler.enqueue("cam", 99998.0, Priority.NEAR_VIEWPORT)
+        assert result is False
+
+    def test_hard_cap_allows_viewport_at_hard_max(self, scheduler, monkeypatch):
+        """At HARD_MAX_QUEUE_DEPTH, VIEWPORT (priority=0) is still admitted."""
+        import app.services.preview_scheduler as sched_mod
+        from app.services.preview_scheduler import Priority
+        monkeypatch.setattr(sched_mod, "MAX_QUEUE_DEPTH", 5)
+        monkeypatch.setattr(sched_mod, "HARD_MAX_QUEUE_DEPTH", 10)
+
+        self._fill_to_depth(scheduler, 10)
+
+        result = scheduler.enqueue("cam", 99998.0, Priority.VIEWPORT)
+        assert result is True
+
+    def test_heap_invariant_preserved_after_backpressure(self, scheduler, monkeypatch):
+        """Dequeue after triggering backpressure must yield results in priority order."""
+        import app.services.preview_scheduler as sched_mod
+        from app.services.preview_scheduler import Priority
+        monkeypatch.setattr(sched_mod, "MAX_QUEUE_DEPTH", 5)
+        monkeypatch.setattr(sched_mod, "HARD_MAX_QUEUE_DEPTH", 100)
+
+        # Enqueue jobs in reverse priority order to stress the heap
+        scheduler.enqueue("cam", 3000.0, Priority.BACKGROUND)
+        scheduler.enqueue("cam", 2000.0, Priority.RECENT)
+        scheduler.enqueue("cam", 1000.0, Priority.NEAR_VIEWPORT)
+        scheduler.enqueue("cam", 4000.0, Priority.VIEWPORT)
+        scheduler.enqueue("cam", 5000.0, Priority.VIEWPORT)
+
+        # This should be dropped (BACKGROUND at MAX_QUEUE_DEPTH=5)
+        dropped = scheduler.enqueue("cam", 9999.0, Priority.BACKGROUND)
+        assert dropped is False
+
+        # Heap must still be intact and yield priority-ordered results
+        batch = scheduler.dequeue_batch(max_items=10)
+        assert len(batch) == 5
+        priorities = [j.priority for j in batch]
+        assert priorities == sorted(priorities), "Heap order corrupted after backpressure"

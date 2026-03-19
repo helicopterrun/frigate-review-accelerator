@@ -32,6 +32,17 @@ path = preview_output_path / camera / YYYY-MM-DD / f"{bucket_ts:.2f}.jpg"
 
 If you add a DB call to `GET /api/preview/{camera}/{ts}` you have broken the design.
 
+## Timeline read-only invariant
+
+GET /api/timeline and GET /api/timeline/buckets are READ-ONLY.
+They must never trigger:
+  - preview generation
+  - ffprobe calls
+  - filesystem scans (stat, exists, glob)
+  - segment iteration beyond a single bounded DB query
+
+They query existing data only: DB reads and in-memory set lookups.
+
 -----
 
 ## Project structure

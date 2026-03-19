@@ -183,6 +183,10 @@ async def get_timeline(
     start: float = Query(..., description="Start timestamp (Unix)"),
     end: float = Query(..., description="End timestamp (Unix)"),
 ):
+    # INVARIANT: Timeline endpoints are READ-ONLY.
+    # This function must NEVER trigger: preview generation, ffprobe,
+    # filesystem scans, or segment iteration.
+    # If you are adding writes here — stop and reconsider.
     """Get the complete time model for a camera within a range.
 
     Returns segments, gaps, events, and activity density.
@@ -387,13 +391,20 @@ async def get_timeline_buckets(
     camera: str = Query(..., description="Camera name"),
     start: float = Query(..., description="Start timestamp (Unix)"),
     end: float = Query(..., description="End timestamp (Unix)"),
-    resolution: int = Query(60, description="Number of time buckets across the range", ge=1, le=500),
+    resolution: int | None = Query(None, description="Number of time buckets across the range", ge=1, le=5000),
 ):
+    # INVARIANT: Timeline endpoints are READ-ONLY.
+    # This function must NEVER trigger: preview generation, ffprobe,
+    # filesystem scans, or segment iteration.
+    # If you are adding writes here — stop and reconsider.
     """Get time-indexed bucket coverage for a camera + range.
 
     Returns one entry per logical bucket, each indicating whether a preview
-    image exists on disk and the density of Frigate events in that window.
-    No segment DB query required — preview existence is checked via stat().
+    exists (checked against DB, not filesystem) and the density of Frigate
+    events in that window.
+
+    resolution omitted → auto-selected via TimeIndex.auto_resolution (resolution_source="auto")
+    resolution provided → used as-is (resolution_source="explicit")
 
     Response shape:
     {
@@ -401,11 +412,24 @@ async def get_timeline_buckets(
       "start_ts": 0.0,
       "end_ts": 0.0,
       "resolution": 60,
+      "resolution_source": "auto",
       "bucket_count": 60,
       "buckets": [{"ts": 0.0, "has_preview": true, "event_density": 3}]
     }
     """
-    # Load events from DB for the range (same query as /timeline)
+    from app.services.time_index import TimeIndex
+
+    # Determine resolution and its source
+    range_sec = end - start
+    if resolution is None:
+        bucket_sec = TimeIndex.auto_resolution(range_sec)
+        effective_resolution = max(1, round(range_sec / bucket_sec)) if range_sec > 0 else 1
+        resolution_source = "auto"
+    else:
+        effective_resolution = resolution
+        resolution_source = "explicit"
+
+    # Load events and preview timestamps from DB (READ-ONLY — no writes, no fs scans)
     async with get_db() as db:
         evt_rows = await db.execute_fetchall(
             """SELECT id, camera, start_ts, end_ts, label, score, has_snapshot
@@ -416,6 +440,10 @@ async def get_timeline_buckets(
                ORDER BY start_ts""",
             (camera, start, end),
         )
+        prev_rows = await db.execute_fetchall(
+            "SELECT ts FROM previews WHERE camera = ? AND ts >= ? AND ts <= ?",
+            (camera, start, end),
+        )
 
     events = [
         EventInfo(
@@ -424,14 +452,18 @@ async def get_timeline_buckets(
         )
         for r in evt_rows
     ]
+    preview_ts_set = {r[0] for r in prev_rows}
 
-    buckets = get_time_index().timeline_buckets(start, end, camera, events, resolution)
+    buckets = get_time_index().timeline_buckets(
+        start, end, camera, events, effective_resolution, preview_ts_set=preview_ts_set
+    )
 
     return {
         "camera": camera,
         "start_ts": start,
         "end_ts": end,
-        "resolution": resolution,
+        "resolution": effective_resolution,
+        "resolution_source": resolution_source,
         "bucket_count": len(buckets),
         "buckets": buckets,
     }

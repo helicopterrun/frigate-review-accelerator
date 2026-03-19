@@ -22,6 +22,9 @@ _HLS_CACHE_TTL_SEC = 30.0
 # ---------------------------------------------------------------------------
 # URL construction
 # ---------------------------------------------------------------------------
+# Playback = Frigate VOD ONLY. See CLAUDE.md architectural invariant.
+# Path shape verified against Frigate docs and hls.py working integration.
+# No custom stitching. No manual playlist construction.
 def _build_hls_url(camera: str, requested_ts: float, seg_start: float) -> str:
     """Construct a Frigate VOD HLS playlist URL.
 

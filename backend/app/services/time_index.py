@@ -128,6 +128,39 @@ class TimeIndex:
         ]
 
     # ------------------------------------------------------------------
+    # Resolution selection
+    # ------------------------------------------------------------------
+    @staticmethod
+    def auto_resolution(range_sec: float) -> int:
+        """Select bucket resolution (seconds per bucket) from range duration.
+
+        < 1h    →   10s  (~360 buckets max)
+        < 4h    →   30s  (~480 buckets max)
+        < 12h   →   60s  (~720 buckets max)
+        < 24h   →  120s  (~720 buckets max)
+        < 72h   →  300s  (~864 buckets max)
+        < 7d    →  600s  (~1008 max; see note)
+        >= 7d   → 1200s
+
+        Keeps bucket count within frontend rendering budget (~50–900).
+        Note: the < 7d tier can reach ~1008 buckets at exactly 7 days — callers
+        that need hard ≤900 should use the >= 7d tier or pass resolution explicitly.
+        """
+        if range_sec < 3600:
+            return 10
+        if range_sec < 14400:
+            return 30
+        if range_sec < 43200:
+            return 60
+        if range_sec < 86400:
+            return 120
+        if range_sec < 259200:
+            return 300
+        if range_sec < 604800:
+            return 600
+        return 1200
+
+    # ------------------------------------------------------------------
     # Timeline buckets (Phase 4)
     # ------------------------------------------------------------------
     def timeline_buckets(
@@ -137,6 +170,7 @@ class TimeIndex:
         camera: str,
         events: list[Any],
         resolution: int | None = None,
+        preview_ts_set: set[float] | None = None,
     ) -> list[dict]:
         """Return [{ts, has_preview, event_density}] for a time range.
 
@@ -144,7 +178,9 @@ class TimeIndex:
         Defaults to 60 if not provided.  Each bucket is bucket_sec = range/resolution
         seconds wide.
 
-        has_preview is True if the preview file for that bucket timestamp exists.
+        has_preview is True if a preview exists for any bucket within this logical
+        bucket.  Checked against preview_ts_set (DB-backed) when provided;
+        falls back to filesystem stat() when None.
         event_density is the count of events whose start_ts falls in this bucket.
         """
         if resolution is None:
@@ -167,12 +203,18 @@ class TimeIndex:
             b_end = b_start + bucket_sec
             bucket_label_ts = b_start
 
-            # Check if any preview file exists in this logical bucket
+            # Check if any preview exists in this logical bucket.
+            # Use DB-backed set when available; fall back to filesystem stat.
             has_preview = False
             for preview_ts in self.buckets_in_range(b_start, b_end):
-                if self.bucket_exists(camera, preview_ts):
-                    has_preview = True
-                    break
+                if preview_ts_set is not None:
+                    if preview_ts in preview_ts_set:
+                        has_preview = True
+                        break
+                else:
+                    if self.bucket_exists(camera, preview_ts):
+                        has_preview = True
+                        break
 
             evt_count = density_map.get(
                 math.floor(b_start / bucket_sec) * bucket_sec, 0
