@@ -8,6 +8,9 @@
  *
  * When syncCursors is on, seeking on any camera seeks all cameras to the
  * same timestamp.
+ *
+ * TODO: propagate global activeLabels filter and event navigation to split
+ * view camera panes (deferred — single-camera mode only for now)
  */
 
 import { useState, useEffect, useCallback } from 'react';

@@ -64,6 +64,7 @@ const ZOOM_STOP_LABELS = [
 ];
 
 const PAN_FRACTION = 0.15; // 15% of range per scroll tick
+const MIN_RANGE_SEC = 15 * 60;
 
 const EVENT_COLORS = {
   person: '#4CAF50',
@@ -120,6 +121,7 @@ export default function VerticalTimeline({
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   const isDragging = useRef(false);
+  const touchStartRef = useRef(null);
 
   const [dims, setDims] = useState({ w: 215, h: 600 });
   const [hoverY, setHoverY] = useState(null);
@@ -146,7 +148,7 @@ export default function VerticalTimeline({
 
   // ── ResizeObserver ──────────────────────────────────────────────────────────
   useEffect(() => {
-    const el = containerRef.current;
+    const el = canvasRef.current;
     if (!el) return;
     const obs = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -167,8 +169,6 @@ export default function VerticalTimeline({
     const dpr = window.devicePixelRatio || 1;
     canvas.width = w * dpr;
     canvas.height = h * dpr;
-    canvas.style.width = `${w}px`;
-    canvas.style.height = `${h}px`;
 
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
@@ -214,6 +214,35 @@ export default function VerticalTimeline({
       ctx.fillRect(barStart, y1, barW, y2 - y1);
     }
 
+    // 4b. Event density tinting — blend segment bars toward amber based on activity
+    if (events.length > 0) {
+      for (const seg of segments) {
+        const segDur = seg.end_ts - seg.start_ts;
+        if (segDur <= 0) continue;
+
+        let coveredSec = 0;
+        for (const evt of events) {
+          const evtEnd = evt.end_ts ?? evt.start_ts + 5;
+          const overlapStart = Math.max(seg.start_ts, evt.start_ts);
+          const overlapEnd = Math.min(seg.end_ts, evtEnd);
+          if (overlapEnd > overlapStart) coveredSec += overlapEnd - overlapStart;
+        }
+
+        const density = Math.min(1, coveredSec / Math.min(segDur, 300));
+        if (density < 0.01) continue;
+
+        const y1 = Math.max(0, tsToY(seg.start_ts));
+        const y2 = Math.min(h, tsToY(seg.end_ts));
+        if (y2 <= y1) continue;
+
+        const r = Math.round(30 + density * 154);
+        const g = Math.round(100 + density * 24);
+        const b = Math.round(160 - density * 118);
+        ctx.fillStyle = `rgba(${r},${g},${b},${0.3 + density * 0.5})`;
+        ctx.fillRect(barStart, y1, barW, y2 - y1);
+      }
+    }
+
     // 5. Gap hatching — fill + diagonal lines (clipped to each gap rect)
     for (const gap of gaps) {
       const y1 = Math.max(0, tsToY(gap.start_ts));
@@ -257,11 +286,24 @@ export default function VerticalTimeline({
     }
 
     // 7. Time tick labels + horizontal hairlines across bar zone
-    let tickSec;
-    if (range <= 3600) tickSec = 300;
-    else if (range <= 14400) tickSec = 900;
-    else if (range <= 43200) tickSec = 1800;
-    else tickSec = 3600;
+    const TICK_INTERVALS = [300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+    const MIN_TICK_SPACING_PX = 28;
+    const maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
+    const minIntervalSec = range / maxTicks;
+    const tickSec = TICK_INTERVALS.find((t) => t >= minIntervalSec) ?? 86400;
+
+    // Build per-tick-bucket event map for dots
+    const LABEL_COLORS_MAP = {
+      person: '#4CAF50', car: '#2196F3', dog: '#FF9800',
+      cat: '#9C27B0', default: '#607D8B',
+    };
+    const tickBucketEvents = {};
+    for (const evt of events) {
+      const bucketTs = Math.floor(evt.start_ts / tickSec) * tickSec;
+      if (!tickBucketEvents[bucketTs]) tickBucketEvents[bucketTs] = {};
+      tickBucketEvents[bucketTs][evt.label] =
+        (tickBucketEvents[bucketTs][evt.label] || 0) + 1;
+    }
 
     const firstTick = Math.ceil(startTs / tickSec) * tickSec;
     for (let t = firstTick; t <= endTs; t += tickSec) {
@@ -279,6 +321,20 @@ export default function VerticalTimeline({
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.fillText(formatTimeShort(t), LABEL_WIDTH - 4, y);
+
+      // Colored dot when events occurred in this tick bucket
+      const bucketEvts = tickBucketEvents[t];
+      if (bucketEvts) {
+        const topLabel = Object.entries(bucketEvts)
+          .sort((a, b) => b[1] - a[1])[0][0];
+        const dotColor = LABEL_COLORS_MAP[topLabel] ?? LABEL_COLORS_MAP.default;
+        ctx.beginPath();
+        ctx.arc(LABEL_WIDTH - 18, y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = dotColor;
+        ctx.globalAlpha = 0.85;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
     }
 
     // 8. Event markers in right strip
@@ -451,32 +507,48 @@ export default function VerticalTimeline({
         flexDirection: 'column',
       }}
     >
-      {/* Canvas fills all remaining vertical space */}
-      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-        <canvas
-          ref={canvasRef}
-          style={{ cursor: 'crosshair', display: 'block', touchAction: 'manipulation' }}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseLeave}
-          onTouchStart={(e) => {
-            e.preventDefault();
-            const touch = e.touches[0];
-            handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY });
-          }}
-          onTouchMove={(e) => {
-            e.preventDefault();
-            const touch = e.touches[0];
-            handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
-          }}
-          onTouchEnd={(e) => {
-            e.preventDefault();
-            const touch = e.changedTouches[0];
-            handleMouseUp({ clientX: touch.clientX, clientY: touch.clientY });
-          }}
-        />
-      </div>
+      {/* Canvas fills all remaining vertical space as a direct flex child */}
+      <canvas
+        ref={canvasRef}
+        style={{ cursor: 'crosshair', display: 'block', flex: 1, minHeight: 0, touchAction: 'manipulation' }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+        onTouchStart={(e) => {
+          e.preventDefault();
+          const touch = e.touches[0];
+          touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+          handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY });
+        }}
+        onTouchMove={(e) => {
+          e.preventDefault();
+          const touch = e.touches[0];
+          const dx = touch.clientX - (touchStartRef.current?.x ?? touch.clientX);
+          const dy = touch.clientY - (touchStartRef.current?.y ?? touch.clientY);
+          const isHorizontalSwipe = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10;
+
+          if (isHorizontalSwipe && onRangeChange) {
+            const panFraction = -dx / dims.w * 0.5;
+            const panAmount = range * panFraction;
+            const newStart = startTs + panAmount;
+            const newEnd = endTs + panAmount;
+            const now = nowTs();
+            if (newEnd <= now && newEnd - newStart >= MIN_RANGE_SEC) {
+              onRangeChange(newStart, newEnd);
+            }
+            touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+            return;
+          }
+
+          handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
+        }}
+        onTouchEnd={(e) => {
+          e.preventDefault();
+          const touch = e.changedTouches[0];
+          handleMouseUp({ clientX: touch.clientX, clientY: touch.clientY });
+        }}
+      />
 
       {/* Zoom control strip */}
       <div

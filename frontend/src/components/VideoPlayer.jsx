@@ -22,6 +22,14 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import { formatTime } from '../utils/time.js';
 
+const LABEL_COLORS = {
+  person: '#4CAF50',
+  car: '#2196F3',
+  dog: '#FF9800',
+  cat: '#9C27B0',
+  default: '#607D8B',
+};
+
 const HLS_CONFIG = {
   enableWorker: true,
   lowLatencyMode: false,
@@ -37,6 +45,9 @@ export default function VideoPlayer({
   onTimeUpdate,
   onSegmentAdvance,
   scrubPreviewUrl,
+  isMobile = false,
+  eventSnapshot = null,
+  onSeek = null,
 }) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null);
@@ -49,6 +60,7 @@ export default function VideoPlayer({
   const [displayTime, setDisplayTime] = useState(null);
   const [error, setError] = useState(null);
   const [hlsMode, setHlsMode] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   // Sticky-last-frame: only update displayedPreviewUrl when the new image loads.
   // This prevents black flashes between frames during rapid scrubbing.
@@ -255,8 +267,8 @@ export default function VideoPlayer({
   }, []);
 
   const hasTarget = playbackTarget != null;
-  const showOverlay = scrubPreviewUrl != null;
-  const showPlaceholder = !hasTarget && !showOverlay;
+  const showOverlay = scrubPreviewUrl != null && eventSnapshot == null;
+  const showPlaceholder = !hasTarget && !showOverlay && !eventSnapshot;
 
   return (
     <div
@@ -314,6 +326,52 @@ export default function VideoPlayer({
           </div>
         )}
 
+        {/* Event snapshot overlay — shown when navigating to an event */}
+        {eventSnapshot && (
+          <div style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: '#000',
+          }}>
+            <img
+              src={eventSnapshot.url}
+              alt={eventSnapshot.label}
+              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+            />
+            <div style={{
+              position: 'absolute', top: 10, left: 10,
+              background: 'rgba(0,0,0,0.75)',
+              border: `1px solid ${LABEL_COLORS[eventSnapshot.label] ?? LABEL_COLORS.default}`,
+              color: LABEL_COLORS[eventSnapshot.label] ?? LABEL_COLORS.default,
+              padding: '3px 10px', borderRadius: 12,
+              fontSize: 13, fontFamily: 'monospace',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <span style={{
+                width: 7, height: 7, borderRadius: '50%',
+                background: LABEL_COLORS[eventSnapshot.label] ?? LABEL_COLORS.default,
+                display: 'inline-block',
+              }}/>
+              {eventSnapshot.label}
+              {eventSnapshot.score != null && (
+                <span style={{ color: '#888', fontSize: 11 }}>
+                  {Math.round(eventSnapshot.score * 100)}%
+                </span>
+              )}
+            </div>
+            <button
+              onClick={() => { if (onSeek && eventSnapshot) onSeek(eventSnapshot.ts); }}
+              style={{
+                position: 'absolute', top: 8, right: 8,
+                background: 'rgba(0,0,0,0.6)', border: '1px solid #333',
+                color: '#888', width: 28, height: 28, borderRadius: 14,
+                cursor: 'pointer', fontSize: 14,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >✕</button>
+          </div>
+        )}
+
         {/* Placeholder when no playback target and no preview overlay */}
         {showPlaceholder && (
           <div
@@ -341,7 +399,7 @@ export default function VideoPlayer({
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 12,
+          gap: isMobile ? 8 : 12,
           padding: '8px 12px',
           background: '#111',
           borderTop: '1px solid #333',
@@ -355,27 +413,21 @@ export default function VideoPlayer({
             background: 'none',
             border: '1px solid #555',
             color: hasTarget ? '#fff' : '#555',
-            padding: '4px 16px',
+            padding: isMobile ? '10px 14px' : '4px 16px',
             borderRadius: 4,
             cursor: hasTarget ? 'pointer' : 'default',
             fontSize: 17,
+            minHeight: isMobile ? 44 : undefined,
+            flexShrink: 0,
           }}
         >
-          {isPlaying ? '⏸ Pause' : '▶ Play'}
+          {isPlaying ? '⏸' : '▶'}
+          {!isMobile && (isPlaying ? ' Pause' : ' Play')}
         </button>
 
         <span style={{ color: '#aaa', fontSize: 17, fontFamily: 'monospace' }}>
           {displayTime != null ? formatTime(displayTime) : '--:--:--'}
         </span>
-
-        {hasTarget && (
-          <span style={{ color: '#555', fontSize: 16, marginLeft: 'auto' }}>
-            segment {playbackTarget.segment_id}
-            {!hlsMode && playbackTarget.next_segment_id && ' → ' + playbackTarget.next_segment_id}
-            {' · '}
-            {camera}
-          </span>
-        )}
 
         {hasTarget && (
           <span
@@ -393,18 +445,61 @@ export default function VideoPlayer({
           </span>
         )}
 
+        {/* Desktop: segment info inline */}
+        {hasTarget && !isMobile && (
+          <span style={{ color: '#555', fontSize: 16, marginLeft: 'auto' }}>
+            segment {playbackTarget.segment_id}
+            {!hlsMode && playbackTarget.next_segment_id && ' → ' + playbackTarget.next_segment_id}
+            {' · '}
+            {camera}
+          </span>
+        )}
+
+        {/* Mobile: detail toggle button */}
+        {hasTarget && isMobile && (
+          <button
+            onClick={() => setDetailOpen((v) => !v)}
+            style={{
+              marginLeft: 'auto',
+              background: 'none',
+              border: '1px solid #333',
+              color: detailOpen ? '#aaa' : '#555',
+              width: 28, height: 28, borderRadius: 14,
+              cursor: 'pointer', fontSize: 14,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              flexShrink: 0,
+            }}
+          >ⓘ</button>
+        )}
+
         {error && (
-          <span style={{ color: '#f44', fontSize: 16, marginLeft: 'auto' }}>
+          <span style={{ color: '#f44', fontSize: 16, marginLeft: isMobile ? 'auto' : undefined }}>
             {error}
           </span>
         )}
 
         {!hasTarget && !error && (
           <span style={{ color: '#555', fontSize: 16 }}>
-            Click timeline to seek
+            {isMobile ? 'Tap timeline' : 'Click timeline to seek'}
           </span>
         )}
       </div>
+
+      {/* Mobile detail drawer */}
+      {isMobile && (
+        <div style={{
+          maxHeight: detailOpen ? 60 : 0,
+          overflow: 'hidden',
+          transition: 'max-height 0.2s ease',
+          background: '#0a0c12',
+          padding: detailOpen ? '6px 12px' : '0 12px',
+          fontSize: 12,
+          color: '#555',
+          borderTop: detailOpen ? '1px solid #222' : 'none',
+        }}>
+          {hasTarget && `segment ${playbackTarget.segment_id} · ${camera}`}
+        </div>
+      )}
     </div>
   );
 }

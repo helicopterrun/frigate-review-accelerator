@@ -10,7 +10,7 @@
  *   - SplitView path unchanged
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 
 function useIsMobile(breakpoint = 768) {
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < breakpoint);
@@ -35,17 +35,72 @@ import {
   fetchPlaybackTarget,
   fetchHealth,
   requestPreviews,
+  eventSnapshotUrl,
 } from './utils/api.js';
-import { todayStartTs, nowTs, formatDateTime } from './utils/time.js';
+import { todayStartTs, nowTs, formatDateTime, formatTime } from './utils/time.js';
 
 const MIN_RANGE_SEC = 15 * 60;
 const MAX_RANGE_SEC = 7 * 24 * 3600;
+
+const LABEL_COLORS = {
+  person: '#4CAF50',
+  car: '#2196F3',
+  dog: '#FF9800',
+  cat: '#9C27B0',
+  default: '#607D8B',
+};
 
 /** Format a Unix timestamp for a datetime-local input value. */
 function toDatetimeLocal(ts) {
   const d = new Date(ts * 1000);
   const pad = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function LabelFilterPills({ availableLabels, activeLabels, onToggle, onToggleAll, isMobile }) {
+  if (!availableLabels?.length) return null;
+  const allActive = activeLabels === null;
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, padding: '4px 0', alignItems: 'center' }}>
+      <span style={{ fontSize: 11, color: '#555', marginRight: 2, flexShrink: 0 }}>
+        Filter:
+      </span>
+      <button
+        onClick={onToggleAll}
+        style={{
+          padding: '3px 9px', borderRadius: 12,
+          border: `1px solid ${allActive ? '#aaa' : '#333'}`,
+          background: allActive ? '#2a2d37' : 'transparent',
+          color: allActive ? '#e0e0e0' : '#555',
+          fontSize: isMobile ? 13 : 11,
+          cursor: 'pointer', fontFamily: 'monospace', flexShrink: 0,
+        }}
+      >all</button>
+      {availableLabels.map(label => {
+        const color = LABEL_COLORS[label] ?? LABEL_COLORS.default;
+        const isActive = activeLabels === null || activeLabels.has(label);
+        return (
+          <button key={label} onClick={() => onToggle(label)} style={{
+            padding: '3px 9px', borderRadius: 12,
+            border: `1px solid ${isActive ? color : '#333'}`,
+            background: isActive ? `${color}22` : 'transparent',
+            color: isActive ? color : '#555',
+            fontSize: isMobile ? 13 : 11,
+            cursor: 'pointer', fontFamily: 'monospace',
+            display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: isActive ? color : '#555',
+              display: 'inline-block', flexShrink: 0,
+            }}/>
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function App() {
@@ -68,6 +123,25 @@ export default function App() {
   const [rangeEnd, setRangeEnd] = useState(nowTs());
 
   const [gotoValue, setGotoValue] = useState(() => toDatetimeLocal(nowTs()));
+
+  // Mobile header expand/collapse
+  const [healthExpanded, setHealthExpanded] = useState(false);
+  useEffect(() => {
+    if (!healthExpanded) return;
+    const t = setTimeout(() => setHealthExpanded(false), 4000);
+    return () => clearTimeout(t);
+  }, [healthExpanded]);
+
+  // Label filter state — persisted to localStorage, null means "all"
+  const [activeLabels, setActiveLabels] = useState(() => {
+    try {
+      const stored = localStorage.getItem('frigate-active-labels');
+      return stored ? new Set(JSON.parse(stored)) : null;
+    } catch { return null; }
+  });
+
+  // Event snapshot state (from prev/next navigation)
+  const [activeEventSnapshot, setActiveEventSnapshot] = useState(null);
 
   // ─── Init: load cameras + health ───
   useEffect(() => {
@@ -123,6 +197,18 @@ export default function App() {
     return () => { cancelled = true; };
   }, [selectedCamera, rangeStart, rangeEnd, multiMode]);
 
+  // ─── Derived label lists ───
+  const availableLabels = useMemo(() => {
+    if (!timelineData?.events?.length) return [];
+    return [...new Set(timelineData.events.map(e => e.label))].sort();
+  }, [timelineData]);
+
+  const filteredEvents = useMemo(() => {
+    if (!timelineData?.events) return [];
+    if (activeLabels === null) return timelineData.events;
+    return timelineData.events.filter(e => activeLabels.has(e.label));
+  }, [timelineData, activeLabels]);
+
   // ─── Range change (from zoom or presets) ───
   const handleRangeChange = useCallback((newStart, newEnd) => {
     const newRange = newEnd - newStart;
@@ -142,12 +228,13 @@ export default function App() {
     setHoverTs(null);
   }, []);
 
-  // ─── Seek handler: commits playback, clears hover ───
+  // ─── Seek handler: commits playback, clears hover + snapshot ───
   const handleSeek = useCallback(
     async (ts) => {
       if (!selectedCamera) return;
       setHoverTs(null);
       setCursorTs(ts);
+      setActiveEventSnapshot(null);
 
       try {
         const target = await fetchPlaybackTarget(selectedCamera, ts);
@@ -186,6 +273,7 @@ export default function App() {
     setPlaybackTarget(null);
     setTimelineData(null);
     setPreviewFrames([]);
+    setActiveEventSnapshot(null);
   }, []);
 
   // ─── Multi-camera selection ───
@@ -222,6 +310,64 @@ export default function App() {
     handleSeek(ts);
   }, [gotoValue, rangeStart, rangeEnd, handleRangeChange, handleSeek]);
 
+  // ─── Label filter handlers ───
+  const toggleLabel = useCallback((label) => {
+    setActiveLabels(prev => {
+      const current = prev ?? new Set(availableLabels);
+      const next = new Set(current);
+      if (next.has(label)) { next.delete(label); } else { next.add(label); }
+      try {
+        localStorage.setItem('frigate-active-labels', JSON.stringify([...next]));
+      } catch {}
+      return next;
+    });
+  }, [availableLabels]);
+
+  const toggleAllLabels = useCallback(() => {
+    setActiveLabels(null);
+    try { localStorage.removeItem('frigate-active-labels'); } catch {}
+  }, []);
+
+  // ─── Event navigation ───
+  const navigateEvent = useCallback(async (direction) => {
+    if (!filteredEvents.length) return;
+    const sorted = [...filteredEvents].sort((a, b) => a.start_ts - b.start_ts);
+    const current = cursorTs ?? 0;
+
+    let target;
+    if (direction === 'next') {
+      target = sorted.find(e => e.start_ts > current + 1) ?? sorted[0];
+    } else {
+      target = [...sorted].reverse().find(e => e.start_ts < current - 1)
+               ?? sorted[sorted.length - 1];
+    }
+
+    if (!target) return;
+
+    setCursorTs(target.start_ts);
+    try {
+      const playTarget = await fetchPlaybackTarget(selectedCamera, target.start_ts);
+      setPlaybackTarget(playTarget);
+    } catch {}
+
+    if (target.has_snapshot) {
+      setActiveEventSnapshot({
+        url: eventSnapshotUrl(target.id),
+        label: target.label,
+        score: target.score,
+        ts: target.start_ts,
+      });
+    } else {
+      setActiveEventSnapshot(null);
+    }
+
+    // Re-center range if event is outside current view
+    if (target.start_ts < rangeStart || target.start_ts > rangeEnd) {
+      const halfRange = (rangeEnd - rangeStart) / 2;
+      handleRangeChange(target.start_ts - halfRange, target.start_ts + halfRange);
+    }
+  }, [filteredEvents, cursorTs, selectedCamera, rangeStart, rangeEnd, handleRangeChange]);
+
   // ─── Derive scrub preview URL ───
   const activePreviewUrl =
     hoverTs != null && selectedCamera
@@ -240,105 +386,216 @@ export default function App() {
   return (
     <div style={styles.container}>
       {/* Header */}
-      <div style={styles.header}>
-        <h1 style={styles.title}>Frigate Review Accelerator</h1>
-        {health && (
-          <div style={styles.healthBadge}>
-            <span
-              style={{
+      {isMobile ? (
+        <div style={{ marginBottom: 8, borderBottom: '1px solid #2a2d37', paddingBottom: 6, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 40 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: health?.frigate_reachable ? '#4CAF50' : '#f44',
                 display: 'inline-block',
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: health.frigate_reachable ? '#4CAF50' : '#f44',
-                marginRight: 6,
-              }}
-            />
-            {health.total_segments.toLocaleString()} segs
-            {' · '}
-            {health.total_previews.toLocaleString()} previews
-            {health.pending_previews > 0 && (
-              <span style={{ color: '#888' }}>
-                {' · '}{health.pending_previews.toLocaleString()} pending
-              </span>
-            )}
+              }} />
+              <span style={{ fontSize: 17, fontWeight: 600, color: '#e0e0e0' }}>Frigate</span>
+            </div>
+            <button
+              onClick={() => setHealthExpanded(v => !v)}
+              style={{ background: 'none', border: 'none', color: '#666', fontSize: 18, cursor: 'pointer', padding: '0 4px' }}
+            >⋯</button>
           </div>
-        )}
-      </div>
+          {healthExpanded && health && (
+            <div style={{ fontSize: 13, color: '#888', paddingBottom: 4 }}>
+              {health.total_segments.toLocaleString()} segs ·{' '}
+              {health.total_previews.toLocaleString()} previews ·{' '}
+              {health.pending_previews.toLocaleString()} pending
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={styles.header}>
+          <h1 style={styles.title}>Frigate Review Accelerator</h1>
+          {health && (
+            <div style={styles.healthBadge}>
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  background: health.frigate_reachable ? '#4CAF50' : '#f44',
+                  marginRight: 6,
+                }}
+              />
+              {health.total_segments.toLocaleString()} segs
+              {' · '}
+              {health.total_previews.toLocaleString()} previews
+              {health.pending_previews > 0 && (
+                <span style={{ color: '#888' }}>
+                  {' · '}{health.pending_previews.toLocaleString()} pending
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {error && <div style={styles.error}>{error}</div>}
 
       {/* Controls */}
-      <div style={styles.controls}>
-        {!multiMode ? (
-          <CameraSelector
-            cameras={cameras}
-            selected={selectedCamera}
-            onSelect={handleCameraChange}
-          />
-        ) : (
-          <CameraSelector
-            cameras={cameras}
-            selectedMany={selectedCameras}
-            onSelectMany={handleSelectMany}
-            multiMode={true}
-            maxSelect={4}
-          />
-        )}
-
-        <button
-          onClick={handleToggleMultiMode}
-          style={{
-            ...styles.rangeBtn,
-            borderColor: multiMode ? '#2196F3' : '#333',
-            color: multiMode ? '#2196F3' : '#aaa',
-            padding: isMobile ? '8px 14px' : '4px 10px',
-            fontSize: isMobile ? '15px' : '16px',
-          }}
-        >
-          {multiMode ? '◈ Single' : '◈ Split'}
-        </button>
-
-        {/* "Go to" group — single-camera mode only */}
-        {!multiMode && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ color: '#666', fontSize: 16 }}>Go to:</span>
-            <input
-              type="datetime-local"
-              value={gotoValue}
-              onChange={(e) => setGotoValue(e.target.value)}
+      {isMobile ? (
+        <div style={{ flexShrink: 0, marginBottom: 8 }}>
+          {/* Row 1: Camera + Split */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            {!multiMode ? (
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <CameraSelector
+                  cameras={cameras}
+                  selected={selectedCamera}
+                  onSelect={handleCameraChange}
+                  isMobile={true}
+                />
+              </div>
+            ) : (
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <CameraSelector
+                  cameras={cameras}
+                  selectedMany={selectedCameras}
+                  onSelectMany={handleSelectMany}
+                  multiMode={true}
+                  maxSelect={4}
+                  isMobile={true}
+                />
+              </div>
+            )}
+            <button
+              onClick={handleToggleMultiMode}
               style={{
-                colorScheme: 'dark',
-                background: '#1a1d27',
-                border: '1px solid #333',
-                color: '#aaa',
-                padding: '3px 6px',
-                borderRadius: 4,
-                fontSize: 16,
+                ...styles.rangeBtn,
+                borderColor: multiMode ? '#2196F3' : '#333',
+                color: multiMode ? '#2196F3' : '#aaa',
+                padding: '10px 16px',
+                fontSize: '15px',
+                minHeight: 44,
+                flexShrink: 0,
               }}
-            />
-            <button onClick={handleGoto} style={{
-              ...styles.rangeBtn,
-              padding: isMobile ? '8px 14px' : '4px 10px',
-              fontSize: isMobile ? '15px' : '16px',
-            }}>
-              Go
+            >
+              {multiMode ? '◈ Single' : '◈ Split'}
             </button>
           </div>
-        )}
-
-        <div style={styles.rangeButtons}>
-          {[1, 4, 8, 24].map((h) => (
-            <button key={h} onClick={() => setRange(h)} style={{
-              ...styles.rangeBtn,
-              padding: isMobile ? '8px 14px' : '4px 10px',
-              fontSize: isMobile ? '15px' : '16px',
-            }}>
-              {h}h
-            </button>
-          ))}
+          {/* Row 2: Range presets + Go group */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', overflowX: 'auto' }}>
+            {[1, 4, 8, 24].map((h) => (
+              <button key={h} onClick={() => setRange(h)} style={{
+                ...styles.rangeBtn,
+                padding: '10px 16px',
+                fontSize: '15px',
+                minHeight: 44,
+                flexShrink: 0,
+              }}>
+                {h}h
+              </button>
+            ))}
+            {!multiMode && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                <input
+                  type="datetime-local"
+                  value={gotoValue}
+                  onChange={(e) => setGotoValue(e.target.value)}
+                  style={{
+                    colorScheme: 'dark',
+                    background: '#1a1d27',
+                    border: '1px solid #333',
+                    color: '#aaa',
+                    padding: '3px 6px',
+                    borderRadius: 4,
+                    fontSize: 16,
+                  }}
+                />
+                <button onClick={handleGoto} style={{
+                  ...styles.rangeBtn,
+                  padding: '10px 16px',
+                  fontSize: '15px',
+                  minHeight: 44,
+                  flexShrink: 0,
+                }}>
+                  Go
+                </button>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div style={styles.controls}>
+          {!multiMode ? (
+            <CameraSelector
+              cameras={cameras}
+              selected={selectedCamera}
+              onSelect={handleCameraChange}
+            />
+          ) : (
+            <CameraSelector
+              cameras={cameras}
+              selectedMany={selectedCameras}
+              onSelectMany={handleSelectMany}
+              multiMode={true}
+              maxSelect={4}
+            />
+          )}
+
+          <button
+            onClick={handleToggleMultiMode}
+            style={{
+              ...styles.rangeBtn,
+              borderColor: multiMode ? '#2196F3' : '#333',
+              color: multiMode ? '#2196F3' : '#aaa',
+            }}
+          >
+            {multiMode ? '◈ Single' : '◈ Split'}
+          </button>
+
+          {/* "Go to" group — single-camera mode only */}
+          {!multiMode && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ color: '#666', fontSize: 16 }}>Go to:</span>
+              <input
+                type="datetime-local"
+                value={gotoValue}
+                onChange={(e) => setGotoValue(e.target.value)}
+                style={{
+                  colorScheme: 'dark',
+                  background: '#1a1d27',
+                  border: '1px solid #333',
+                  color: '#aaa',
+                  padding: '3px 6px',
+                  borderRadius: 4,
+                  fontSize: 16,
+                }}
+              />
+              <button onClick={handleGoto} style={styles.rangeBtn}>
+                Go
+              </button>
+            </div>
+          )}
+
+          <div style={styles.rangeButtons}>
+            {[1, 4, 8, 24].map((h) => (
+              <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>
+                {h}h
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Label filter pills (single-camera mode only) */}
+      {!multiMode && (
+        <LabelFilterPills
+          availableLabels={availableLabels}
+          activeLabels={activeLabels}
+          onToggle={toggleLabel}
+          onToggleAll={toggleAllLabels}
+          isMobile={isMobile}
+        />
+      )}
 
       {/* Main content */}
       {multiMode && selectedCameras.length >= 2 ? (
@@ -351,7 +608,11 @@ export default function App() {
         />
       ) : !multiMode ? (
         /* ── Single-camera: 2-column layout ── */
-        <div style={{ ...styles.singleLayout, flexDirection: isMobile ? 'column' : 'row' }}>
+        <div style={{
+          ...styles.singleLayout,
+          flexDirection: isMobile ? 'column' : 'row',
+          overflow: 'hidden',
+        }}>
           {/* Left/top: video viewer column */}
           <div style={{ ...styles.viewerCol, flex: isMobile ? 'none' : 1 }}>
             <div style={{ flex: 1, minHeight: 0 }}>
@@ -361,19 +622,22 @@ export default function App() {
                 onTimeUpdate={handlePlaybackTimeUpdate}
                 onSegmentAdvance={handleSegmentAdvance}
                 scrubPreviewUrl={activePreviewUrl}
+                isMobile={isMobile}
+                eventSnapshot={activeEventSnapshot}
+                onSeek={handleSeek}
               />
             </div>
 
             {/* Footer: timestamp + coverage stats */}
             <div style={styles.viewerFooter}>
               <span style={styles.timestamp}>
-                {cursorTs ? formatDateTime(cursorTs) : '—'}
+                {cursorTs ? (isMobile ? formatTime(cursorTs) : formatDateTime(cursorTs)) : '—'}
               </span>
               {timelineData && (
                 <span style={styles.coverageStats}>
                   {timelineData.segments.length} segs ·{' '}
                   {timelineData.coverage_pct.toFixed(1)}% cov ·{' '}
-                  {timelineData.events.length} evt
+                  {filteredEvents.length} evt
                 </span>
               )}
             </div>
@@ -383,8 +647,9 @@ export default function App() {
           <div style={{
             ...styles.timelineCol,
             width: isMobile ? '100%' : 230,
-            height: isMobile ? 280 : undefined,
-            flexShrink: 0,
+            flex: isMobile ? 1 : undefined,
+            minHeight: isMobile ? 320 : undefined,
+            flexShrink: isMobile ? undefined : 0,
           }}>
             {/* Top range label */}
             <div style={styles.rangeLabel}>
@@ -401,7 +666,7 @@ export default function App() {
                 endTs={rangeEnd}
                 segments={timelineData?.segments || []}
                 gaps={timelineData?.gaps || []}
-                events={timelineData?.events || []}
+                events={filteredEvents}
                 activity={timelineData?.activity || []}
                 cursorTs={cursorTs}
                 onScrub={handleScrub}
@@ -415,6 +680,27 @@ export default function App() {
                 }}
               />
             </div>
+
+            {/* Prev/Next event navigation */}
+            {filteredEvents.length > 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '4px 8px',
+                borderTop: '1px solid #1e2130',
+                flexShrink: 0,
+              }}>
+                <button onClick={() => navigateEvent('prev')} style={styles.navBtn}>
+                  ‹ prev
+                </button>
+                <span style={{ fontSize: 10, color: '#444', fontFamily: 'monospace' }}>
+                  {filteredEvents.length} evt
+                </span>
+                <button onClick={() => navigateEvent('next')} style={styles.navBtn}>
+                  next ›
+                </button>
+              </div>
+            )}
 
             {/* Bottom range label */}
             <div style={{ ...styles.rangeLabel, borderTop: '1px solid #1e2130', borderBottom: 'none' }}>
@@ -491,6 +777,7 @@ const styles = {
     minHeight: 0,
     gap: 8,
     paddingBottom: 10,
+    overflow: 'hidden',
   },
   viewerCol: {
     flex: 1,
@@ -532,6 +819,16 @@ const styles = {
     color: '#555',
     borderBottom: '1px solid #1e2130',
     flexShrink: 0,
+    fontFamily: 'monospace',
+  },
+  navBtn: {
+    background: '#1a1d27',
+    border: '1px solid #333',
+    color: '#aaa',
+    padding: '4px 10px',
+    borderRadius: 4,
+    cursor: 'pointer',
+    fontSize: 12,
     fontFamily: 'monospace',
   },
   loading: { color: '#888', textAlign: 'center', paddingTop: 100, fontSize: 16 },
