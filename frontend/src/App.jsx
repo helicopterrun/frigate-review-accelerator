@@ -1,15 +1,19 @@
 /**
  * App — Main application shell.
  *
- * v2 additions:
- *   - onSegmentAdvance: fetches /api/playback for next segment → fixes cursor drift
- *   - Timeline zoom: scroll-wheel zooms range, clamped to 15m–7d
- *   - Split view: select 2+ cameras → SplitView component
+ * v3 layout:
+ *   - 100vh flex-column, no scroll
+ *   - Single-camera: 2-column layout (VideoPlayer left, VerticalTimeline right)
+ *   - Hover on VerticalTimeline shows preview overlay on VideoPlayer (hoverTs)
+ *   - Click on VerticalTimeline commits playback (handleSeek)
+ *   - "Go to" datetime input in controls bar (single-camera mode only)
+ *   - SplitView path unchanged
  */
 
 import { useState, useEffect, useCallback } from 'react';
 import CameraSelector from './components/CameraSelector.jsx';
 import Timeline from './components/Timeline.jsx';
+import VerticalTimeline from './components/VerticalTimeline.jsx';
 import VideoPlayer from './components/VideoPlayer.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import SplitView from './components/SplitView.jsx';
@@ -26,17 +30,23 @@ import { todayStartTs, nowTs, formatDateTime } from './utils/time.js';
 const MIN_RANGE_SEC = 15 * 60;
 const MAX_RANGE_SEC = 7 * 24 * 3600;
 
+/** Format a Unix timestamp for a datetime-local input value. */
+function toDatetimeLocal(ts) {
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function App() {
   const [cameras, setCameras] = useState([]);
-  // Single-camera mode state
   const [selectedCamera, setSelectedCamera] = useState(null);
-  // Multi-camera (split view) state
   const [selectedCameras, setSelectedCameras] = useState([]);
   const [multiMode, setMultiMode] = useState(false);
 
   const [timelineData, setTimelineData] = useState(null);
   const [previewFrames, setPreviewFrames] = useState([]);
   const [cursorTs, setCursorTs] = useState(null);
+  const [hoverTs, setHoverTs] = useState(null);
   const [playbackTarget, setPlaybackTarget] = useState(null);
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
@@ -44,6 +54,8 @@ export default function App() {
 
   const [rangeStart, setRangeStart] = useState(todayStartTs());
   const [rangeEnd, setRangeEnd] = useState(nowTs());
+
+  const [gotoValue, setGotoValue] = useState(() => toDatetimeLocal(nowTs()));
 
   // ─── Init: load cameras + health ───
   useEffect(() => {
@@ -107,15 +119,22 @@ export default function App() {
     setRangeEnd(newEnd);
   }, []);
 
-  // ─── Scrub handler: images only, no video ───
+  // ─── Scrub handler: sets hover position + moves cursor line ───
   const handleScrub = useCallback((ts) => {
+    setHoverTs(ts);
     setCursorTs(ts);
   }, []);
 
-  // ─── Seek handler: calls /api/playback, triggers video ───
+  // ─── Scrub end: clear hover (cursor stays at last position) ───
+  const handleScrubEnd = useCallback(() => {
+    setHoverTs(null);
+  }, []);
+
+  // ─── Seek handler: commits playback, clears hover ───
   const handleSeek = useCallback(
     async (ts) => {
       if (!selectedCamera) return;
+      setHoverTs(null);
       setCursorTs(ts);
 
       try {
@@ -130,17 +149,10 @@ export default function App() {
   );
 
   // ─── Segment advance: fixes cursor drift bug ───
-  // Called by VideoPlayer when a segment ends and it auto-advances.
-  // We fetch the new PlaybackTarget so segment_start_ts stays accurate.
   const handleSegmentAdvance = useCallback(
     async (nextSegmentId) => {
       if (!selectedCamera) return;
       try {
-        // Fetch playback at the very start of the next segment (offset 0)
-        const nextStreamUrl = `/api/segment/${nextSegmentId}/stream`;
-        // We need the segment's start_ts to compute cursor position correctly.
-        // The cleanest path is to call /api/playback with the next segment's start_ts.
-        // Since we don't have it here, derive it from current playbackTarget.end_ts.
         const nextTs = playbackTarget?.segment_end_ts ?? (cursorTs ?? 0);
         const target = await fetchPlaybackTarget(selectedCamera, nextTs + 0.1);
         setPlaybackTarget(target);
@@ -158,6 +170,7 @@ export default function App() {
   const handleCameraChange = useCallback((name) => {
     setSelectedCamera(name);
     setCursorTs(null);
+    setHoverTs(null);
     setPlaybackTarget(null);
     setTimelineData(null);
     setPreviewFrames([]);
@@ -186,6 +199,22 @@ export default function App() {
     setRangeStart(end - hours * 3600);
     setRangeEnd(end);
   }, []);
+
+  // ─── "Go to" handler ───
+  const handleGoto = useCallback(() => {
+    if (!gotoValue) return;
+    const ts = new Date(gotoValue).getTime() / 1000;
+    if (isNaN(ts)) return;
+    const halfRange = (rangeEnd - rangeStart) / 2;
+    handleRangeChange(ts - halfRange, ts + halfRange);
+    handleSeek(ts);
+  }, [gotoValue, rangeStart, rangeEnd, handleRangeChange, handleSeek]);
+
+  // ─── Derive scrub preview URL ───
+  const activePreviewUrl =
+    hoverTs != null && selectedCamera
+      ? `/api/preview/${selectedCamera}/${hoverTs}`
+      : null;
 
   // ─── Render ───
   if (loading) {
@@ -256,6 +285,30 @@ export default function App() {
           {multiMode ? '◈ Single' : '◈ Split'}
         </button>
 
+        {/* "Go to" group — single-camera mode only */}
+        {!multiMode && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ color: '#666', fontSize: 12 }}>Go to:</span>
+            <input
+              type="datetime-local"
+              value={gotoValue}
+              onChange={(e) => setGotoValue(e.target.value)}
+              style={{
+                colorScheme: 'dark',
+                background: '#1a1d27',
+                border: '1px solid #333',
+                color: '#aaa',
+                padding: '3px 6px',
+                borderRadius: 4,
+                fontSize: 12,
+              }}
+            />
+            <button onClick={handleGoto} style={styles.rangeBtn}>
+              Go
+            </button>
+          </div>
+        )}
+
         <div style={styles.rangeButtons}>
           {[1, 4, 8, 24].map((h) => (
             <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>
@@ -263,58 +316,85 @@ export default function App() {
             </button>
           ))}
         </div>
-
-        {cursorTs && !multiMode && (
-          <span style={styles.timestamp}>{formatDateTime(cursorTs)}</span>
-        )}
       </div>
 
-      {/* Main content: split view or single view */}
+      {/* Main content */}
       {multiMode && selectedCameras.length >= 2 ? (
+        /* ── Split view (unchanged) ── */
         <SplitView
           cameras={selectedCameras}
           rangeStart={rangeStart}
           rangeEnd={rangeEnd}
           onRangeChange={handleRangeChange}
         />
-      ) : (
-        <>
-          <VideoPlayer
-            playbackTarget={playbackTarget}
-            camera={selectedCamera}
-            onTimeUpdate={handlePlaybackTimeUpdate}
-            onSegmentAdvance={handleSegmentAdvance}
-          />
+      ) : !multiMode ? (
+        /* ── Single-camera: 2-column layout ── */
+        <div style={styles.singleLayout}>
+          {/* Left: video viewer column */}
+          <div style={styles.viewerCol}>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <VideoPlayer
+                playbackTarget={playbackTarget}
+                camera={selectedCamera}
+                onTimeUpdate={handlePlaybackTimeUpdate}
+                onSegmentAdvance={handleSegmentAdvance}
+                scrubPreviewUrl={activePreviewUrl}
+              />
+            </div>
 
-          <div style={{ marginTop: 12 }}>
-            <Timeline
-              startTs={rangeStart}
-              endTs={rangeEnd}
-              segments={timelineData?.segments || []}
-              gaps={timelineData?.gaps || []}
-              events={timelineData?.events || []}
-              activity={timelineData?.activity || []}
-              frames={previewFrames}
-              camera={selectedCamera}
-              cursorTs={cursorTs}
-              onScrub={handleScrub}
-              onSeek={handleSeek}
-              onRangeChange={handleRangeChange}
-            />
+            {/* Footer: timestamp + coverage stats */}
+            <div style={styles.viewerFooter}>
+              <span style={styles.timestamp}>
+                {cursorTs ? formatDateTime(cursorTs) : '—'}
+              </span>
+              {timelineData && (
+                <span style={styles.coverageStats}>
+                  {timelineData.segments.length} segs ·{' '}
+                  {timelineData.coverage_pct.toFixed(1)}% cov ·{' '}
+                  {timelineData.events.length} evt
+                </span>
+              )}
+            </div>
           </div>
 
-          {timelineData && (
-            <div style={styles.coverage}>
-              {timelineData.segments.length} segments ·{' '}
-              {timelineData.gaps.length} gaps ·{' '}
-              {timelineData.coverage_pct.toFixed(1)}% coverage ·{' '}
-              {timelineData.events.length} events
+          {/* Right: vertical timeline column */}
+          <div style={styles.timelineCol}>
+            {/* Top range label */}
+            <div style={styles.rangeLabel}>
+              {new Date(rangeStart * 1000).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
             </div>
-          )}
-        </>
-      )}
 
-      {multiMode && selectedCameras.length < 2 && (
+            {/* VerticalTimeline */}
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <VerticalTimeline
+                startTs={rangeStart}
+                endTs={rangeEnd}
+                segments={timelineData?.segments || []}
+                gaps={timelineData?.gaps || []}
+                events={timelineData?.events || []}
+                activity={timelineData?.activity || []}
+                cursorTs={cursorTs}
+                onScrub={handleScrub}
+                onScrubEnd={handleScrubEnd}
+                onSeek={handleSeek}
+                onRangeChange={handleRangeChange}
+              />
+            </div>
+
+            {/* Bottom range label */}
+            <div style={{ ...styles.rangeLabel, borderTop: '1px solid #1e2130', borderBottom: 'none' }}>
+              {new Date(rangeEnd * 1000).toLocaleTimeString([], {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* ── Split mode: not enough cameras selected ── */
         <div style={styles.splitHint}>
           Select 2–4 cameras above to enable split view.
         </div>
@@ -326,55 +406,101 @@ export default function App() {
 }
 
 const styles = {
-  container: { maxWidth: 1200, margin: '0 auto', padding: '16px 24px' },
+  container: {
+    height: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    padding: '10px 14px 0',
+    boxSizing: 'border-box',
+  },
   header: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 10,
     borderBottom: '1px solid #2a2d37',
-    paddingBottom: 12,
+    paddingBottom: 8,
+    flexShrink: 0,
   },
-  title: { fontSize: 20, fontWeight: 600, color: '#e0e0e0' },
+  title: { fontSize: 18, fontWeight: 600, color: '#e0e0e0', margin: 0 },
   healthBadge: { fontSize: 12, color: '#888', display: 'flex', alignItems: 'center' },
   error: {
     background: '#3a1515',
     border: '1px solid #5a2020',
     color: '#f88',
-    padding: '8px 12px',
+    padding: '6px 12px',
     borderRadius: 4,
-    marginBottom: 12,
+    marginBottom: 8,
     fontSize: 13,
+    flexShrink: 0,
   },
   controls: {
     display: 'flex',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 16,
+    gap: 10,
+    marginBottom: 8,
     flexWrap: 'wrap',
+    flexShrink: 0,
   },
   rangeButtons: { display: 'flex', gap: 4 },
   rangeBtn: {
     background: '#1a1d27',
     border: '1px solid #333',
     color: '#aaa',
-    padding: '4px 12px',
+    padding: '4px 10px',
     borderRadius: 4,
     cursor: 'pointer',
-    fontSize: 13,
+    fontSize: 12,
+  },
+  singleLayout: {
+    display: 'flex',
+    flex: 1,
+    minHeight: 0,
+    gap: 8,
+    paddingBottom: 10,
+  },
+  viewerCol: {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  viewerFooter: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    flexShrink: 0,
+    padding: '2px 0',
   },
   timestamp: {
     color: '#4CAF50',
-    fontSize: 13,
-    fontFamily: 'monospace',
-    marginLeft: 'auto',
-  },
-  coverage: {
-    textAlign: 'center',
-    color: '#666',
     fontSize: 12,
-    marginTop: 8,
-    paddingBottom: 24,
+    fontFamily: 'monospace',
+  },
+  coverageStats: {
+    color: '#444',
+    fontSize: 11,
+  },
+  timelineCol: {
+    width: 190,
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    background: '#0a0c12',
+    border: '1px solid #1a1d27',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  rangeLabel: {
+    padding: '4px 0',
+    textAlign: 'center',
+    fontSize: 11,
+    color: '#555',
+    borderBottom: '1px solid #1e2130',
+    flexShrink: 0,
+    fontFamily: 'monospace',
   },
   loading: { color: '#888', textAlign: 'center', paddingTop: 100, fontSize: 16 },
   splitHint: {
