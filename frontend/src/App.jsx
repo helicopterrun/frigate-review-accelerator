@@ -189,8 +189,11 @@ export default function App() {
 
         setCameras(cams);
         setHealth(hp);
-        if (cams.length > 0 && !selectedCamera) {
-          setSelectedCamera(cams[0].name);
+        // TODO: when a frontend test harness is introduced, add a test that
+        // verifies the 30s health poll does NOT reset selectedCamera when one
+        // is already active. See CLAUDE.md "Example prompt" for context.
+        if (cams.length > 0) {
+          setSelectedCamera(prev => prev ?? cams[0].name);
         }
         setError(null);
       } catch (err) {
