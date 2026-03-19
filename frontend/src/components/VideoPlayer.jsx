@@ -329,7 +329,7 @@ export default function VideoPlayer({
             }}
           >
             <span style={{ fontSize: 52, color: '#2a2d37' }}>▶</span>
-            <span style={{ color: '#3a3d47', fontSize: 12, fontFamily: 'monospace' }}>
+            <span style={{ color: '#3a3d47', fontSize: 13, fontFamily: 'monospace' }}>
               Hover timeline to preview · click to play
             </span>
           </div>
@@ -364,12 +364,12 @@ export default function VideoPlayer({
           {isPlaying ? '⏸ Pause' : '▶ Play'}
         </button>
 
-        <span style={{ color: '#aaa', fontSize: 12, fontFamily: 'monospace' }}>
+        <span style={{ color: '#aaa', fontSize: 13, fontFamily: 'monospace' }}>
           {displayTime != null ? formatTime(displayTime) : '--:--:--'}
         </span>
 
         {hasTarget && (
-          <span style={{ color: '#555', fontSize: 11, marginLeft: 'auto' }}>
+          <span style={{ color: '#555', fontSize: 12, marginLeft: 'auto' }}>
             segment {playbackTarget.segment_id}
             {!hlsMode && playbackTarget.next_segment_id && ' → ' + playbackTarget.next_segment_id}
             {' · '}
@@ -380,7 +380,7 @@ export default function VideoPlayer({
         {hasTarget && (
           <span
             style={{
-              fontSize: 10,
+              fontSize: 11,
               padding: '2px 6px',
               borderRadius: 10,
               background: hlsMode ? 'rgba(76,175,80,0.15)' : 'rgba(100,100,100,0.15)',

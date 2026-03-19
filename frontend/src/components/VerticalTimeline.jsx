@@ -4,9 +4,9 @@
  * Time flows top (startTs) → bottom (endTs).
  *
  * Horizontal zones (left to right):
- *   [0 … 50px]      — time tick labels (right-aligned, monospace 10px)
- *   [50px]           — 1px separator line
- *   [51 … w-18px]    — bar zone: segment bars, gap hatching, activity heatmap
+ *   [0 … 58px]      — time tick labels (right-aligned, monospace 11px)
+ *   [58px]           — 1px separator line
+ *   [59 … w-18px]    — bar zone: segment bars, gap hatching, activity heatmap
  *   [w-18px … w]     — event color markers
  *
  * Drawing order (bottom layer → top):
@@ -20,17 +20,42 @@
  *   8.  Event markers (right strip)
  *   9.  Hover line (yellow, mouse position)
  *   10. Playback cursor (red, cursorTs) + timestamp badge
- *   11. Footer "scroll to zoom"
+ *
+ * Scroll: pans the time window forward/backward (15% per tick).
+ * Zoom: controlled by −/slider/+ strip below the canvas.
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { formatTimeShort, clampTs, nowTs } from '../utils/time.js';
 
-const LABEL_WIDTH = 50;
+const LABEL_WIDTH = 58;
 const EVENT_WIDTH = 18;
-const MIN_RANGE_SEC = 15 * 60;        // 15 minutes
-const MAX_RANGE_SEC = 7 * 24 * 3600;  // 7 days
-const ZOOM_FACTOR = 0.25;             // 25% per scroll tick
+
+const ZOOM_STOPS = [
+  5 * 60,         // 5m
+  8 * 60,         // 8m
+  10 * 60,        // 10m
+  15 * 60,        // 15m
+  20 * 60,        // 20m
+  30 * 60,        // 30m
+  45 * 60,        // 45m
+  60 * 60,        // 1h
+  2 * 3600,       // 2h
+  4 * 3600,       // 4h
+  8 * 3600,       // 8h
+  12 * 3600,      // 12h
+  18 * 3600,      // 18h
+  24 * 3600,      // 24h
+  48 * 3600,      // 48h
+  7 * 24 * 3600,  // 7d
+];
+
+const ZOOM_STOP_LABELS = [
+  '5m', '8m', '10m', '15m', '20m', '30m', '45m',
+  '1h', '2h', '4h', '8h', '12h', '18h', '24h', '48h', '7d',
+];
+
+const PAN_FRACTION = 0.15; // 15% of range per scroll tick
 
 const EVENT_COLORS = {
   person: '#4CAF50',
@@ -38,6 +63,35 @@ const EVENT_COLORS = {
   dog: '#FF9800',
   cat: '#9C27B0',
   default: '#607D8B',
+};
+
+/** Return the ZOOM_STOPS index whose value is nearest to the given range. */
+function nearestZoomIdx(rangeSec) {
+  let best = 0;
+  let bestDiff = Math.abs(ZOOM_STOPS[0] - rangeSec);
+  for (let i = 1; i < ZOOM_STOPS.length; i++) {
+    const diff = Math.abs(ZOOM_STOPS[i] - rangeSec);
+    if (diff < bestDiff) { bestDiff = diff; best = i; }
+  }
+  return best;
+}
+
+const btnStyle = {
+  width: 28,
+  height: 28,
+  background: '#1a1d27',
+  border: '1px solid #333',
+  color: '#aaa',
+  borderRadius: 4,
+  cursor: 'pointer',
+  fontSize: 16,
+  fontFamily: 'monospace',
+  lineHeight: 1,
+  padding: 0,
+  flexShrink: 0,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
 };
 
 export default function VerticalTimeline({
@@ -57,10 +111,13 @@ export default function VerticalTimeline({
   const containerRef = useRef(null);
   const isDragging = useRef(false);
 
-  const [dims, setDims] = useState({ w: 190, h: 600 });
+  const [dims, setDims] = useState({ w: 215, h: 600 });
   const [hoverY, setHoverY] = useState(null);
 
   const range = endTs - startTs;
+
+  // Derive zoom index from live range (no separate state — always in sync)
+  const zoomIdx = nearestZoomIdx(range);
 
   const tsToY = useCallback(
     (ts) => ((ts - startTs) / range) * dims.h,
@@ -101,8 +158,8 @@ export default function VerticalTimeline({
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
 
-    const barStart = LABEL_WIDTH + 1;  // x where bar zone begins
-    const barEnd = w - EVENT_WIDTH;    // x where bar zone ends
+    const barStart = LABEL_WIDTH + 1;
+    const barEnd = w - EVENT_WIDTH;
     const barW = barEnd - barStart;
 
     // 1. Background
@@ -114,7 +171,6 @@ export default function VerticalTimeline({
     // 2. Separator lines
     ctx.fillStyle = '#1e2130';
     ctx.fillRect(LABEL_WIDTH, 0, 1, h);
-    ctx.fillStyle = '#1e2130';
     ctx.fillRect(barEnd, 0, 1, h);
 
     // 3. Activity heatmap — horizontal bands
@@ -160,7 +216,6 @@ export default function VerticalTimeline({
       ctx.strokeStyle = 'rgba(200,50,50,0.15)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      // Diagonal lines at 45°, sweeping across the gap rect
       const spacing = 7;
       const extent = barW + (y2 - y1);
       for (let d = 0; d <= extent; d += spacing) {
@@ -197,7 +252,6 @@ export default function VerticalTimeline({
     for (let t = firstTick; t <= endTs; t += tickSec) {
       const y = tsToY(t);
 
-      // Hairline across bar zone
       ctx.strokeStyle = '#1a1e2b';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -205,9 +259,8 @@ export default function VerticalTimeline({
       ctx.lineTo(barEnd, y);
       ctx.stroke();
 
-      // Label (right-aligned in label column)
       ctx.fillStyle = '#4a4f65';
-      ctx.font = '10px monospace';
+      ctx.font = '11px monospace';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.fillText(formatTimeShort(t), LABEL_WIDTH - 4, y);
@@ -243,9 +296,8 @@ export default function VerticalTimeline({
       ctx.lineTo(barEnd, cy);
       ctx.stroke();
 
-      // Timestamp badge
       const label = formatTimeShort(cursorTs);
-      ctx.font = 'bold 10px monospace';
+      ctx.font = 'bold 11px monospace';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
       const textW = ctx.measureText(label).width;
@@ -264,38 +316,31 @@ export default function VerticalTimeline({
       ctx.fillStyle = '#ff8888';
       ctx.fillText(label, badgeX, badgeY + 2);
     }
-
-    // 11. Footer "scroll to zoom"
-    ctx.font = '9px monospace';
-    ctx.fillStyle = '#2a2d37';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'bottom';
-    ctx.fillText('scroll to zoom', w / 2, h - 2);
   }, [dims, startTs, endTs, range, segments, gaps, events, activity, cursorTs, hoverY, tsToY]);
 
-  // ── Scroll-to-zoom ──────────────────────────────────────────────────────────
+  // ── Scroll-to-pan ───────────────────────────────────────────────────────────
   const handleWheel = useCallback(
     (e) => {
       if (!onRangeChange) return;
       e.preventDefault();
 
-      const rect = canvasRef.current?.getBoundingClientRect();
-      if (!rect) return;
+      const panAmount = range * PAN_FRACTION;
+      // deltaY < 0 = scroll up = go backward in time (negative delta)
+      const delta = e.deltaY < 0 ? -panAmount : panAmount;
 
-      const y = e.clientY - rect.top;
-      const fraction = Math.max(0, Math.min(1, y / dims.h));
-      const pivotTs = startTs + fraction * range;
+      const now = nowTs();
+      let newStart = startTs + delta;
+      let newEnd = endTs + delta;
 
-      const zoomIn = e.deltaY < 0;
-      const factor = zoomIn ? (1 - ZOOM_FACTOR) : (1 + ZOOM_FACTOR);
-      const newRange = Math.min(MAX_RANGE_SEC, Math.max(MIN_RANGE_SEC, range * factor));
-
-      const newStart = pivotTs - fraction * newRange;
-      const newEnd = pivotTs + (1 - fraction) * newRange;
+      // Clamp: don't scroll past "now"
+      if (newEnd > now) {
+        newEnd = now;
+        newStart = now - range;
+      }
 
       onRangeChange(newStart, newEnd);
     },
-    [startTs, range, dims.h, onRangeChange]
+    [startTs, endTs, range, onRangeChange]
   );
 
   useEffect(() => {
@@ -304,6 +349,33 @@ export default function VerticalTimeline({
     canvas.addEventListener('wheel', handleWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', handleWheel);
   }, [handleWheel]);
+
+  // ── Zoom: apply a stop index, centering on cursorTs or midpoint ─────────────
+  const applyZoom = useCallback(
+    (idx) => {
+      const clamped = Math.max(0, Math.min(ZOOM_STOPS.length - 1, idx));
+      const newRange = ZOOM_STOPS[clamped];
+
+      // Center on cursor if it's within view, otherwise on midpoint
+      const mid = (startTs + endTs) / 2;
+      const center =
+        cursorTs != null && cursorTs >= startTs && cursorTs <= endTs
+          ? cursorTs
+          : mid;
+
+      const now = nowTs();
+      let newStart = center - newRange / 2;
+      let newEnd = center + newRange / 2;
+
+      if (newEnd > now) {
+        newEnd = now;
+        newStart = now - newRange;
+      }
+
+      if (onRangeChange) onRangeChange(newStart, newEnd);
+    },
+    [startTs, endTs, cursorTs, onRangeChange]
+  );
 
   // ── Mouse handlers ──────────────────────────────────────────────────────────
   const getTs = useCallback(
@@ -354,16 +426,81 @@ export default function VerticalTimeline({
   return (
     <div
       ref={containerRef}
-      style={{ width: '100%', height: '100%', userSelect: 'none', position: 'relative' }}
+      style={{
+        width: '100%',
+        height: '100%',
+        userSelect: 'none',
+        position: 'relative',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
     >
-      <canvas
-        ref={canvasRef}
-        style={{ cursor: 'crosshair', display: 'block' }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseLeave}
-      />
+      {/* Canvas fills all remaining vertical space */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+        <canvas
+          ref={canvasRef}
+          style={{ cursor: 'crosshair', display: 'block' }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
+        />
+      </div>
+
+      {/* Zoom control strip */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '6px 8px',
+          flexShrink: 0,
+          borderTop: '1px solid #1e2130',
+          background: '#090b10',
+        }}
+      >
+        {/* − = zoom out = larger range = higher index */}
+        <button
+          style={btnStyle}
+          onClick={() => applyZoom(zoomIdx + 1)}
+          disabled={zoomIdx >= ZOOM_STOPS.length - 1}
+          title="Zoom out"
+        >
+          −
+        </button>
+
+        <input
+          type="range"
+          min={0}
+          max={ZOOM_STOPS.length - 1}
+          value={zoomIdx}
+          onChange={(e) => applyZoom(Number(e.target.value))}
+          style={{ flex: 1, accentColor: '#4a90d9', cursor: 'pointer' }}
+        />
+
+        {/* Label: current zoom stop */}
+        <span
+          style={{
+            fontSize: 11,
+            fontFamily: 'monospace',
+            color: '#666',
+            minWidth: 28,
+            textAlign: 'right',
+          }}
+        >
+          {ZOOM_STOP_LABELS[zoomIdx]}
+        </span>
+
+        {/* + = zoom in = smaller range = lower index */}
+        <button
+          style={btnStyle}
+          onClick={() => applyZoom(zoomIdx - 1)}
+          disabled={zoomIdx <= 0}
+          title="Zoom in"
+        >
+          +
+        </button>
+      </div>
     </div>
   );
 }
