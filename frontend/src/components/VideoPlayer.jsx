@@ -11,6 +11,11 @@
  *     Frigate HLS stitches segments automatically.
  *   - absoluteTs = requested_ts + (currentTime - hlsStartOffset)
  *     Maps HLS stream-relative time back to wall-clock timestamps.
+ *
+ * scrubPreviewUrl prop:
+ *   When non-null, renders a position:absolute overlay over the video showing
+ *   the preview JPEG. Uses sticky-last-frame: the overlay image only updates
+ *   when a new Image fires .onload, preventing black flashes during rapid scrub.
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react';
@@ -26,17 +31,58 @@ const HLS_CONFIG = {
   startPosition: -1,
 };
 
-export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSegmentAdvance }) {
+export default function VideoPlayer({
+  playbackTarget,
+  camera,
+  onTimeUpdate,
+  onSegmentAdvance,
+  scrubPreviewUrl,
+}) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null);
   const hlsRef = useRef(null);
   const hlsStartOffset = useRef(0);
   const isHlsActive = useRef(false);
+  const loadingImgRef = useRef(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [displayTime, setDisplayTime] = useState(null);
   const [error, setError] = useState(null);
-  const [hlsMode, setHlsMode] = useState(false); // for UI indicator only
+  const [hlsMode, setHlsMode] = useState(false);
+
+  // Sticky-last-frame: only update displayedPreviewUrl when the new image loads.
+  // This prevents black flashes between frames during rapid scrubbing.
+  const [displayedPreviewUrl, setDisplayedPreviewUrl] = useState(null);
+
+  useEffect(() => {
+    if (!scrubPreviewUrl) return;
+
+    // Cancel any in-flight load
+    if (loadingImgRef.current) {
+      loadingImgRef.current.onload = null;
+      loadingImgRef.current.onerror = null;
+      loadingImgRef.current = null;
+    }
+
+    const img = new Image();
+    loadingImgRef.current = img;
+
+    img.onload = () => {
+      setDisplayedPreviewUrl(scrubPreviewUrl);
+      loadingImgRef.current = null;
+    };
+    img.onerror = () => {
+      // Keep last good frame rather than going blank
+      loadingImgRef.current = null;
+    };
+
+    img.src = scrubPreviewUrl;
+
+    return () => {
+      img.onload = null;
+      img.onerror = null;
+    };
+  }, [scrubPreviewUrl]);
 
   /** Destroy existing hls.js instance if any. */
   function _destroyHls() {
@@ -88,7 +134,6 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
             setError('HLS playback error — trying fallback');
             _destroyHls();
             setHlsMode(false);
-            // Fall through to MP4 in the next render (hls_url cleared by error state)
           }
         });
 
@@ -167,11 +212,9 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
 
     let absoluteTs;
     if (isHlsActive.current) {
-      // HLS: map stream-relative time back to wall-clock
       absoluteTs = playbackTarget.requested_ts +
                    (video.currentTime - hlsStartOffset.current);
     } else {
-      // MP4: segment_start_ts + offset within segment
       absoluteTs = playbackTarget.segment_start_ts + video.currentTime;
     }
 
@@ -180,7 +223,6 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
   }, [playbackTarget, onTimeUpdate]);
 
   const handleEnded = useCallback(() => {
-    // When HLS is active, Frigate handles continuity — no manual advance needed
     if (isHlsActive.current) {
       setIsPlaying(false);
       return;
@@ -194,7 +236,6 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
     if (onSegmentAdvance) {
       onSegmentAdvance(playbackTarget.next_segment_id);
     } else {
-      // Fallback for backwards compat (no parent handler)
       const video = videoRef.current;
       const preload = preloadRef.current;
       if (video && preload && preload.src) {
@@ -214,36 +255,88 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
   }, []);
 
   const hasTarget = playbackTarget != null;
+  const showOverlay = scrubPreviewUrl != null;
+  const showPlaceholder = !hasTarget && !showOverlay;
 
   return (
-    <div style={{ background: '#000', borderRadius: 6, overflow: 'hidden' }}>
-      <video
-        ref={videoRef}
-        style={{
-          width: '100%',
-          display: 'block',
-          maxHeight: 480,
-          background: '#000',
-          minHeight: hasTarget ? 270 : 120,
-        }}
-        onTimeUpdate={handleTimeUpdate}
-        onError={handleError}
-        onEnded={handleEnded}
-        onPlay={() => setIsPlaying(true)}
-        onPause={() => setIsPlaying(false)}
-        playsInline
-        muted
-      />
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        background: '#000',
+        borderRadius: 6,
+        overflow: 'hidden',
+      }}
+    >
+      {/* Viewer area: video + overlay + placeholder */}
+      <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+        <video
+          ref={videoRef}
+          style={{
+            width: '100%',
+            height: '100%',
+            display: 'block',
+            background: '#000',
+            objectFit: 'contain',
+          }}
+          onTimeUpdate={handleTimeUpdate}
+          onError={handleError}
+          onEnded={handleEnded}
+          onPlay={() => setIsPlaying(true)}
+          onPause={() => setIsPlaying(false)}
+          playsInline
+          muted
+        />
 
-      {/* Hidden preload element for next MP4 segment */}
-      <video
-        ref={preloadRef}
-        style={{ display: 'none' }}
-        preload="auto"
-        muted
-      />
+        {/* Hidden preload element for next MP4 segment */}
+        <video ref={preloadRef} style={{ display: 'none' }} preload="auto" muted />
 
-      {/* Controls */}
+        {/* Scrub preview overlay — shown while hovering the timeline */}
+        {showOverlay && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: '#000',
+            }}
+          >
+            {displayedPreviewUrl && (
+              <img
+                src={displayedPreviewUrl}
+                alt="Preview"
+                style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+              />
+            )}
+          </div>
+        )}
+
+        {/* Placeholder when no playback target and no preview overlay */}
+        {showPlaceholder && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+              pointerEvents: 'none',
+            }}
+          >
+            <span style={{ fontSize: 52, color: '#2a2d37' }}>▶</span>
+            <span style={{ color: '#3a3d47', fontSize: 12, fontFamily: 'monospace' }}>
+              Hover timeline to preview · click to play
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Controls bar */}
       <div
         style={{
           display: 'flex',
@@ -252,6 +345,7 @@ export default function VideoPlayer({ playbackTarget, camera, onTimeUpdate, onSe
           padding: '8px 12px',
           background: '#111',
           borderTop: '1px solid #333',
+          flexShrink: 0,
         }}
       >
         <button
