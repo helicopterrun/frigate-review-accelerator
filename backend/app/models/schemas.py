@@ -32,6 +32,7 @@ class EventInfo(BaseModel):
     end_ts: float | None
     label: str
     score: float | None
+    has_snapshot: bool = False
 
 
 class ActivityBucket(BaseModel):

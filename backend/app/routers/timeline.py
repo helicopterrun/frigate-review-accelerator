@@ -12,7 +12,9 @@ All timestamp parameters are Unix timestamps (float).
 import math
 from collections import defaultdict
 
+import httpx
 from fastapi import APIRouter, Query, HTTPException
+from fastapi.responses import Response
 
 from app.config import settings
 from app.models.database import get_db
@@ -207,7 +209,7 @@ async def get_timeline(
 
         # Events overlapping the range
         evt_rows = await db.execute_fetchall(
-            """SELECT id, camera, start_ts, end_ts, label, score
+            """SELECT id, camera, start_ts, end_ts, label, score, has_snapshot
                FROM events
                WHERE camera = ?
                  AND (end_ts IS NULL OR end_ts >= ?)
@@ -219,7 +221,7 @@ async def get_timeline(
         events = [
             EventInfo(
                 id=r[0], camera=r[1], start_ts=r[2], end_ts=r[3],
-                label=r[4], score=r[5],
+                label=r[4], score=r[5], has_snapshot=bool(r[6]),
             )
             for r in evt_rows
         ]
@@ -340,6 +342,24 @@ async def get_playback_target(
             next_segment_id=next_id,
             hls_url=hls_url,
         )
+
+
+@router.get("/events/{event_id}/snapshot")
+async def get_event_snapshot(event_id: str):
+    """Proxy Frigate event snapshot to avoid CORS issues on the frontend."""
+    url = f"{settings.frigate_api_url}/api/events/{event_id}/snapshot.jpg"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(url)
+            if r.status_code == 200:
+                return Response(
+                    content=r.content,
+                    media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
+    except Exception:
+        pass
+    raise HTTPException(status_code=404, detail="Snapshot not available")
 
 
 @router.post("/index/scan", response_model=list[ScanResult])

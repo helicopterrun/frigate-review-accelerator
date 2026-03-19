@@ -105,6 +105,11 @@ export function segmentStreamUrl(segmentId, offsetSec) {
   return base;
 }
 
+/** Build the URL for a Frigate event snapshot (proxied through backend). */
+export function eventSnapshotUrl(eventId) {
+  return `${API_BASE}/events/${eventId}/snapshot`;
+}
+
 /** GET /api/health */
 export async function fetchHealth() {
   return apiFetch('/health');

@@ -19,6 +19,7 @@ export default function CameraSelector({
   onSelectMany,
   multiMode = false,
   maxSelect = 4,
+  isMobile = false,
 }) {
   if (!cameras || cameras.length === 0) {
     return (
@@ -31,7 +32,7 @@ export default function CameraSelector({
   if (!multiMode) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <label style={{ color: '#aaa', fontSize: 17 }}>Camera:</label>
+        {!isMobile && <label style={{ color: '#aaa', fontSize: 17 }}>Camera:</label>}
         <select
           value={selected || ''}
           onChange={(e) => onSelect && onSelect(e.target.value)}
@@ -41,14 +42,17 @@ export default function CameraSelector({
             border: '1px solid #333',
             borderRadius: 4,
             padding: '6px 12px',
-            fontSize: 19,
+            fontSize: isMobile ? 16 : 19,
             cursor: 'pointer',
-            minWidth: 180,
+            minWidth: isMobile ? undefined : 180,
+            width: isMobile ? '100%' : undefined,
           }}
         >
           {cameras.map((cam) => (
             <option key={cam.name} value={cam.name}>
-              {cam.name} ({cam.segment_count} segs · {cam.preview_count} frames)
+              {isMobile
+                ? cam.name
+                : `${cam.name} (${cam.segment_count} segs · ${cam.preview_count} frames)`}
             </option>
           ))}
         </select>
