@@ -299,7 +299,7 @@ export default function Timeline({
     if (activeTs != null) {
       const cx = tsToX(activeTs);
       ctx.strokeStyle = CURSOR_COLOR;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(cx, 0);
       ctx.lineTo(cx, TIMELINE_HEIGHT);
@@ -444,7 +444,7 @@ export default function Timeline({
           <img
             src={displayedUrl}
             alt="Preview"
-            style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
           />
         ) : null}
         {showPreview && displayTs != null && (

@@ -260,7 +260,7 @@ export default function VerticalTimeline({
       ctx.stroke();
 
       ctx.fillStyle = '#4a4f65';
-      ctx.font = '11px monospace';
+      ctx.font = '15px monospace';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.fillText(formatTimeShort(t), LABEL_WIDTH - 4, y);
@@ -290,31 +290,31 @@ export default function VerticalTimeline({
       const cy = tsToY(cursorTs);
 
       ctx.strokeStyle = '#ff4444';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 4;
       ctx.beginPath();
       ctx.moveTo(barStart, cy);
       ctx.lineTo(barEnd, cy);
       ctx.stroke();
 
       const label = formatTimeShort(cursorTs);
-      ctx.font = 'bold 11px monospace';
+      ctx.font = 'bold 15px monospace';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'top';
       const textW = ctx.measureText(label).width;
       const badgePad = 3;
       const badgeX = barStart + 4;
-      const badgeY = Math.max(cy - 16, 0);
+      const badgeY = Math.max(cy - 21, 0);
 
       ctx.fillStyle = 'rgba(20,10,10,0.85)';
       ctx.strokeStyle = '#ff4444';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.rect(badgeX - badgePad, badgeY, textW + badgePad * 2, 14);
+      ctx.rect(badgeX - badgePad, badgeY, textW + badgePad * 2, 19);
       ctx.fill();
       ctx.stroke();
 
       ctx.fillStyle = '#ff8888';
-      ctx.fillText(label, badgeX, badgeY + 2);
+      ctx.fillText(label, badgeX, badgeY + 3);
     }
   }, [dims, startTs, endTs, range, segments, gaps, events, activity, cursorTs, hoverY, tsToY]);
 

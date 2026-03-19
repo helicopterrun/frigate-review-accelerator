@@ -288,7 +288,7 @@ export default function App() {
         {/* "Go to" group — single-camera mode only */}
         {!multiMode && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ color: '#666', fontSize: 12 }}>Go to:</span>
+            <span style={{ color: '#666', fontSize: 16 }}>Go to:</span>
             <input
               type="datetime-local"
               value={gotoValue}
@@ -300,7 +300,7 @@ export default function App() {
                 color: '#aaa',
                 padding: '3px 6px',
                 borderRadius: 4,
-                fontSize: 12,
+                fontSize: 16,
               }}
             />
             <button onClick={handleGoto} style={styles.rangeBtn}>
@@ -423,8 +423,8 @@ const styles = {
     paddingBottom: 8,
     flexShrink: 0,
   },
-  title: { fontSize: 20, fontWeight: 600, color: '#e0e0e0', margin: 0 },
-  healthBadge: { fontSize: 13, color: '#888', display: 'flex', alignItems: 'center' },
+  title: { fontSize: 27, fontWeight: 600, color: '#e0e0e0', margin: 0 },
+  healthBadge: { fontSize: 17, color: '#888', display: 'flex', alignItems: 'center' },
   error: {
     background: '#3a1515',
     border: '1px solid #5a2020',
@@ -432,7 +432,7 @@ const styles = {
     padding: '6px 12px',
     borderRadius: 4,
     marginBottom: 8,
-    fontSize: 14,
+    fontSize: 19,
     flexShrink: 0,
   },
   controls: {
@@ -451,7 +451,7 @@ const styles = {
     padding: '4px 10px',
     borderRadius: 4,
     cursor: 'pointer',
-    fontSize: 12,
+    fontSize: 16,
   },
   singleLayout: {
     display: 'flex',
@@ -476,15 +476,15 @@ const styles = {
   },
   timestamp: {
     color: '#4CAF50',
-    fontSize: 13,
+    fontSize: 17,
     fontFamily: 'monospace',
   },
   coverageStats: {
     color: '#444',
-    fontSize: 12,
+    fontSize: 16,
   },
   timelineCol: {
-    width: 215,
+    width: 230,
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
@@ -496,7 +496,7 @@ const styles = {
   rangeLabel: {
     padding: '4px 0',
     textAlign: 'center',
-    fontSize: 12,
+    fontSize: 16,
     color: '#555',
     borderBottom: '1px solid #1e2130',
     flexShrink: 0,

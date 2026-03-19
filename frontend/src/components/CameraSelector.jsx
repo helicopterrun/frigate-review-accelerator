@@ -22,7 +22,7 @@ export default function CameraSelector({
 }) {
   if (!cameras || cameras.length === 0) {
     return (
-      <div style={{ color: '#888', fontSize: 13, padding: '8px 0' }}>
+      <div style={{ color: '#888', fontSize: 17, padding: '8px 0' }}>
         No cameras indexed yet. Check backend health.
       </div>
     );
@@ -31,7 +31,7 @@ export default function CameraSelector({
   if (!multiMode) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <label style={{ color: '#aaa', fontSize: 13 }}>Camera:</label>
+        <label style={{ color: '#aaa', fontSize: 17 }}>Camera:</label>
         <select
           value={selected || ''}
           onChange={(e) => onSelect && onSelect(e.target.value)}
@@ -41,7 +41,7 @@ export default function CameraSelector({
             border: '1px solid #333',
             borderRadius: 4,
             padding: '6px 12px',
-            fontSize: 14,
+            fontSize: 19,
             cursor: 'pointer',
             minWidth: 180,
           }}
@@ -69,7 +69,7 @@ export default function CameraSelector({
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <label style={{ color: '#aaa', fontSize: 13 }}>Cameras:</label>
+      <label style={{ color: '#aaa', fontSize: 17 }}>Cameras:</label>
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {cameras.map((cam) => {
           const checked = selectedMany.includes(cam.name);
@@ -87,7 +87,7 @@ export default function CameraSelector({
                 padding: '4px 10px',
                 cursor: disabled ? 'not-allowed' : 'pointer',
                 opacity: disabled ? 0.45 : 1,
-                fontSize: 13,
+                fontSize: 17,
                 color: checked ? '#e0e0e0' : '#888',
                 userSelect: 'none',
               }}
@@ -105,7 +105,7 @@ export default function CameraSelector({
         })}
       </div>
       {selectedMany.length > 0 && (
-        <span style={{ color: '#555', fontSize: 11 }}>
+        <span style={{ color: '#555', fontSize: 15 }}>
           {selectedMany.length}/{maxSelect} selected
         </span>
       )}
