@@ -19,6 +19,13 @@
 
 set -euo pipefail
 
+# When this script is invoked from the admin SSE endpoint, its stdout is
+# connected to uvicorn's asyncio pipe reader.  Step 1 of a backend restart
+# is killing uvicorn, which closes that pipe's read end.  Without this trap,
+# the next echo/info call produces EPIPE → SIGPIPE, and set -e exits the
+# script before the new uvicorn process is ever started.
+trap '' PIPE
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKEND_DIR="$PROJECT_ROOT/backend"
@@ -31,10 +38,12 @@ mkdir -p "$LOG_DIR" "$PID_DIR"
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()    { echo -e "${GREEN}[restart]${NC} $*"; }
-warn()    { echo -e "${YELLOW}[restart]${NC} $*"; }
-error()   { echo -e "${RED}[restart]${NC} $*" >&2; }
-section() { echo -e "\n${CYAN}── $* ──${NC}"; }
+# '|| true' prevents set -e from triggering if the write end of the pipe is
+# closed (e.g. when uvicorn dies mid-restart and nobody reads our stdout).
+info()    { echo -e "${GREEN}[restart]${NC} $*" || true; }
+warn()    { echo -e "${YELLOW}[restart]${NC} $*" || true; }
+error()   { echo -e "${RED}[restart]${NC} $*" >&2 || true; }
+section() { echo -e "\n${CYAN}── $* ──${NC}" || true; }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 DO_BACKEND=true
@@ -173,7 +182,7 @@ fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 if $DO_START; then
-  echo ""
+  echo "" || true
   info "All services running. Tail logs with:"
-  echo "       ./scripts/logs.sh"
+  echo "       ./scripts/logs.sh" || true
 fi
