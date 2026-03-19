@@ -126,6 +126,187 @@ function ProgressTab() {
   );
 }
 
+// ── ReindexTab ────────────────────────────────────────────────────────────────
+const REINDEX_PRESETS = [
+  { label: 'Last 1h',  hours: 1,    description: 'Quick fix — finds segments from the last hour' },
+  { label: 'Today',    hours: null,  description: 'From midnight UTC today' },
+  { label: 'Last 24h', hours: 24,   description: 'Yesterday + today' },
+  { label: 'Last 72h', hours: 72,   description: 'Recommended starting point' },
+  { label: '7 days',   hours: 168,  description: 'Full week — slower' },
+  { label: '30 days',  hours: 720,  description: 'Full month — slow, run once' },
+];
+
+function ReindexTab() {
+  const [running, setRunning] = useState(false);
+  const [lines, setLines] = useState([]);
+  const [customHours, setCustomHours] = useState('');
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [lines]);
+
+  async function runReindex(hours) {
+    if (running) return;
+    setRunning(true);
+    setLines([`▶ Reindexing last ${hours}h…`]);
+
+    try {
+      const res = await fetch(`${API}/reindex?since_hours=${hours}`, { method: 'POST' });
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          const eventMatch = frame.match(/^event: (\w+)/m);
+          const dataMatch = frame.match(/^data: (.+)/m);
+          if (!eventMatch || !dataMatch) continue;
+
+          const event = eventMatch[1];
+          const data = dataMatch[1];
+
+          if (event === 'line') {
+            setLines(prev => [...prev, data]);
+          } else if (event === 'done') {
+            try {
+              const parsed = JSON.parse(data);
+              setLines(prev => [
+                ...prev,
+                `✓ Complete: ${parsed.total} new segments across ${parsed.cameras} cameras`,
+              ]);
+            } catch {
+              setLines(prev => [...prev, '✓ Complete']);
+            }
+            setRunning(false);
+          } else if (event === 'error') {
+            try {
+              const parsed = JSON.parse(data);
+              setLines(prev => [...prev, `✗ Error: ${parsed.msg}`]);
+            } catch {
+              setLines(prev => [...prev, `✗ Error: ${data}`]);
+            }
+            setRunning(false);
+          }
+        }
+      }
+    } catch (err) {
+      setLines(prev => [...prev, `✗ Fetch error: ${err.message}`]);
+      setRunning(false);
+    }
+  }
+
+  function getTodayHours() {
+    const now = Date.now() / 1000;
+    const midnight = Math.floor(now / 86400) * 86400;
+    return Math.ceil((now - midnight) / 3600) + 1;
+  }
+
+  return (
+    <div style={{ padding: 12 }}>
+      <div style={{
+        fontSize: 11, color: '#666', marginBottom: 12, lineHeight: 1.6,
+        borderLeft: '2px solid #2a2d37', paddingLeft: 8,
+      }}>
+        Targeted reindex scans recording directories within a time window,
+        bypassing the incremental scanner. Use this when the timeline shows
+        gaps despite recordings existing in Frigate.
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
+        {REINDEX_PRESETS.map(({ label, hours, description }) => {
+          const resolvedHours = hours ?? getTodayHours();
+          return (
+            <button
+              key={label}
+              onClick={() => runReindex(resolvedHours)}
+              disabled={running}
+              style={{
+                background: '#13161f',
+                border: '1px solid #2a2d37',
+                borderRadius: 4,
+                padding: '8px 10px',
+                cursor: running ? 'not-allowed' : 'pointer',
+                opacity: running ? 0.5 : 1,
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ color: '#4ecdc4', fontSize: 12, fontFamily: 'monospace', fontWeight: 600, marginBottom: 2 }}>
+                {label}
+              </div>
+              <div style={{ color: '#555', fontSize: 10 }}>
+                {description}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+        padding: '8px 10px', background: '#13161f',
+        border: '1px solid #2a2d37', borderRadius: 4,
+      }}>
+        <span style={{ color: '#666', fontSize: 11, flexShrink: 0 }}>Custom:</span>
+        <input
+          type="number"
+          min="1"
+          max="8760"
+          value={customHours}
+          onChange={e => setCustomHours(e.target.value)}
+          placeholder="hours"
+          style={{
+            flex: 1, background: '#0a0c12', border: '1px solid #333',
+            borderRadius: 3, color: '#aaa', fontSize: 11,
+            padding: '3px 6px', fontFamily: 'monospace',
+          }}
+        />
+        <span style={{ color: '#555', fontSize: 11, flexShrink: 0 }}>hours</span>
+        <button
+          onClick={() => { const h = parseFloat(customHours); if (!isNaN(h) && h > 0) runReindex(h); }}
+          disabled={running || !customHours || isNaN(parseFloat(customHours))}
+          style={{
+            background: '#1a1d27', border: '1px solid #333', borderRadius: 3,
+            color: '#aaa', padding: '3px 10px', cursor: 'pointer',
+            fontSize: 11, fontFamily: 'monospace', flexShrink: 0,
+          }}
+        >
+          Go
+        </button>
+      </div>
+
+      {lines.length > 0 && (
+        <div style={{
+          background: '#0a0c12', border: '1px solid #1e2130', borderRadius: 4,
+          padding: '8px 10px', fontSize: 11, fontFamily: 'monospace',
+          maxHeight: 200, overflowY: 'auto',
+        }}>
+          {lines.map((line, i) => (
+            <div key={i} style={{
+              color: line.startsWith('✓') ? '#6bcb77'
+                   : line.startsWith('✗') ? '#ff6b6b'
+                   : line.startsWith('▶') ? '#4ecdc4'
+                   : line.startsWith('  ') ? '#888'
+                   : '#ccc',
+              lineHeight: 1.6,
+            }}>
+              {line}
+            </div>
+          ))}
+          {running && <div style={{ color: '#666', marginTop: 4 }}>Running…</div>}
+          <div ref={bottomRef} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── LogPane ───────────────────────────────────────────────────────────────────
 function LogPane({ lines, isLive, filter, onFilterChange }) {
   const bottomRef = useRef(null);
@@ -385,7 +566,7 @@ export default function AdminPanel() {
             </div>
 
             <div style={s.tabs}>
-              {['logs', 'status', 'progress', 'script'].map((t) => (
+              {['logs', 'status', 'progress', 'reindex', 'script'].map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -418,6 +599,8 @@ export default function AdminPanel() {
           )}
 
           {tab === 'progress' && <ProgressTab />}
+
+          {tab === 'reindex' && <ReindexTab />}
 
           {tab === 'script' && (
             <div style={{ ...s.logOutput, height: 280 }}>
