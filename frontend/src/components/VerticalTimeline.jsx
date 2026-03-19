@@ -115,6 +115,7 @@ export default function VerticalTimeline({
   onSeek,
   onRangeChange,
   onPreviewRequest = null,
+  isMobile = false,
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -454,11 +455,26 @@ export default function VerticalTimeline({
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         <canvas
           ref={canvasRef}
-          style={{ cursor: 'crosshair', display: 'block' }}
+          style={{ cursor: 'crosshair', display: 'block', touchAction: 'manipulation' }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
+          onTouchStart={(e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY });
+          }}
+          onTouchMove={(e) => {
+            e.preventDefault();
+            const touch = e.touches[0];
+            handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
+          }}
+          onTouchEnd={(e) => {
+            e.preventDefault();
+            const touch = e.changedTouches[0];
+            handleMouseUp({ clientX: touch.clientX, clientY: touch.clientY });
+          }}
         />
       </div>
 
@@ -476,7 +492,12 @@ export default function VerticalTimeline({
       >
         {/* − = zoom out = larger range = higher index */}
         <button
-          style={btnStyle}
+          style={{
+            ...btnStyle,
+            width: isMobile ? 36 : 28,
+            height: isMobile ? 36 : 28,
+            fontSize: isMobile ? 20 : 16,
+          }}
           onClick={() => applyZoom(zoomIdx + 1)}
           disabled={zoomIdx >= ZOOM_STOPS.length - 1}
           title="Zoom out"
@@ -508,7 +529,12 @@ export default function VerticalTimeline({
 
         {/* + = zoom in = smaller range = lower index */}
         <button
-          style={btnStyle}
+          style={{
+            ...btnStyle,
+            width: isMobile ? 36 : 28,
+            height: isMobile ? 36 : 28,
+            fontSize: isMobile ? 20 : 16,
+          }}
           onClick={() => applyZoom(zoomIdx - 1)}
           disabled={zoomIdx <= 0}
           title="Zoom in"
