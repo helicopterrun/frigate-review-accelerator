@@ -685,6 +685,7 @@ export default function App() {
                 isMobile={isMobile}
                 eventSnapshot={activeEventSnapshot}
                 onSeek={handleSeek}
+                onPlaybackStart={() => setActiveEventSnapshot(null)}
               />
             </div>
 

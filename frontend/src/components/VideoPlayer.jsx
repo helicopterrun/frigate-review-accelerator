@@ -48,6 +48,7 @@ export default function VideoPlayer({
   isMobile = false,
   eventSnapshot = null,
   onSeek = null,
+  onPlaybackStart = null,
 }) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null);
@@ -295,7 +296,10 @@ export default function VideoPlayer({
           onTimeUpdate={handleTimeUpdate}
           onError={handleError}
           onEnded={handleEnded}
-          onPlay={() => setIsPlaying(true)}
+          onPlay={() => {
+            setIsPlaying(true);
+            if (onPlaybackStart) onPlaybackStart();
+          }}
           onPause={() => setIsPlaying(false)}
           playsInline
           muted
