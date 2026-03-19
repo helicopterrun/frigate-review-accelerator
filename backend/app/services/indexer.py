@@ -315,6 +315,141 @@ async def index_segments_async():
     return await loop.run_in_executor(None, index_segments_sync)
 
 
+def index_segments_since(
+    since_ts: float,
+    recordings_path: Path | None = None,
+    db_path: Path | None = None,
+) -> dict[str, int]:
+    """Index all segments newer than since_ts, bypassing scan_state.
+
+    Unlike index_segments_sync which uses mtime-based incremental scanning,
+    this function walks the directory tree by DATE and only enters directories
+    whose date/hour falls within [since_ts, now]. This guarantees it finds
+    any segments that the incremental scanner missed.
+
+    Returns {camera: new_segment_count}.
+    """
+    from app.models.database import init_db_sync
+    from datetime import timedelta
+
+    recordings_path = recordings_path or settings.frigate_recordings_path
+    db_path = db_path or settings.database_path
+    init_db_sync()
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+
+    # Get already-indexed paths so we can skip them quickly
+    existing = set(
+        row[0] for row in conn.execute("SELECT path FROM segments").fetchall()
+    )
+
+    root = recordings_path
+    if not root.is_dir():
+        conn.close()
+        return {}
+
+    # Build set of (date_str, hour_str) pairs that fall within our window
+    now = time.time()
+    since_dt = datetime.fromtimestamp(since_ts, tz=timezone.utc)
+    now_dt = datetime.fromtimestamp(now, tz=timezone.utc)
+
+    valid_hours: set[tuple[str, str]] = set()
+    cursor = since_dt.replace(minute=0, second=0, microsecond=0)
+    while cursor <= now_dt + timedelta(hours=1):
+        valid_hours.add((cursor.strftime("%Y-%m-%d"), cursor.strftime("%H")))
+        cursor += timedelta(hours=1)
+
+    valid_dates = {d for d, _h in valid_hours}
+
+    # Walk only the matching directories
+    mp4_files: list[Path] = []
+    try:
+        for day_entry in os.scandir(root):
+            if not day_entry.is_dir():
+                continue
+            if day_entry.name not in valid_dates:
+                continue
+            for hour_entry in os.scandir(day_entry.path):
+                if not hour_entry.is_dir():
+                    continue
+                if (day_entry.name, hour_entry.name) not in valid_hours:
+                    continue
+                for cam_entry in os.scandir(hour_entry.path):
+                    if not cam_entry.is_dir():
+                        continue
+                    for entry in os.scandir(cam_entry.path):
+                        if entry.name.endswith(".mp4") and entry.is_file():
+                            mp4_files.append(Path(entry.path))
+    except PermissionError as exc:
+        log.warning("Reindex scan permission error: %s", exc)
+
+    # Parse and filter to only new segments
+    new_segments = []
+    for mp4 in mp4_files:
+        rel = mp4.relative_to(root)
+        parsed = parse_segment_path(str(rel))
+        if parsed is None:
+            continue
+        if str(rel) in existing:
+            continue
+        new_segments.append({
+            **parsed,
+            "path": str(rel),
+            "abs_path": str(mp4),
+            "file_size": mp4.stat().st_size,
+        })
+
+    if not new_segments:
+        log.info("Targeted reindex: no new segments found in last %.0f hours",
+                 (now - since_ts) / 3600)
+        conn.close()
+        return {}
+
+    log.info("Targeted reindex: found %d new segments in last %.0f hours",
+             len(new_segments), (now - since_ts) / 3600)
+
+    now_ts = time.time()
+    camera_counts: dict[str, int] = {}
+    batch_size = 200
+
+    for i in range(0, len(new_segments), batch_size):
+        batch = new_segments[i:i + batch_size]
+        rows = []
+        for seg in batch:
+            rows.append((
+                seg["camera"],
+                seg["start_ts"],
+                seg["start_ts"] + 10.0,  # default duration — Frigate segments are ~10s
+                10.0,
+                seg["path"],
+                seg["file_size"],
+                now_ts,
+                0,  # previews_generated = pending
+            ))
+            camera_counts[seg["camera"]] = camera_counts.get(seg["camera"], 0) + 1
+
+        conn.executemany(
+            """INSERT OR IGNORE INTO segments
+               (camera, start_ts, end_ts, duration, path, file_size,
+                indexed_at, previews_generated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        conn.commit()
+        log.info("Reindex batch %d-%d / %d", i, i + len(batch), len(new_segments))
+
+    conn.close()
+    log.info("Targeted reindex complete: %s", camera_counts)
+    return camera_counts
+
+
+async def index_segments_since_async(since_ts: float) -> dict[str, int]:
+    """Async wrapper for targeted reindex — runs in thread pool."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, index_segments_since, since_ts)
+
+
 # CLI entry point
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

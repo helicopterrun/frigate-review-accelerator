@@ -233,6 +233,65 @@ async def admin_status():
     }
 
 
+@router.post("/reindex")
+async def admin_reindex(since_hours: float = 72.0):
+    """Trigger a targeted reindex from a given number of hours ago.
+
+    Bypasses scan_state entirely — does a full directory walk of all
+    recording directories whose date/hour falls within the window.
+    This finds segments that were missed by the incremental scanner.
+
+    Args:
+        since_hours: How many hours back to scan. Default 72.
+
+    Returns SSE stream of progress.
+    """
+    from app.services.indexer import index_segments_since_async
+    import datetime as _dt
+
+    async def _generate():
+        since_ts = time.time() - (since_hours * 3600)
+        since_label = _dt.datetime.utcfromtimestamp(since_ts).strftime('%Y-%m-%d %H:%M')
+        yield _sse("line", f"Starting targeted reindex: last {since_hours:.0f}h "
+                           f"(since {since_label} UTC)")
+        try:
+            result = await index_segments_since_async(since_ts)
+            total = sum(result.values())
+            for camera, count in sorted(result.items()):
+                if count > 0:
+                    yield _sse("line", f"  {camera}: +{count} new segments")
+            yield _sse_json("done", {"returncode": 0, "total": total, "cameras": len(result)})
+        except Exception as exc:
+            log.exception("Reindex error: %s", exc)
+            yield _sse_json("error", {"returncode": -1, "msg": str(exc)})
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/reset-scan-state")
+async def admin_reset_scan_state():
+    """Reset scan_state for all cameras, forcing a full rescan on next worker cycle.
+
+    Use this if targeted reindex doesn't find expected segments.
+    The next worker cycle (within scan_interval_sec seconds) will do a full
+    directory walk of all recordings.
+
+    WARNING: The full walk of 1.5M+ segments can take several minutes.
+    """
+    from app.models.database import get_db
+
+    async with get_db() as db:
+        await db.execute("DELETE FROM scan_state")
+        await db.commit()
+
+    log.info("Admin: scan_state reset — next worker cycle will do full rglob")
+    return {"reset": True, "message": "scan_state cleared — full rescan on next worker cycle"}
+
+
 @router.get("/logs/stream")
 async def admin_logs_stream(
     lines: int = 50,
