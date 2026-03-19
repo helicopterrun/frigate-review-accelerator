@@ -11,6 +11,17 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+
+function useIsMobile(breakpoint = 768) {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < breakpoint);
+  useEffect(() => {
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    const handler = (e) => setIsMobile(e.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, [breakpoint]);
+  return isMobile;
+}
 import CameraSelector from './components/CameraSelector.jsx';
 import Timeline from './components/Timeline.jsx';
 import VerticalTimeline from './components/VerticalTimeline.jsx';
@@ -38,6 +49,7 @@ function toDatetimeLocal(ts) {
 }
 
 export default function App() {
+  const isMobile = useIsMobile();
   const [cameras, setCameras] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState(null);
   const [selectedCameras, setSelectedCameras] = useState([]);
@@ -280,6 +292,8 @@ export default function App() {
             ...styles.rangeBtn,
             borderColor: multiMode ? '#2196F3' : '#333',
             color: multiMode ? '#2196F3' : '#aaa',
+            padding: isMobile ? '8px 14px' : '4px 10px',
+            fontSize: isMobile ? '15px' : '16px',
           }}
         >
           {multiMode ? '◈ Single' : '◈ Split'}
@@ -303,7 +317,11 @@ export default function App() {
                 fontSize: 16,
               }}
             />
-            <button onClick={handleGoto} style={styles.rangeBtn}>
+            <button onClick={handleGoto} style={{
+              ...styles.rangeBtn,
+              padding: isMobile ? '8px 14px' : '4px 10px',
+              fontSize: isMobile ? '15px' : '16px',
+            }}>
               Go
             </button>
           </div>
@@ -311,7 +329,11 @@ export default function App() {
 
         <div style={styles.rangeButtons}>
           {[1, 4, 8, 24].map((h) => (
-            <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>
+            <button key={h} onClick={() => setRange(h)} style={{
+              ...styles.rangeBtn,
+              padding: isMobile ? '8px 14px' : '4px 10px',
+              fontSize: isMobile ? '15px' : '16px',
+            }}>
               {h}h
             </button>
           ))}
@@ -329,9 +351,9 @@ export default function App() {
         />
       ) : !multiMode ? (
         /* ── Single-camera: 2-column layout ── */
-        <div style={styles.singleLayout}>
-          {/* Left: video viewer column */}
-          <div style={styles.viewerCol}>
+        <div style={{ ...styles.singleLayout, flexDirection: isMobile ? 'column' : 'row' }}>
+          {/* Left/top: video viewer column */}
+          <div style={{ ...styles.viewerCol, flex: isMobile ? 'none' : 1 }}>
             <div style={{ flex: 1, minHeight: 0 }}>
               <VideoPlayer
                 playbackTarget={playbackTarget}
@@ -357,8 +379,13 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right: vertical timeline column */}
-          <div style={styles.timelineCol}>
+          {/* Right/bottom: vertical timeline column */}
+          <div style={{
+            ...styles.timelineCol,
+            width: isMobile ? '100%' : 230,
+            height: isMobile ? 280 : undefined,
+            flexShrink: 0,
+          }}>
             {/* Top range label */}
             <div style={styles.rangeLabel}>
               {new Date(rangeStart * 1000).toLocaleTimeString([], {
@@ -381,6 +408,7 @@ export default function App() {
                 onScrubEnd={handleScrubEnd}
                 onSeek={handleSeek}
                 onRangeChange={handleRangeChange}
+                isMobile={isMobile}
                 onPreviewRequest={(ts) => {
                   const halfWindow = 5 * 60;
                   requestPreviews(selectedCamera, ts - halfWindow, ts + halfWindow).catch(() => {});
