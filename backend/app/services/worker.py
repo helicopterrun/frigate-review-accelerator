@@ -36,8 +36,8 @@ log = logging.getLogger(__name__)
 _worker_task: asyncio.Task | None = None
 
 # Run background (Tier 2) crawl every N worker cycles.
-# At scan_interval_sec=30 and BACKGROUND_INTERVAL=10, that's every ~5 minutes.
-BACKGROUND_INTERVAL = 10
+# At scan_interval_sec=30 and BACKGROUND_INTERVAL=3, that's every ~90 seconds.
+BACKGROUND_INTERVAL = 3
 
 # On-demand queue: (camera, start_ts, end_ts) tuples pushed by the preview
 # router when the frontend signals which time window it needs right now.
@@ -126,7 +126,7 @@ async def _worker_loop():
             # ── Tier 1: recency window ──────────────────────────────────────
             recency_cutoff = time.time() - settings.preview_recency_hours * 3600
             recent_count = await process_pending_async(
-                limit=20,
+                limit=50,
                 min_start_ts=recency_cutoff,
             )
             if recent_count:

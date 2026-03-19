@@ -28,6 +28,14 @@
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { formatTimeShort, clampTs, nowTs } from '../utils/time.js';
 
+function useDebounce(fn, delay) {
+  const timer = useRef(null);
+  return useCallback((...args) => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => fn(...args), delay);
+  }, [fn, delay]);
+}
+
 const LABEL_WIDTH = 58;
 const EVENT_WIDTH = 18;
 
@@ -106,6 +114,7 @@ export default function VerticalTimeline({
   onScrubEnd,
   onSeek,
   onRangeChange,
+  onPreviewRequest = null,
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -113,6 +122,11 @@ export default function VerticalTimeline({
 
   const [dims, setDims] = useState({ w: 215, h: 600 });
   const [hoverY, setHoverY] = useState(null);
+
+  const debouncedPreviewRequest = useDebounce(
+    (ts) => { if (onPreviewRequest) onPreviewRequest(ts); },
+    300
+  );
 
   const range = endTs - startTs;
 
@@ -403,8 +417,9 @@ export default function VerticalTimeline({
       setHoverY(e.clientY - rect.top);
       const ts = getTs(e);
       if (ts != null && onScrub) onScrub(ts);
+      if (ts != null) debouncedPreviewRequest(ts);
     },
-    [getTs, onScrub]
+    [getTs, onScrub, debouncedPreviewRequest]
   );
 
   const handleMouseUp = useCallback(
