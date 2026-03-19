@@ -50,6 +50,33 @@ const LABEL_COLORS = {
   default: '#607D8B',
 };
 
+/**
+ * Snap a timestamp to the nearest covered position in a sorted segment array.
+ *
+ * If ts falls inside a segment: returned as-is (fine-grained scrub still works).
+ * If ts falls in a gap: returns the nearest segment edge so the preview and
+ * cursor always land on actual footage, regardless of zoom level.
+ *
+ * Binary search — O(log n) even across 1.5M segments.
+ */
+function snapToCoverage(ts, segments) {
+  if (!segments?.length) return ts;
+  let lo = 0, hi = segments.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const seg = segments[mid];
+    if (ts < seg.start_ts) hi = mid - 1;
+    else if (ts > seg.end_ts) lo = mid + 1;
+    else return ts; // inside a segment — no snap needed
+  }
+  // In a gap: lo = index of first segment after ts
+  const prev = lo > 0 ? segments[lo - 1] : null;
+  const next = lo < segments.length ? segments[lo] : null;
+  if (!prev) return next.start_ts;
+  if (!next) return prev.end_ts;
+  return (ts - prev.end_ts) <= (next.start_ts - ts) ? prev.end_ts : next.start_ts;
+}
+
 /** Format a Unix timestamp for a datetime-local input value. */
 function toDatetimeLocal(ts) {
   const d = new Date(ts * 1000);
@@ -226,10 +253,12 @@ export default function App() {
   }, []);
 
   // ─── Scrub handler: sets hover position + moves cursor line ───
+  // Snaps to nearest covered segment so preview and cursor never land in a gap.
   const handleScrub = useCallback((ts) => {
-    setHoverTs(ts);
-    setCursorTs(ts);
-  }, []);
+    const snapped = snapToCoverage(ts, timelineData?.segments);
+    setHoverTs(snapped);
+    setCursorTs(snapped);
+  }, [timelineData]);
 
   // ─── Scrub end: clear hover (cursor stays at last position) ───
   const handleScrubEnd = useCallback(() => {
