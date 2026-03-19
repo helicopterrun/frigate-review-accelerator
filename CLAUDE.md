@@ -261,6 +261,38 @@ Patch `app.services.hls.httpx.AsyncClient` when mocking Frigate reachability.
 
 -----
 
+## Claude chat ↔ Claude Code workflow
+
+**Claude.ai (chat):** Diagnose bugs, design solutions, write Claude Code prompts.
+When a fix is agreed on, output a ready-to-paste Claude Code prompt that includes:
+root cause, exact files and line-level changes, invariants to preserve, test
+requirements, and PR instructions (branch name, title, body).
+
+**Claude Code:** Receive the prompt from chat, implement the changes exactly as
+specified, run `pytest` to verify nothing regressed, then create a PR. Do not
+open PRs without running tests first.
+
+This split means chat handles the "what and why", Code handles the "how and when".
+Skip re-explaining context that's already in this file or in the prompt.
+
+-----
+
+## VideoPlayer.jsx closure hygiene
+
+All callbacks that depend on the `camera` prop must list it (or a useCallback
+that captures it) in their dep arrays. Stale `camera` closures cause the player
+to fetch a PlaybackTarget for the wrong camera and load it, producing a visible
+camera switch. This file has been bitten by this twice.
+
+The stable dep chain is: `destroyHls: []` → `loadHls: [destroyHls]` →
+`extendHlsWindow: [camera, loadHls]` → `handleTimeUpdate: [playbackTarget, onTimeUpdate, extendHlsWindow]`
+→ `handleEnded: [playbackTarget, onSegmentAdvance, displayTime, extendHlsWindow]`.
+
+Do not flatten any of these to plain functions or remove `camera` from
+`extendHlsWindow`'s dep array.
+
+-----
+
 ## Conventions
 
 - All timestamps are Unix floats (seconds since epoch). Never use datetime objects
