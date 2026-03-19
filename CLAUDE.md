@@ -208,6 +208,86 @@ The path `/vod/` (without /api/ prefix) returns nginx 400. _build_hls_url in
 hls.py uses the correct /api/vod/ path.
 
 -----
+## Frigate docs usage — verify before changing Frigate-facing behavior
+
+Before modifying any code that depends on Frigate behavior, Claude Code must check the
+official Frigate docs first and cite the relevant page in the PR description or commit notes.
+
+This applies especially to:
+- recording path/layout
+- VOD / playback endpoints
+- event/review API behavior
+- preview/snapshot/media endpoints
+- retention and recording semantics
+- Home Assistant / MQTT integration assumptions
+
+Primary doc areas:
+- Recording: https://docs.frigate.video/configuration/record/
+- HTTP API index: https://docs.frigate.video/integrations/api/frigate-http-api/
+- VOD Hour API: https://docs.frigate.video/integrations/api/vod-hour-vod-year-month-day-hour-camera-name-tz-name-get/
+- Recordings summary API: https://docs.frigate.video/integrations/api/all-recordings-summary-recordings-summary-get/
+- Snapshot from recording API: https://docs.frigate.video/integrations/api/get-snapshot-from-recording-camera-name-recordings-frame-time-snapshot-format-get/
+
+Do not rely on memory alone for Frigate API or path assumptions.
+
+-----
+## Real deployment assumptions for this repo
+
+This project is built against a real Frigate installation with:
+- recordings enabled
+- MQTT enabled
+- go2rtc in use
+- multiple cameras with mixed Dahua + Ubiquiti sources
+- detect streams often separate from record streams
+- Frigate API reachable at http://localhost:5000 on host nvr
+
+Important:
+- Never assume all cameras have the same stream topology
+- Never assume audio is present on all cameras
+- Never assume detect and record use the same stream
+- Never assume previews should be generated for the full historical corpus
+
+-----
+## Preview generation policy
+
+Indexing may cover the full historical corpus.
+Preview generation must never eagerly process the full corpus by default.
+
+Preview generation priorities:
+1. on-demand windows the user is actively viewing
+2. recent segments within PREVIEW_RECENCY_HOURS
+3. low-rate background fill for older gaps
+
+Do not enqueue the full database for preview generation on startup.
+Do not regress to "generate every preview for every segment" behavior.
+Any PR touching worker.py or preview_generator.py must preserve this policy.
+-----
+## Frigate config facts relevant to this project
+
+Current Frigate installation characteristics:
+- MQTT enabled
+- recordings enabled
+- semantic_search enabled
+- birdseye enabled
+- Frigate VOD playback available
+- multiple review labels and zones per camera
+- mixed camera fleet with go2rtc restreaming
+- several cameras use separate detect substreams and record main streams
+- hardware acceleration enabled via Intel QSV
+- Frigate version currently tracked in local config
+
+Design implications:
+- timeline/event UX should expect rich review metadata
+- playback compatibility may vary by stream/audio codec
+- frontend should prefer Frigate APIs for media/navigation when they are more efficient than local reconstruction
+- APIs should not assume all cameras support the same enrichments (audio, face recognition, genai, etc.)
+-----
+## Secrets and local environment safety
+
+Never commit secrets, tokens, IP-specific credentials, or copied production .env values.
+Never include actual camera credentials, MQTT passwords, API keys, or private RTSP URLs in PRs, tests, or docs.
+When examples are needed, use placeholders.
+-----
 
 ## Planned v3 features
 
