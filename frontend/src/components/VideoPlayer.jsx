@@ -108,8 +108,8 @@ export default function VideoPlayer({
     };
   }, [scrubPreviewUrl]);
 
-  /** Destroy existing hls.js instance if any. */
-  function _destroyHls() {
+  /** Destroy existing hls.js instance if any. Stable — no external deps. */
+  const destroyHls = useCallback(() => {
     if (hlsRef.current) {
       hlsRef.current.destroy();
       hlsRef.current = null;
@@ -117,20 +117,20 @@ export default function VideoPlayer({
     isHlsActive.current = false;
     hlsWindowEndTs.current = null;
     _hlsExtendingRef.current = false;
-  }
+  }, []);
 
   /** Load (or reload) an HLS source into the video element via hls.js or native HLS. */
-  function _loadHls(video, hlsUrl, seekOffset) {
+  const loadHls = useCallback((video, hlsUrl, seekOffset) => {
     hlsWindowEndTs.current = _parseHlsWindowEnd(hlsUrl);
 
     if (Hls.isSupported()) {
-      _destroyHls();
+      destroyHls();
       setHlsMode(true);
 
       const hls = new Hls(HLS_CONFIG);
       hlsRef.current = hls;
       isHlsActive.current = true;
-      // Re-parse after _destroyHls cleared it
+      // Re-parse after destroyHls cleared it
       hlsWindowEndTs.current = _parseHlsWindowEnd(hlsUrl);
 
       hls.loadSource(hlsUrl);
@@ -147,7 +147,7 @@ export default function VideoPlayer({
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         if (data.fatal) {
           setError('HLS playback error — trying fallback');
-          _destroyHls();
+          destroyHls();
           setHlsMode(false);
         }
       });
@@ -164,10 +164,11 @@ export default function VideoPlayer({
       };
       video.addEventListener('loadedmetadata', onMeta, { once: true });
     }
-  }
+  }, [destroyHls]);
 
-  /** Extend the HLS window to cover currentAbsoluteTs + 24h, preserving playback. */
-  async function _extendHlsWindow(currentAbsoluteTs) {
+  /** Extend the HLS window to cover currentAbsoluteTs + 24h, preserving playback.
+   *  camera must be in the dep array — stale closures here cause cross-camera fetches. */
+  const extendHlsWindow = useCallback(async (currentAbsoluteTs) => {
     if (_hlsExtendingRef.current) return;
     if (Math.abs(currentAbsoluteTs - _lastExtendTs.current) < 30) return;
     _hlsExtendingRef.current = true;
@@ -177,14 +178,14 @@ export default function VideoPlayer({
     try {
       const newTarget = await fetchPlaybackTarget(camera, currentAbsoluteTs);
       if (newTarget?.hls_url) {
-        _loadHls(video, newTarget.hls_url, Math.min(newTarget.offset_sec, 30));
+        loadHls(video, newTarget.hls_url, Math.min(newTarget.offset_sec, 30));
       }
     } catch (e) {
       console.warn('HLS window extension failed:', e);
     } finally {
       _hlsExtendingRef.current = false;
     }
-  }
+  }, [camera, loadHls]);
 
   /**
    * Load a new playback target into the video element.
@@ -205,13 +206,13 @@ export default function VideoPlayer({
       const seekOffset = Math.min(playbackTarget.offset_sec, 30);
 
       if (Hls.isSupported() || video.canPlayType('application/vnd.apple.mpegurl')) {
-        _loadHls(video, playbackTarget.hls_url, seekOffset);
-        return () => { _destroyHls(); };
+        loadHls(video, playbackTarget.hls_url, seekOffset);
+        return () => { destroyHls(); };
       }
     }
 
     // ── Path 3: MP4 segment fallback ─────────────────────────────────────────
-    _destroyHls();
+    destroyHls();
     setHlsMode(false);
 
     const url = playbackTarget.stream_url;
@@ -232,12 +233,12 @@ export default function VideoPlayer({
       preloadRef.current.src = nextUrl;
       preloadRef.current.preload = 'auto';
     }
-  }, [playbackTarget]);
+  }, [playbackTarget, loadHls, destroyHls]);
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => { _destroyHls(); };
-  }, []);
+    return () => { destroyHls(); };
+  }, [destroyHls]);
 
   const handlePlay = useCallback(() => {
     const video = videoRef.current;
@@ -269,15 +270,15 @@ export default function VideoPlayer({
     if (isHlsActive.current && hlsWindowEndTs.current && !_hlsExtendingRef.current) {
       const secsUntilWindowEnd = hlsWindowEndTs.current - absoluteTs;
       if (secsUntilWindowEnd > 0 && secsUntilWindowEnd < WINDOW_EXTEND_THRESHOLD_SEC) {
-        _extendHlsWindow(absoluteTs);
+        extendHlsWindow(absoluteTs);
       }
     }
-  }, [playbackTarget, onTimeUpdate]);
+  }, [playbackTarget, onTimeUpdate, extendHlsWindow]);
 
   const handleEnded = useCallback(() => {
     if (isHlsActive.current) {
       if (displayTime && !_hlsExtendingRef.current) {
-        _extendHlsWindow(displayTime);
+        extendHlsWindow(displayTime);
         return;
       }
       setIsPlaying(false);
@@ -303,7 +304,7 @@ export default function VideoPlayer({
         setIsPlaying(false);
       }
     }
-  }, [playbackTarget, onSegmentAdvance]);
+  }, [playbackTarget, onSegmentAdvance, displayTime, extendHlsWindow]);
 
   const handleError = useCallback(() => {
     setError('Failed to load video segment');

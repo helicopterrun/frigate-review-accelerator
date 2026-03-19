@@ -19,6 +19,7 @@ from fastapi.responses import Response
 from app.config import settings
 from app.models.database import get_db
 from app.services.hls import _build_hls_url, _resolve_hls_url
+from app.services.time_index import get_time_index
 from app.models.schemas import (
     ActivityBucket,
     CameraInfo,
@@ -329,6 +330,7 @@ async def get_playback_target(
         )
         next_id = next_rows[0][0] if next_rows else None
 
+        # Playback = Frigate VOD only. See CLAUDE.md architectural invariant.
         hls_url = await _resolve_hls_url(camera, ts, seg_start)
 
         return PlaybackTarget(
@@ -378,6 +380,89 @@ async def trigger_scan():
                 total_segments=row[0][0],
             ))
         return results
+
+
+@router.get("/timeline/buckets")
+async def get_timeline_buckets(
+    camera: str = Query(..., description="Camera name"),
+    start: float = Query(..., description="Start timestamp (Unix)"),
+    end: float = Query(..., description="End timestamp (Unix)"),
+    resolution: int = Query(60, description="Number of time buckets across the range", ge=1, le=500),
+):
+    """Get time-indexed bucket coverage for a camera + range.
+
+    Returns one entry per logical bucket, each indicating whether a preview
+    image exists on disk and the density of Frigate events in that window.
+    No segment DB query required — preview existence is checked via stat().
+
+    Response shape:
+    {
+      "camera": "...",
+      "start_ts": 0.0,
+      "end_ts": 0.0,
+      "resolution": 60,
+      "bucket_count": 60,
+      "buckets": [{"ts": 0.0, "has_preview": true, "event_density": 3}]
+    }
+    """
+    # Load events from DB for the range (same query as /timeline)
+    async with get_db() as db:
+        evt_rows = await db.execute_fetchall(
+            """SELECT id, camera, start_ts, end_ts, label, score, has_snapshot
+               FROM events
+               WHERE camera = ?
+                 AND (end_ts IS NULL OR end_ts >= ?)
+                 AND start_ts <= ?
+               ORDER BY start_ts""",
+            (camera, start, end),
+        )
+
+    events = [
+        EventInfo(
+            id=r[0], camera=r[1], start_ts=r[2], end_ts=r[3],
+            label=r[4], score=r[5], has_snapshot=bool(r[6]),
+        )
+        for r in evt_rows
+    ]
+
+    buckets = get_time_index().timeline_buckets(start, end, camera, events, resolution)
+
+    return {
+        "camera": camera,
+        "start_ts": start,
+        "end_ts": end,
+        "resolution": resolution,
+        "bucket_count": len(buckets),
+        "buckets": buckets,
+    }
+
+
+@router.get("/debug/stats")
+async def debug_stats():
+    """Observability endpoint: preview cache stats + scheduler queue stats.
+
+    Pulls preview_hits/misses/cache_size from the ImageCache in preview.py
+    and queue stats from the PreviewScheduler singleton.
+    """
+    from app.routers.preview import _cache
+    from app.services.preview_scheduler import get_scheduler
+
+    sched_stats = get_scheduler().stats()
+    total = _cache.hits + _cache.misses
+    hit_rate = (_cache.hits / total * 100) if total > 0 else 0.0
+
+    return {
+        "preview_hits": _cache.hits,
+        "preview_misses": _cache.misses,
+        "cache_hit_rate_pct": round(hit_rate, 1),
+        "cache_size": _cache.size,
+        "cache_max_size": _cache._max,
+        "queue_depth": sched_stats["queue_depth"],
+        "generation_rate_fps": sched_stats["generation_rate_fps"],
+        "enqueued_total": sched_stats["enqueued_total"],
+        "processed_total": sched_stats["processed_total"],
+        "skipped_dedup": sched_stats["skipped_dedup"],
+    }
 
 
 @router.get("/health", response_model=HealthResponse)
