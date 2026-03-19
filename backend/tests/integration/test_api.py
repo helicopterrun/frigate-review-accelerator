@@ -188,3 +188,108 @@ async def test_playback_gap_prefers_after(client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["segment_start_ts"] == pytest.approx(1700020110.0, abs=1)
+
+
+# ---------------------------------------------------------------------------
+# Timeline buckets — resolution contract and DB-backed preview lookup
+# ---------------------------------------------------------------------------
+
+async def test_timeline_buckets_resolution_source_auto_and_explicit(client):
+    """resolution_source must be 'auto' when param omitted, 'explicit' when provided."""
+    params_base = {"camera": "res-cam", "start": 1700000000.0, "end": 1700003600.0}
+
+    resp_auto = await client.get("/api/timeline/buckets", params=params_base)
+    assert resp_auto.status_code == 200
+    data_auto = resp_auto.json()
+    assert data_auto["resolution_source"] == "auto"
+    assert "resolution" in data_auto
+    assert data_auto["resolution"] > 0
+
+    resp_explicit = await client.get(
+        "/api/timeline/buckets",
+        params={**params_base, "resolution": 120},
+    )
+    assert resp_explicit.status_code == 200
+    data_explicit = resp_explicit.json()
+    assert data_explicit["resolution_source"] == "explicit"
+    assert data_explicit["resolution"] == 120
+
+
+async def test_timeline_buckets_has_preview_from_db_not_filesystem(client, monkeypatch):
+    """has_preview must be True when a DB preview row exists, even with no file on disk."""
+    import sqlite3
+    from app import config
+
+    db_path = config.settings.database_path
+    # Insert a segment covering 1700030000..1700030010
+    _insert_segment(db_path, "db-preview-cam", 1700030000.0, 1700030010.0)
+
+    # Insert a preview row for ts=1700030002.0 (no file created on disk)
+    conn = sqlite3.connect(str(db_path))
+    # Get the segment id just inserted
+    seg_id = conn.execute(
+        "SELECT id FROM segments WHERE camera = ? ORDER BY id DESC LIMIT 1",
+        ("db-preview-cam",),
+    ).fetchone()[0]
+    conn.execute(
+        """INSERT INTO previews (camera, ts, segment_id, image_path, width, height)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        ("db-preview-cam", 1700030002.0, seg_id,
+         "db-preview-cam/2023-11-14/1700030002.00.jpg", 320, 180),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = await client.get(
+        "/api/timeline/buckets",
+        params={
+            "camera": "db-preview-cam",
+            "start": 1700030000.0,
+            "end": 1700030010.0,
+            "resolution": 5,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    has_preview_values = [b["has_preview"] for b in data["buckets"]]
+    # At least one bucket must report has_preview=True (from DB, not filesystem)
+    assert any(has_preview_values), "Expected has_preview=True from DB row, got all False"
+
+
+async def test_worker_one_query_per_camera_group(test_app, monkeypatch):
+    """10 jobs across 2 cameras → exactly 2 DB execute_fetchall queries issued."""
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from app.services.preview_scheduler import PreviewJob, Priority
+    from app.services.worker import _process_scheduler_jobs
+
+    # 5 jobs for cam-a and 5 for cam-b (10 total, 2 camera groups)
+    jobs = []
+    for i in range(5):
+        jobs.append(PreviewJob(
+            priority=Priority.VIEWPORT, enqueued_at=0.0,
+            bucket_ts=1700000000.0 + i * 2, camera="cam-a",
+        ))
+        jobs.append(PreviewJob(
+            priority=Priority.VIEWPORT, enqueued_at=0.0,
+            bucket_ts=1700000000.0 + i * 2, camera="cam-b",
+        ))
+
+    # Mock db returning no rows (no segments match — we only care about query count)
+    mock_db = AsyncMock()
+    mock_db.execute_fetchall = AsyncMock(return_value=[])
+    mock_db.executemany = AsyncMock()
+    mock_db.execute = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    @asynccontextmanager
+    async def mock_get_db():
+        yield mock_db
+
+    monkeypatch.setattr("app.services.worker.get_db", mock_get_db)
+
+    await _process_scheduler_jobs(jobs)
+
+    # Must have made exactly 2 execute_fetchall calls — one per camera group
+    assert mock_db.execute_fetchall.call_count == 2

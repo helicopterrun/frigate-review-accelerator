@@ -24,6 +24,10 @@ from app.config import settings
 from app.services.time_index import get_time_index
 
 
+MAX_QUEUE_DEPTH = 10_000      # drop BACKGROUND jobs above this
+HARD_MAX_QUEUE_DEPTH = 20_000  # drop all jobs except VIEWPORT above this
+
+
 class Priority(IntEnum):
     VIEWPORT = 0
     NEAR_VIEWPORT = 1
@@ -53,6 +57,7 @@ class PreviewScheduler:
         self._enqueued_total: int = 0
         self._processed_total: int = 0
         self._skipped_dedup: int = 0
+        self._skipped_backpressure: int = 0
 
         # Generation rate tracking (rolling window)
         self._rate_window: list[float] = []  # timestamps of completed jobs
@@ -61,16 +66,35 @@ class PreviewScheduler:
     # ------------------------------------------------------------------
     # Enqueue
     # ------------------------------------------------------------------
+    @property
+    def queue_depth(self) -> int:
+        with self._lock:
+            return len(self._heap)
+
     def enqueue(self, camera: str, bucket_ts: float, priority: int) -> bool:
         """Enqueue a single bucket for generation.
 
-        Thread-safe.  Returns False if already queued (dedup), True otherwise.
+        Thread-safe.  Returns False if already queued (dedup) or dropped by
+        admission backpressure.  Jobs are dropped at enqueue time only —
+        never evicted after queuing.
         """
         key = (camera, bucket_ts)
         with self._lock:
             if key in self._dedup:
                 self._skipped_dedup += 1
                 return False
+
+            depth = len(self._heap)
+
+            if depth >= HARD_MAX_QUEUE_DEPTH:
+                if priority > Priority.VIEWPORT:
+                    self._skipped_backpressure += 1
+                    return False
+            elif depth >= MAX_QUEUE_DEPTH:
+                if priority >= Priority.BACKGROUND:
+                    self._skipped_backpressure += 1
+                    return False
+
             job = PreviewJob(
                 priority=priority,
                 enqueued_at=time.monotonic(),
@@ -162,6 +186,7 @@ class PreviewScheduler:
                 "enqueued_total": self._enqueued_total,
                 "processed_total": self._processed_total,
                 "skipped_dedup": self._skipped_dedup,
+                "skipped_backpressure": self._skipped_backpressure,
                 "generation_rate_fps": round(rate, 3),
             }
 

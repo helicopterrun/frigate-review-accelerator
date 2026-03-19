@@ -27,9 +27,11 @@ import time
 from collections import deque
 
 from app.config import settings
+from app.models.database import get_db
 from app.services.indexer import index_segments_async
-from app.services.preview_generator import process_pending_async, delete_old_previews_async
+from app.services.preview_generator import process_pending_async, delete_old_previews_async, generate_previews_for_segment
 from app.services.event_sync import sync_frigate_events
+from app.services.preview_scheduler import get_scheduler
 
 log = logging.getLogger(__name__)
 
@@ -75,11 +77,91 @@ async def _process_demand_queue() -> int:
     return total
 
 
+async def _process_scheduler_jobs(jobs: list) -> int:
+    """Drain a batch of PreviewScheduler jobs with one DB query per camera group.
+
+    Groups jobs by camera, issues a single bounded DB query per camera group,
+    then resolves each job to its segment in memory.  Calls
+    generate_previews_for_segment with target_bucket_ts so at most one ffmpeg
+    invocation fires per job.
+    """
+    if not jobs:
+        return 0
+
+    by_camera: dict[str, list] = {}
+    for job in jobs:
+        by_camera.setdefault(job.camera, []).append(job)
+
+    processed = 0
+    loop = asyncio.get_running_loop()
+
+    async with get_db() as db:
+        for camera, cam_jobs in by_camera.items():
+            timestamps = [j.bucket_ts for j in cam_jobs]
+            min_ts = min(timestamps)
+            max_ts = max(timestamps)
+
+            # One query covers all jobs for this camera
+            rows = await db.execute_fetchall(
+                """SELECT id, camera, start_ts, end_ts, duration, path
+                   FROM segments
+                   WHERE camera = ?
+                     AND start_ts <= ?
+                     AND end_ts >= ?
+                   ORDER BY start_ts""",
+                (camera, max_ts, min_ts),
+            )
+
+            for job in cam_jobs:
+                segment = next(
+                    (r for r in rows if r[2] <= job.bucket_ts <= r[3]),
+                    None,
+                )
+                if segment is None:
+                    continue
+
+                # ffmpeg runs in executor — do not block the event loop
+                # target_bucket_ts ensures exactly one ffmpeg call per job
+                frames = await loop.run_in_executor(
+                    None,
+                    lambda s=segment, j=job: generate_previews_for_segment(
+                        segment_path=s[5],
+                        camera=s[1],
+                        start_ts=s[2],
+                        end_ts=s[3],
+                        duration=s[4],
+                        segment_id=s[0],
+                        target_bucket_ts=j.bucket_ts,
+                    ),
+                )
+                if frames:
+                    await db.executemany(
+                        """INSERT OR IGNORE INTO previews
+                           (camera, ts, segment_id, image_path, width, height)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        [(f["camera"], f["ts"], f["segment_id"],
+                          f["image_path"], f["width"], f["height"])
+                         for f in frames],
+                    )
+                await db.execute(
+                    "UPDATE segments SET previews_generated = 1 WHERE id = ?",
+                    (segment[0],),
+                )
+                await db.commit()
+                processed += 1
+
+    return processed
+
+
 def get_worker_status() -> dict:
     """Return structured status for /api/admin/status."""
+    sched = get_scheduler()
+    sched_stats = sched.stats()
     return {
         "demand_queue_depth": len(_demand_queue),
         "last_cleanup_ts": _last_cleanup_ts,
+        "scheduler_queue_depth": sched.queue_depth,
+        "scheduler_processed_total": sched_stats["processed_total"],
     }
 
 
@@ -114,6 +196,15 @@ async def _worker_loop():
                     log.info("Event sync: %d events upserted", synced)
             except Exception:
                 log.debug("Event sync skipped (Frigate unreachable)")
+
+            # ── Scheduler jobs: drain priority queue ────────────────────────
+            sched = get_scheduler()
+            sched_jobs = sched.dequeue_batch(max_items=50)
+            if sched_jobs:
+                sched_processed = await _process_scheduler_jobs(sched_jobs)
+                sched.record_processed(sched_processed)
+                if sched_processed:
+                    log.info("Scheduler pass: processed %d preview jobs", sched_processed)
 
             # ── Tier 0: drain on-demand queue ──────────────────────────────
             demand_count = await _process_demand_queue()

@@ -274,10 +274,17 @@ def generate_previews_for_segment(
     segment_id: int,
     recordings_root: Path | None = None,
     output_root: Path | None = None,
+    target_bucket_ts: float | None = None,
 ) -> list[dict]:
     """Extract globally-aligned preview frames from a single segment.
 
     Returns list of dicts: {ts, image_path, width, height, segment_id, camera}
+
+    target_bucket_ts:
+        If provided, generate ONLY the preview for this specific bucket.
+        The function generates at most one preview artifact in this mode.
+        It does NOT generate previews for the full segment.
+        Pass None for recency/background batch passes (existing behavior).
     """
     recordings_root = recordings_root or settings.frigate_recordings_path
     output_root = output_root or settings.preview_output_path
@@ -293,6 +300,14 @@ def generate_previews_for_segment(
 
     # Compute which global buckets fall within this segment
     buckets = _global_bucket_timestamps(start_ts, end_ts, interval)
+
+    if target_bucket_ts is not None:
+        # Resolution-driven mode: at most one artifact.
+        if start_ts <= target_bucket_ts <= end_ts + 0.5:
+            buckets = [target_bucket_ts]
+        else:
+            return []  # bucket is outside this segment
+
     if not buckets:
         return []
 
