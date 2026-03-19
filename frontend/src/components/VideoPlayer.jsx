@@ -74,6 +74,13 @@ export default function VideoPlayer({
   const [hlsMode, setHlsMode] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
 
+  const [isMuted, setIsMuted] = useState(() => {
+    const stored = localStorage.getItem('frigate-muted');
+    // stored === 'false' means user explicitly unmuted last session
+    return stored === 'false' ? false : true;
+  });
+  const [hasAudio, setHasAudio] = useState(null); // null = unknown
+
   // Sticky-last-frame: only update displayedPreviewUrl when the new image loads.
   // This prevents black flashes between frames during rapid scrubbing.
   const [displayedPreviewUrl, setDisplayedPreviewUrl] = useState(null);
@@ -194,6 +201,7 @@ export default function VideoPlayer({
     const video = videoRef.current;
     if (!video || !playbackTarget) return;
 
+    setHasAudio(null);
     setError(null);
     _hlsExtendingRef.current = false;
     _lastExtendTs.current = 0;
@@ -239,6 +247,46 @@ export default function VideoPlayer({
   useEffect(() => {
     return () => { destroyHls(); };
   }, [destroyHls]);
+
+  // Sync muted state to the video element whenever isMuted changes.
+  // Also fires after HLS reloads since handleLoadedMetadata re-applies it there.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = isMuted;
+  }, [isMuted]);
+
+  const handleToggleMute = useCallback(() => {
+    setIsMuted(prev => {
+      const next = !prev;
+      localStorage.setItem('frigate-muted', String(next));
+      if (videoRef.current) {
+        videoRef.current.muted = next;
+      }
+      return next;
+    });
+  }, []);
+
+  const handleLoadedMetadata = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    // Priority 1: Hls.js audio track info
+    if (hlsRef.current && Array.isArray(hlsRef.current.audioTracks)) {
+      setHasAudio(hlsRef.current.audioTracks.length > 0);
+    }
+    // Priority 2: native audioTracks API (Chrome/Edge; absent on Safari)
+    else if (video.audioTracks && typeof video.audioTracks.length === 'number') {
+      setHasAudio(video.audioTracks.length > 0);
+    }
+    // Priority 3: unknown — leave null, allow user to try audio
+    else {
+      setHasAudio(null);
+    }
+
+    // Re-apply muted state after metadata loads — hls.js reloads reset it
+    video.muted = isMuted;
+  }, [isMuted]);
 
   const handlePlay = useCallback(() => {
     const video = videoRef.current;
@@ -338,6 +386,7 @@ export default function VideoPlayer({
             objectFit: 'contain',
           }}
           onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
           onError={handleError}
           onEnded={handleEnded}
           onPlay={() => {
@@ -346,7 +395,6 @@ export default function VideoPlayer({
           }}
           onPause={() => setIsPlaying(false)}
           playsInline
-          muted
         />
 
         {/* Hidden preload element for next MP4 segment */}
@@ -471,6 +519,42 @@ export default function VideoPlayer({
         >
           {isPlaying ? '⏸' : '▶'}
           {!isMobile && (isPlaying ? ' Pause' : ' Play')}
+        </button>
+
+        {/* TODO: add React Testing Library tests for:
+              - mute toggle writes to localStorage
+              - isMuted persists across remount (localStorage read on init)
+              - hasAudio tri-state (true / null / false) button appearance
+              - video.muted updated immediately in handleToggleMute handler
+            Add when a frontend test harness is introduced. */}
+        <button
+          onClick={handleToggleMute}
+          title={
+            hasAudio === false
+              ? 'No audio track detected'
+              : isMuted
+                ? 'Unmute'
+                : 'Mute'
+          }
+          style={{
+            background: 'none',
+            border: '1px solid #555',
+            color:
+              hasAudio === false
+                ? '#333'
+                : isMuted
+                  ? '#aaa'
+                  : '#fff',
+            opacity: hasAudio === false ? 0.6 : 1,
+            padding: isMobile ? '10px 14px' : '4px 12px',
+            borderRadius: 4,
+            cursor: 'pointer',
+            fontSize: 17,
+            minHeight: isMobile ? 44 : undefined,
+            flexShrink: 0,
+          }}
+        >
+          {isMuted ? '🔇' : '🔊'}
         </button>
 
         <span style={{ color: '#aaa', fontSize: 17, fontFamily: 'monospace' }}>
