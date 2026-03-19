@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A high-performance video review interface that sits alongside Frigate NVR.
 It does NOT replace Frigate — it adds fast timeline scrubbing and preview
-thumbnails on top of Frigate’s existing recordings.
+thumbnails on top of Frigate's existing recordings.
 
 - **Backend:** FastAPI + SQLite + ffmpeg, port 8100
 - **Frontend:** React + Vite, port 5173
@@ -194,7 +194,7 @@ In VideoPlayer.jsx the seek offset into the HLS window is capped at 30s:
 This is correct because _build_hls_url starts the window at max(seg_start, requested_ts - 30).
 Edge case: if requested_ts - seg_start > 30, offset_sec > 30 and the cap kicks in,
 placing the seek slightly before the requested position. Frigate segments are ~10s
-so this never triggers in practice, but it’s worth noting.
+so this never triggers in practice, but it's worth noting.
 
 ### 2. HLS reachability cache is process-local
 
@@ -271,3 +271,108 @@ Patch `app.services.hls.httpx.AsyncClient` when mocking Frigate reachability.
 - State ownership: App.jsx owns everything. Child components get props + callbacks.
 - Log at INFO for worker progress, DEBUG for hot path (preview lookup, bucket math).
   Never log inside the scrub hot path.
+
+-----
+
+## Workflow: Claude Chat → Claude Code
+
+This project uses a two-mode AI workflow to keep changes fast, safe, and reviewable.
+
+### Roles
+
+**Claude Chat** (claude.ai chat interface)
+- Diagnoses bugs and designs fixes
+- Does NOT write the implementation directly
+- Outputs a ready-to-paste prompt for Claude Code
+
+**Claude Code** (claude.ai/code, runs in the repo)
+- Reads this file first at the start of every task (see prompt template below)
+- Implements the fix
+- Writes or updates tests
+- Opens a PR against `main`
+
+### Claude Chat behavior
+
+When a bug or feature is discussed in Claude Chat, the final output should be
+a Claude Code prompt using the template below. Do not write implementation code
+in the chat response itself — write the prompt that will drive Claude Code to
+do it correctly.
+
+### Claude Code prompt template
+
+Every prompt sent to Claude Code must open with this line:
+
+```
+Read CLAUDE.md in full before making any changes.
+```
+
+Then include:
+
+```
+## Problem
+<one paragraph: what is broken or missing, and why>
+
+## Location
+<file(s) and line numbers or function names affected>
+
+## Fix
+<precise description of the change — specific enough that there is only one
+correct implementation. Include the before/after if it helps.>
+
+## Tests
+<which existing test file(s) to update, OR description of new test(s) to add.
+All PRs must include test coverage for the change.>
+
+## PR
+Open a PR against main titled: <type>(<scope>): <short description>
+Types: fix | feat | refactor | test | chore
+Example: fix(frontend): stale closure in health poll resets selected camera
+```
+
+### Example prompt (the camera reset bug)
+
+```
+Read CLAUDE.md in full before making any changes.
+
+## Problem
+The 30-second health poll in App.jsx captures `selectedCamera = null` at mount
+time because the useEffect dependency array is `[]`. Every poll cycle evaluates
+`!selectedCamera` against the stale null and resets the selected camera to
+cams[0].name (alley east), interrupting playback and scrubbing on all other cameras.
+
+## Location
+frontend/src/App.jsx — inside the `useEffect` init function, the camera
+initialization block (~line 198).
+
+## Fix
+Replace:
+  if (cams.length > 0 && !selectedCamera) {
+    setSelectedCamera(cams[0].name);
+  }
+
+With:
+  if (cams.length > 0) {
+    setSelectedCamera(prev => prev ?? cams[0].name);
+  }
+
+The functional updater form reads current state at call time, bypassing the
+stale closure. If a camera is already selected, prev ?? cams[0].name returns
+prev unchanged.
+
+## Tests
+Add a test to frontend (or note that this is a React state closure bug with
+no existing frontend test harness — in that case document it in the PR and
+add a TODO comment in the source).
+
+## PR
+Open a PR against main titled:
+fix(frontend): stale closure in health poll resets selected camera
+```
+
+### Rules
+
+- Claude Code always reads CLAUDE.md first — the prompt must say so explicitly
+- PRs always target `main`
+- Every PR must include tests, or a documented reason why tests are not possible
+  and a TODO comment in the source
+- Claude Chat never implements — it diagnoses and prompts
