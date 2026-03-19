@@ -423,8 +423,8 @@ const styles = {
     paddingBottom: 8,
     flexShrink: 0,
   },
-  title: { fontSize: 18, fontWeight: 600, color: '#e0e0e0', margin: 0 },
-  healthBadge: { fontSize: 12, color: '#888', display: 'flex', alignItems: 'center' },
+  title: { fontSize: 20, fontWeight: 600, color: '#e0e0e0', margin: 0 },
+  healthBadge: { fontSize: 13, color: '#888', display: 'flex', alignItems: 'center' },
   error: {
     background: '#3a1515',
     border: '1px solid #5a2020',
@@ -432,7 +432,7 @@ const styles = {
     padding: '6px 12px',
     borderRadius: 4,
     marginBottom: 8,
-    fontSize: 13,
+    fontSize: 14,
     flexShrink: 0,
   },
   controls: {
@@ -476,15 +476,15 @@ const styles = {
   },
   timestamp: {
     color: '#4CAF50',
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: 'monospace',
   },
   coverageStats: {
     color: '#444',
-    fontSize: 11,
+    fontSize: 12,
   },
   timelineCol: {
-    width: 190,
+    width: 215,
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
@@ -496,7 +496,7 @@ const styles = {
   rangeLabel: {
     padding: '4px 0',
     textAlign: 'center',
-    fontSize: 11,
+    fontSize: 12,
     color: '#555',
     borderBottom: '1px solid #1e2130',
     flexShrink: 0,
