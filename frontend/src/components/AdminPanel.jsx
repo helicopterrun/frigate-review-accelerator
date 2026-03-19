@@ -429,9 +429,11 @@ export default function AdminPanel({ open, onClose }) {
   const [running, setRunning] = useState(null);
   const [scriptLines, setScriptLines] = useState([]);
   const [reconnecting, setReconnecting] = useState(false);
+  const [pendingRestart, setPendingRestart] = useState(null); // null | { countdown: number }
 
   const sseRef = useRef(null);
   const healthPollRef = useRef(null);
+  const runScriptRef = useRef(null);
 
   // ── Status polling ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -540,8 +542,16 @@ export default function AdminPanel({ open, onClose }) {
             if (event === 'line') {
               setScriptLines((prev) => [...prev, data]);
             } else if (event === 'done') {
-              setScriptLines((prev) => [...prev, '✓ Done.']);
-              setRunning(null);
+              let returncode = 0;
+              try { returncode = JSON.parse(data).returncode ?? 0; } catch {}
+              if ((action === 'update' || action === 'pull') && returncode === 0) {
+                setScriptLines((prev) => [...prev, '✓ Update complete. Restart required to apply changes.']);
+                setRunning(null);
+                setPendingRestart({ countdown: 5 });
+              } else {
+                setScriptLines((prev) => [...prev, '✓ Done.']);
+                setRunning(null);
+              }
             } else if (event === 'error') {
               try {
                 const parsed = JSON.parse(data);
@@ -570,6 +580,26 @@ export default function AdminPanel({ open, onClose }) {
         }
       });
   }, [running, tab, startHealthPoll, connectLogStream]);
+
+  // Keep ref in sync so the countdown effect always calls the latest runScript
+  // without needing it as a dependency (which would reset the countdown on each tick).
+  runScriptRef.current = runScript;
+
+  // ── Countdown: auto-restart after update/pull succeeds ──────────────────────
+  useEffect(() => {
+    if (!pendingRestart) return;
+    if (!open) { setPendingRestart(null); return; }
+    if (pendingRestart.countdown <= 0) {
+      setPendingRestart(null);
+      runScriptRef.current?.('restart');
+      return;
+    }
+    const id = setTimeout(
+      () => setPendingRestart((p) => (p ? { countdown: p.countdown - 1 } : null)),
+      1000,
+    );
+    return () => clearTimeout(id);
+  }, [pendingRestart, open]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
   if (!open) return null;
@@ -633,12 +663,12 @@ export default function AdminPanel({ open, onClose }) {
             <button
               key={id}
               onClick={() => runScript(id)}
-              disabled={!!running}
+              disabled={!!running || !!pendingRestart}
               style={{
                 ...s.actionBtn,
                 borderColor: color,
                 color: running === id ? color : '#888',
-                opacity: running && running !== id ? 0.4 : 1,
+                opacity: (running && running !== id) || (pendingRestart && id !== 'restart') ? 0.4 : 1,
               }}
             >
               {running === id
@@ -661,7 +691,7 @@ export default function AdminPanel({ open, onClose }) {
               }}
             >
               {t}
-              {t === 'script' && running && <span style={s.runningDot} />}
+              {t === 'script' && (running || pendingRestart) && <span style={s.runningDot} />}
             </button>
           ))}
         </div>
@@ -688,28 +718,43 @@ export default function AdminPanel({ open, onClose }) {
           {tab === 'reindex' && <ReindexTab />}
 
           {tab === 'script' && (
-            <div style={{ ...s.logOutput, flex: 1 }}>
-              {scriptLines.map((line, i) => (
-                <div
-                  key={i}
-                  style={{
-                    color: line.startsWith('✗') ? '#ff6b6b'
-                         : line.startsWith('✓') ? '#6bcb77'
-                         : line.startsWith('▶') ? '#4ecdc4'
-                         : line.includes('reconnect') ? '#ffd93d'
-                         : colorizeLine(line),
-                    lineHeight: '1.5',
-                    whiteSpace: 'pre-wrap',
-                  }}
-                >
-                  {line}
-                </div>
-              ))}
-              {reconnecting && (
-                <div style={{ color: '#ffd93d', marginTop: 8 }}>
-                  Polling /api/health every 2s…
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+              {pendingRestart && (
+                <div style={s.restartBanner}>
+                  <span style={{ color: '#ffd93d', fontSize: 12 }}>
+                    ⚡ Restart required — auto-restarting in {pendingRestart.countdown}s…
+                  </span>
+                  <button
+                    onClick={() => { setPendingRestart(null); runScriptRef.current?.('restart'); }}
+                    style={s.restartNowBtn}
+                  >
+                    Restart now
+                  </button>
                 </div>
               )}
+              <div style={{ ...s.logOutput, flex: 1 }}>
+                {scriptLines.map((line, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      color: line.startsWith('✗') ? '#ff6b6b'
+                           : line.startsWith('✓') ? '#6bcb77'
+                           : line.startsWith('▶') ? '#4ecdc4'
+                           : line.includes('reconnect') ? '#ffd93d'
+                           : colorizeLine(line),
+                      lineHeight: '1.5',
+                      whiteSpace: 'pre-wrap',
+                    }}
+                  >
+                    {line}
+                  </div>
+                ))}
+                {reconnecting && (
+                  <div style={{ color: '#ffd93d', marginTop: 8 }}>
+                    Polling /api/health every 2s…
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -806,5 +851,27 @@ const s = {
     height: '100%',
     borderRadius: 4,
     transition: 'width 0.3s ease',
+  },
+  restartBanner: {
+    background: '#1a1400',
+    borderBottom: '1px solid #5a4a00',
+    padding: '10px 14px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    flexShrink: 0,
+  },
+  restartNowBtn: {
+    background: '#4ecdc4',
+    border: 'none',
+    borderRadius: 4,
+    color: '#000',
+    padding: '4px 12px',
+    cursor: 'pointer',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    fontWeight: 700,
+    flexShrink: 0,
   },
 };
