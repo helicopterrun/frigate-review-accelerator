@@ -28,17 +28,47 @@ Output structure:
 import asyncio
 import logging
 import math
+import os
 import shutil
 import sqlite3
 import subprocess
+import subprocess as _sp
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
+
+
+def _vaapi_device() -> str | None:
+    """Return /dev/dri/renderD128 if VAAPI is available, else None."""
+    device = "/dev/dri/renderD128"
+    if not shutil.which("ffmpeg"):
+        return None
+    try:
+        if not os.path.exists(device):
+            return None
+        result = _sp.run(
+            ["ffmpeg", "-v", "quiet", "-hwaccel", "vaapi",
+             "-hwaccel_device", device, "-f", "lavfi", "-i", "nullsrc",
+             "-frames:v", "1", "-f", "null", "-"],
+            capture_output=True, timeout=5,
+        )
+        return device if result.returncode == 0 else None
+    except Exception:
+        return None
+
+
+_VAAPI_DEVICE: str | None = _vaapi_device()
+
+if _VAAPI_DEVICE:
+    log.info("VAAPI hardware decode enabled (%s)", _VAAPI_DEVICE)
+else:
+    log.info("VAAPI not available, using software decode")
 
 
 def _global_bucket_timestamps(start_ts: float, end_ts: float, interval: float) -> list[float]:
@@ -88,7 +118,14 @@ def _extract_frames_batch(
     # one frame per bucket (the first frame at or after each offset).
     # setpts=N/TB resets pts so -vframes N works correctly with -vsync vfr.
     select_expr = "+".join(f"gte(t,{o:.3f})*lte(t,{o+0.5:.3f})" for o in offsets)
-    vf = f"select='{select_expr}',scale={width}:-1"
+    if _VAAPI_DEVICE:
+        vf = f"select='{select_expr}',hwdownload,format=nv12,scale={width}:-1"
+    else:
+        vf = f"select='{select_expr}',scale={width}:-1"
+
+    hw_flags = []
+    if _VAAPI_DEVICE:
+        hw_flags = ["-hwaccel", "vaapi", "-hwaccel_device", _VAAPI_DEVICE, "-hwaccel_output_format", "vaapi"]
 
     est_height = int(width * 9 / 16)
     results = []
@@ -103,6 +140,7 @@ def _extract_frames_batch(
                 "ionice", "-c", "3",
                 "ffmpeg",
                 "-v", "quiet",
+                *hw_flags,
                 "-i", str(video_path),
                 "-vf", vf,
                 "-vsync", "vfr",
@@ -196,15 +234,25 @@ def _extract_frame_at_offset(
     Uses -ss before -i for fast keyframe-based seeking.
     Returns True on success.
     """
+    hw_flags = []
+    if _VAAPI_DEVICE:
+        hw_flags = ["-hwaccel", "vaapi", "-hwaccel_device", _VAAPI_DEVICE, "-hwaccel_output_format", "vaapi"]
+
+    if _VAAPI_DEVICE:
+        vf_single = f"hwdownload,format=nv12,scale={width}:-1"
+    else:
+        vf_single = f"scale={width}:-1"
+
     cmd = [
         "nice", "-n", "19",
         "ionice", "-c", "3",
         "ffmpeg",
         "-v", "quiet",
         "-ss", f"{offset_sec:.3f}",
+        *hw_flags,
         "-i", str(video_path),
         "-frames:v", "1",
-        "-vf", f"scale={width}:-1",
+        "-vf", vf_single,
         "-q:v", str(quality),
         "-y",
         str(output_path),
@@ -342,8 +390,11 @@ def process_pending_segments(
         f" (recency filter: {min_start_ts:.0f})" if min_start_ts else " (background crawl)",
     )
     processed = 0
+    total_frames = 0
+    start_time = time.time()
 
-    for row in rows:
+    def _process_single_segment(row, _db_path):
+        """Process one segment and return (segment_id, frames). Thread-safe — uses its own sqlite3 connection."""
         frames = generate_previews_for_segment(
             segment_path=row["path"],
             camera=row["camera"],
@@ -352,36 +403,43 @@ def process_pending_segments(
             duration=row["duration"],
             segment_id=row["id"],
         )
+        return row["id"], frames
 
-        if frames:
-            conn.executemany(
-                """INSERT OR IGNORE INTO previews
-                   (camera, ts, segment_id, image_path, width, height)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                [(f["camera"], f["ts"], f["segment_id"],
-                  f["image_path"], f["width"], f["height"]) for f in frames],
+    max_workers = min(settings.preview_workers, len(rows))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_process_single_segment, row, db_path): row for row in rows}
+        for future in as_completed(futures):
+            try:
+                seg_id, frames = future.result()
+            except Exception as exc:
+                log.warning("Preview generation failed for segment: %s", exc)
+                continue
+
+            if frames:
+                conn.executemany(
+                    """INSERT OR IGNORE INTO previews
+                       (camera, ts, segment_id, image_path, width, height)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    [(f["camera"], f["ts"], f["segment_id"],
+                      f["image_path"], f["width"], f["height"]) for f in frames],
+                )
+                total_frames += len(frames)
+
+            conn.execute(
+                "UPDATE segments SET previews_generated = 1 WHERE id = ?", (seg_id,)
             )
+            conn.commit()
+            processed += 1
 
-        # Mark as processed (even if 0 frames — segment may be too short)
-        conn.execute(
-            "UPDATE segments SET previews_generated = 1 WHERE id = ?",
-            (row["id"],),
-        )
-        conn.commit()
-        processed += 1
-
-        if processed % 10 == 0:
-            log.info("Progress: %d / %d segments", processed, len(rows))
-
-        # Brief pause between segments to avoid starving Frigate's ffmpeg
-        # processes for I/O. 100ms is imperceptible at scale but prevents
-        # us from pegging the disk at 100%.
-        time.sleep(0.1)
+            if processed % 10 == 0:
+                log.info("Progress: %d / %d segments", processed, len(rows))
 
     conn.close()
+    elapsed = time.time() - start_time
+    fps = total_frames / elapsed if elapsed > 0 else 0
     log.info(
-        "Preview generation complete: %d segments, frames in %s",
-        processed, settings.preview_output_path,
+        "Preview generation complete: %d segments, %d frames, %.1f frames/sec (%.1fs elapsed)",
+        processed, total_frames, fps, elapsed,
     )
     return processed
 

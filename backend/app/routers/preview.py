@@ -19,6 +19,7 @@ The key insight: preview filenames ARE the timestamp (e.g. 1700000002.00.jpg).
 So lookup is just math + path construction. No index needed.
 """
 
+import asyncio
 import math
 import logging
 from collections import OrderedDict
@@ -36,6 +37,9 @@ from app.services.hls import _build_hls_url, _resolve_hls_url
 
 router = APIRouter(prefix="/api", tags=["preview"])
 log = logging.getLogger(__name__)
+
+# Strong references to active on-demand tasks — prevents GC before completion
+_active_demand_tasks: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +239,20 @@ async def request_previews(
     instead of waiting for the recency crawler to reach the right segments,
     the frontend signals exactly which window it needs right now.
     """
+    from app.services.preview_generator import process_pending_async
+
     enqueue_preview_request(camera, start, end)
+
+    async def _run():
+        try:
+            await process_pending_async(limit=30, min_start_ts=start)
+        except Exception:
+            pass
+
+    task = asyncio.create_task(_run())
+    _active_demand_tasks.add(task)
+    task.add_done_callback(_active_demand_tasks.discard)
+
     log.info(
         "On-demand preview request: camera=%s start=%.0f end=%.0f",
         camera, start, end,

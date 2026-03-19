@@ -381,6 +381,10 @@ export default function App() {
                 onScrubEnd={handleScrubEnd}
                 onSeek={handleSeek}
                 onRangeChange={handleRangeChange}
+                onPreviewRequest={(ts) => {
+                  const halfWindow = 5 * 60;
+                  requestPreviews(selectedCamera, ts - halfWindow, ts + halfWindow).catch(() => {});
+                }}
               />
             </div>
 
