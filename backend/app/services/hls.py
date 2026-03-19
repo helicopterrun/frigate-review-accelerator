@@ -27,7 +27,15 @@ def _build_hls_url(camera: str, requested_ts: float, seg_start: float) -> str:
 
     Pure function — no DB calls, no async, no side effects.
     Window starts 30s before requested_ts (or at seg_start, whichever is later)
-    and spans frigate_vod_window_sec seconds.
+    and spans frigate_vod_window_sec seconds (default 86400 = 24 h).
+
+    A 24-hour window is safe because Frigate's /api/vod/ endpoint stitches
+    existing MP4 segments on demand from the recordings filesystem — it does
+    not transcode or store a new file.  Requesting a larger window only changes
+    the playlist length; segments that have not yet been recorded are simply
+    absent from the manifest.  The frontend's hls.js instance therefore plays
+    everything available and can reload the source when it approaches the end
+    without the user ever seeing a stop.
     """
     window_start = max(seg_start, requested_ts - 30)
     window_end = window_start + settings.frigate_vod_window_sec

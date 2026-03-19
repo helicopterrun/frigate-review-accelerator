@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     # Frigate VOD/HLS playback
     frigate_vod_enabled: bool = True
-    frigate_vod_window_sec: int = 7200  # width of HLS window to request from Frigate
+    frigate_vod_window_sec: int = 86400  # width of HLS window to request from Frigate (24 h)
 
     def ensure_dirs(self):
         """Create required directories if they don't exist."""
