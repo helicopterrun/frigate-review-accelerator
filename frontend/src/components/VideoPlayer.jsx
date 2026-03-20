@@ -115,9 +115,38 @@ export default function VideoPlayer({
     };
   }, [scrubPreviewUrl]);
 
+  // ── Diagnostic: track playbackTarget changes ──────────────────────────────
+  useEffect(() => {
+    console.log('[VIDEO] playbackTarget changed:', playbackTarget);
+  }, [playbackTarget]);
+
+  // ── Diagnostic: attach one-time video element event listeners ─────────────
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onPause   = () => console.log('[VIDEO] pause event');
+    const onWaiting = () => console.log('[VIDEO] waiting');
+    const onStalled = () => console.log('[VIDEO] stalled');
+    const onEnded   = () => console.log('[VIDEO] ended');
+    const onError   = (e) => console.log('[VIDEO] error', e);
+    video.addEventListener('pause',   onPause);
+    video.addEventListener('waiting', onWaiting);
+    video.addEventListener('stalled', onStalled);
+    video.addEventListener('ended',   onEnded);
+    video.addEventListener('error',   onError);
+    return () => {
+      video.removeEventListener('pause',   onPause);
+      video.removeEventListener('waiting', onWaiting);
+      video.removeEventListener('stalled', onStalled);
+      video.removeEventListener('ended',   onEnded);
+      video.removeEventListener('error',   onError);
+    };
+  }, []); // intentional: attach once to the stable DOM element
+
   /** Destroy existing hls.js instance if any. Stable — no external deps. */
   const destroyHls = useCallback(() => {
     if (hlsRef.current) {
+      console.log('[HLS] destroy');
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
@@ -134,6 +163,7 @@ export default function VideoPlayer({
       destroyHls();
       setHlsMode(true);
 
+      console.log('[HLS] init', hlsUrl);
       const hls = new Hls(HLS_CONFIG);
       hlsRef.current = hls;
       isHlsActive.current = true;
@@ -148,10 +178,16 @@ export default function VideoPlayer({
           video.currentTime = seekOffset;
         }
         hlsStartOffset.current = video.currentTime;
-        video.play().catch(() => {});
+        console.log('[VIDEO] muted?', video.muted);
+        video.play().then(() => {
+          console.log('[VIDEO] play() success');
+        }).catch((e) => {
+          console.warn('[VIDEO] play() FAILED', e.name, e.message);
+        });
       });
 
       hls.on(Hls.Events.ERROR, (_evt, data) => {
+        console.warn('[HLS] error', data);
         if (data.fatal) {
           setError('HLS playback error — trying fallback');
           destroyHls();
@@ -167,7 +203,12 @@ export default function VideoPlayer({
           video.currentTime = seekOffset;
         }
         hlsStartOffset.current = video.currentTime;
-        video.play().catch(() => {});
+        console.log('[VIDEO] muted?', video.muted);
+        video.play().then(() => {
+          console.log('[VIDEO] play() success');
+        }).catch((e) => {
+          console.warn('[VIDEO] play() FAILED', e.name, e.message);
+        });
       };
       video.addEventListener('loadedmetadata', onMeta, { once: true });
     }
@@ -214,6 +255,11 @@ export default function VideoPlayer({
       const seekOffset = Math.min(playbackTarget.offset_sec, 30);
 
       if (Hls.isSupported() || video.canPlayType('application/vnd.apple.mpegurl')) {
+        console.log('[VIDEO] loading source', {
+          hls: playbackTarget.hls_url,
+          mp4: playbackTarget.stream_url,
+          seekOffset,
+        });
         loadHls(video, playbackTarget.hls_url, seekOffset);
         return () => { destroyHls(); };
       }
@@ -224,15 +270,57 @@ export default function VideoPlayer({
     setHlsMode(false);
 
     const url = playbackTarget.stream_url;
+    // Capture offset in a local const so the onloadedmetadata closure below
+    // always refers to this invocation's value even if playbackTarget is
+    // replaced before the event fires.
     const offset = playbackTarget.offset_sec;
-    const fullUrl = offset > 0 ? `${url}#t=${offset.toFixed(2)}` : url;
+    console.log('[VIDEO] loading source', {
+      hls: null,
+      mp4: url,
+      seekOffset: offset,
+    });
 
-    const currentBase = video.src ? new URL(video.src, window.location.origin).pathname : '';
+    // TODO: when a frontend test harness is introduced, add tests for:
+    //   - offset exactly equal to duration fires 'ended' without the fix
+    //   - clampOffset returns duration - 0.05 when offset >= duration
+    //   - clampOffset returns offset unchanged when offset < duration
+    //   - clampOffset returns 0 when video.duration is NaN (pre-metadata)
+    //   - clampOffset returns 0 when video.duration is Infinity
+    //   - seek is applied via onloadedmetadata, not via #t= fragment
+    //   - onloadedmetadata is nulled after firing (no listener accumulation)
+    //   - same-source re-seek threshold is 0.1s, not 0.5s
+
+    // Clamp rawOffset to [0, duration - 0.05] so an offset at or beyond the
+    // end of the segment does not trigger an immediate 'ended' event.
+    // Guards with Number.isFinite because video.duration is NaN before
+    // metadata loads and Infinity on certain stream types.
+    const clampOffset = (vid, rawOffset) => {
+      if (Number.isFinite(vid.duration) && vid.duration > 0.1) {
+        return Math.min(rawOffset, vid.duration - 0.05);
+      }
+      return 0;
+    };
+
+    const currentBase = video.src
+      ? new URL(video.src, window.location.origin).pathname
+      : '';
+
     if (currentBase !== url) {
-      video.src = fullUrl;
+      // Load without a #t= fragment — seek after onloadedmetadata so we
+      // know the actual duration and can clamp. The #t= hint is unreliable
+      // when offset >= duration: the browser jumps to EOF and fires 'ended'
+      // before the user sees any frames.
+      video.src = url;
       video.load();
-    } else if (Math.abs(video.currentTime - offset) > 0.5) {
-      video.currentTime = offset;
+      // Assign directly (not addEventListener) to avoid accumulating
+      // listeners across rapid playback-target changes.
+      video.onloadedmetadata = () => {
+        video.onloadedmetadata = null;
+        const safeOffset = clampOffset(video, offset);
+        if (safeOffset > 0.01) video.currentTime = safeOffset;
+      };
+    } else if (Math.abs(video.currentTime - offset) > 0.1) {
+      video.currentTime = clampOffset(video, offset);
     }
 
     // Preload next segment
@@ -292,7 +380,11 @@ export default function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
     if (video.paused) {
-      video.play().catch(() => {
+      console.log('[VIDEO] muted?', video.muted);
+      video.play().then(() => {
+        console.log('[VIDEO] play() success');
+      }).catch((e) => {
+        console.warn('[VIDEO] play() FAILED', e.name, e.message);
         setError('Playback failed — segment may be unavailable');
       });
     } else {
@@ -346,7 +438,12 @@ export default function VideoPlayer({
       if (video && preload && preload.src) {
         video.src = preload.src;
         video.load();
-        video.play().catch(() => {});
+        console.log('[VIDEO] muted?', video.muted);
+        video.play().then(() => {
+          console.log('[VIDEO] play() success');
+        }).catch((e) => {
+          console.warn('[VIDEO] play() FAILED', e.name, e.message);
+        });
         preload.src = '';
       } else {
         setIsPlaying(false);
