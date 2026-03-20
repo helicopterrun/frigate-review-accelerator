@@ -19,14 +19,22 @@
  *   7.  Time tick labels + horizontal hairlines across bar zone
  *   8.  Event markers (right strip)
  *   9.  Hover line (yellow, mouse position)
- *   10. Playback cursor (red, cursorTs) + timestamp badge
+ *   10. Reticle: glow band + two thin lines + timestamp badge
  *
- * Scroll: pans the time window forward/backward (15% per tick).
- * Zoom: controlled by −/slider/+ strip below the canvas.
+ * Interaction model (fixed-reticle / radar):
+ *   - Reticle is physically fixed at h * RETICLE_FRACTION from top.
+ *   - Scroll = pan: timeline flows under the reticle (onPan callback).
+ *   - Click = recenter: clicked ts moves to reticle with 250ms ease-out animation.
+ *   - Zoom: −/slider/+ strip calls onZoomChange with a new rangeSec value.
+ *
+ * Animation invariant: the 250ms cursor interpolation uses refs + rAF exclusively
+ * — no setState per frame. Canvas reads from displayCursorRef when animation
+ * is active, falling back to the cursorTs prop when idle.
  */
 
 import { useRef, useEffect, useState, useCallback } from 'react';
 import { formatTimeShort, clampTs, nowTs } from '../utils/time.js';
+import { RETICLE_FRACTION } from '../App.jsx';
 
 function useDebounce(fn, delay) {
   const timer = useRef(null);
@@ -63,12 +71,16 @@ const ZOOM_STOP_LABELS = [
   '1h', '2h', '4h', '8h', '12h', '18h', '24h', '48h', '7d',
 ];
 
-/** Zoom-aware pan fraction: slower at fine zoom, faster at wide zoom. */
-function panFraction(rangeSec) {
-  if (rangeSec <= 1800)  return 0.05;  // ≤30m → precise (5%)
-  if (rangeSec <= 3600)  return 0.08;  // ≤1h  → precise
-  if (rangeSec <= 28800) return 0.12;  // ≤8h  → medium
-  return 0.18;                          // >8h  → fast
+/**
+ * Zoom-aware base pan amount in seconds per scroll tick.
+ * Slower at fine zoom (precise positioning), faster at wide zoom (quick navigation).
+ * TODO: unit test velocity calculation — verify multiplier caps at 4x, window prunes correctly
+ */
+function panAmountSec(rangeSec) {
+  if (rangeSec <= 1800)  return rangeSec * 0.03;  // ≤30m → 3%
+  if (rangeSec <= 3600)  return rangeSec * 0.05;  // ≤1h  → 5%
+  if (rangeSec <= 28800) return rangeSec * 0.08;  // ≤8h  → 8%
+  return rangeSec * 0.12;                          // >8h  → 12%
 }
 
 const EVENT_COLORS = {
@@ -130,6 +142,12 @@ export default function VerticalTimeline({
   const touchStartRef = useRef(null);
   const scrollTimestamps = useRef([]);
 
+  // Animation refs — no state to avoid per-frame re-renders
+  // TODO: verify animation ref doesn't leak — must cancel on unmount and on new click during active animation
+  const displayCursorRef = useRef(cursorTs);  // what the canvas currently displays
+  const animRef = useRef(null);               // { from, to, startTime, rafId } | null
+  const drawCanvasRef = useRef(null);         // always points to latest draw fn
+
   const [dims, setDims] = useState({ w: 215, h: 600 });
   const [hoverY, setHoverY] = useState(null);
 
@@ -167,8 +185,12 @@ export default function VerticalTimeline({
     return () => obs.disconnect();
   }, []);
 
-  // ── Canvas render ───────────────────────────────────────────────────────────
-  useEffect(() => {
+  // ── Canvas draw function ────────────────────────────────────────────────────
+  // Extracted as useCallback so it can be called both from the data-change
+  // useEffect and imperatively from the animation rAF loop.
+  // Reads displayCursorRef.current for cursor position — never from the prop
+  // directly, so animation interpolation is reflected without setState.
+  const drawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -363,41 +385,76 @@ export default function VerticalTimeline({
       ctx.stroke();
     }
 
-    // 10. Playback cursor (red) fixed at vertical center + timestamp badge
-    if (cursorTs != null) {
-      const cy = h / 2; // cursor is always at center — timeline scrolls under it
+    // 10. Reticle at fixed Y = h * RETICLE_FRACTION
+    // The reticle Y is a constant — it never moves. cursorTs always maps here
+    // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
+    const displayTs = displayCursorRef.current;
+    if (displayTs != null) {
+      const reticleY = h * RETICLE_FRACTION;
 
-      ctx.strokeStyle = '#ff4444';
-      ctx.lineWidth = 4;
+      // Subtle glow band (40px tall, centered on reticleY)
+      ctx.fillStyle = 'rgba(60, 160, 220, 0.06)';
+      ctx.fillRect(barStart, reticleY - 20, barW, 40);
+
+      // Two thin horizontal lines with a 20px gap between them
+      ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(barStart, cy);
-      ctx.lineTo(barEnd, cy);
+      ctx.moveTo(barStart, reticleY - 10);
+      ctx.lineTo(barEnd, reticleY - 10);
+      ctx.moveTo(barStart, reticleY + 10);
+      ctx.lineTo(barEnd, reticleY + 10);
       ctx.stroke();
 
-      const label = formatTimeShort(cursorTs);
-      ctx.font = 'bold 15px monospace';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
+      // Timestamp badge centered in the gap
+      const label = formatTimeShort(displayTs);
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
       const textW = ctx.measureText(label).width;
-      const badgePad = 3;
-      const badgeX = barStart + 4;
-      const badgeY = Math.max(cy - 21, 0);
+      const badgePad = 4;
+      const badgeCx = barStart + barW / 2;
+      const badgeX = badgeCx - textW / 2 - badgePad;
 
-      ctx.fillStyle = 'rgba(20,10,10,0.85)';
-      ctx.strokeStyle = '#ff4444';
-      ctx.lineWidth = 1.5;
+      ctx.fillStyle = 'rgba(10, 20, 35, 0.88)';
+      ctx.strokeStyle = 'rgba(100, 180, 220, 0.5)';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.rect(badgeX - badgePad, badgeY, textW + badgePad * 2, 19);
+      ctx.rect(badgeX, reticleY - 9, textW + badgePad * 2, 18);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#ff8888';
-      ctx.fillText(label, badgeX, badgeY + 3);
+      ctx.fillStyle = 'rgba(160, 210, 240, 0.95)';
+      ctx.fillText(label, badgeCx, reticleY);
     }
-  }, [dims, startTs, endTs, range, segments, gaps, events, activity, cursorTs, hoverY, tsToY]);
+  }, [dims, startTs, endTs, range, segments, gaps, events, activity, hoverY, tsToY]);
+  // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
+
+  // Keep drawCanvasRef pointing to the latest version of drawCanvas.
+  // The rAF animation loop calls drawCanvasRef.current() so it always uses
+  // current props even if the component re-rendered mid-animation.
+  useEffect(() => { drawCanvasRef.current = drawCanvas; }, [drawCanvas]);
+
+  // Trigger canvas redraw whenever draw deps change (data, layout, hover).
+  useEffect(() => { drawCanvas(); }, [drawCanvas]);
+
+  // Sync displayCursorRef from cursorTs prop when no animation is running,
+  // then immediately redraw so cursor position stays current during playback.
+  useEffect(() => {
+    if (!animRef.current) {
+      displayCursorRef.current = cursorTs;
+      drawCanvasRef.current?.();
+    }
+  }, [cursorTs]);
+
+  // Cancel any in-flight animation on unmount.
+  useEffect(() => {
+    return () => {
+      if (animRef.current?.rafId) cancelAnimationFrame(animRef.current.rafId);
+    };
+  }, []);
 
   // ── Scroll-to-pan: zoom-aware sensitivity + velocity acceleration ────────────
-  // TODO: add unit tests for velocity calculation when frontend test harness is introduced
   const handleWheel = useCallback(
     (e) => {
       if (!onPan) return;
@@ -408,14 +465,15 @@ export default function VerticalTimeline({
       scrollTimestamps.current = scrollTimestamps.current.filter(t => now - t < 200);
       scrollTimestamps.current.push(now);
 
-      const velocityFactor = scrollTimestamps.current.length / 3;
-      const fraction = panFraction(range);
-      const baseDelta = range * fraction;
-      const effectiveDelta = baseDelta * (1 + Math.min(velocityFactor, 3));
+      const count = scrollTimestamps.current.length;
+      let delta = panAmountSec(range);
+      // Velocity acceleration: >2 events in window → multiply, capped at 4×
+      if (count > 2) {
+        delta *= Math.min(count / 2, 4);
+      }
 
-      // deltaY < 0 = scroll up = go backward in time
-      const delta = e.deltaY < 0 ? -effectiveDelta : effectiveDelta;
-      onPan(delta);
+      // deltaY < 0 = scroll up = go backward in time (earlier timestamps)
+      onPan(e.deltaY < 0 ? -delta : delta);
     },
     [range, onPan]
   );
@@ -467,12 +525,45 @@ export default function VerticalTimeline({
     [getTs, onScrub, debouncedPreviewRequest]
   );
 
+  // Click = recenter with 250ms ease-out animation.
+  // Animation uses refs + rAF — no setState per frame.
+  // The animation starts from the current displayCursorRef value (which may
+  // itself be mid-animation if user clicks again before it finishes).
   const handleMouseUp = useCallback(
     (e) => {
       if (!isDragging.current) return;
       isDragging.current = false;
+
       const ts = getTs(e);
-      if (ts != null && onSeek) onSeek(ts);
+      if (ts == null) return;
+
+      const from = displayCursorRef.current ?? ts;
+      const startTime = performance.now();
+      const DURATION_MS = 250;
+
+      // Cancel any in-flight animation
+      if (animRef.current?.rafId) cancelAnimationFrame(animRef.current.rafId);
+
+      function tick(now) {
+        const elapsed = now - startTime;
+        const t = Math.min(elapsed / DURATION_MS, 1);
+        // Ease-out cubic: fast start, decelerates to rest
+        const eased = 1 - (1 - t) ** 3;
+        displayCursorRef.current = from + (ts - from) * eased;
+        drawCanvasRef.current?.();
+
+        if (t < 1) {
+          animRef.current.rafId = requestAnimationFrame(tick);
+        } else {
+          displayCursorRef.current = ts;
+          animRef.current = null;
+        }
+      }
+
+      animRef.current = { from, to: ts, startTime, rafId: requestAnimationFrame(tick) };
+
+      // Notify App.jsx — sets cursorTs which recomputes rangeStart/rangeEnd
+      if (onSeek) onSeek(ts);
     },
     [getTs, onSeek]
   );
@@ -517,9 +608,9 @@ export default function VerticalTimeline({
           const isHorizontalSwipe = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10;
 
           if (isHorizontalSwipe && onPan) {
+            // Horizontal swipe → pan: map swipe distance to time delta
             const fraction = -dx / dims.w * 0.5;
-            const panAmount = range * fraction;
-            onPan(panAmount);
+            onPan(range * fraction);
             touchStartRef.current = { x: touch.clientX, y: touch.clientY };
             return;
           }

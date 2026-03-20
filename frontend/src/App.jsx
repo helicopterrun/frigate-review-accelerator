@@ -39,6 +39,12 @@ import {
 } from './utils/api.js';
 import { nowTs, formatDateTime, formatTime } from './utils/time.js';
 
+// Reticle sits at the upper third of the VerticalTimeline viewport.
+// RETICLE_FRACTION of the range is "future" (above reticle);
+// (1 - RETICLE_FRACTION) is "past" (below reticle).
+// Exported so VerticalTimeline can use the same value for rendering.
+export const RETICLE_FRACTION = 1 / 3;
+
 const MIN_RANGE_SEC = 15 * 60;
 const MAX_RANGE_SEC = 7 * 24 * 3600;
 
@@ -140,28 +146,25 @@ export default function App() {
 
   const [timelineData, setTimelineData] = useState(null);
   const [previewFrames, setPreviewFrames] = useState([]);
-  const [cursorTs, setCursorTs] = useState(() => nowTs() - 12 * 3600);
-  const [rangeSec, setRangeSec] = useState(24 * 3600);
+  const [cursorTs, setCursorTs] = useState(() => nowTs());
+  const [rangeSec, setRangeSec] = useState(8 * 3600);
   const [hoverTs, setHoverTs] = useState(null);
   const [playbackTarget, setPlaybackTarget] = useState(null);
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // ── Derived range: cursorTs is always at vertical center ───────────────────
-  // TODO: add test verifying rangeEnd never exceeds nowTs() when cursorTs is near now
+  // ── Derived range: reticle at RETICLE_FRACTION from top ────────────────────
+  // cursorTs maps to the reticle position by construction:
+  //   rangeStart = cursorTs - rangeSec * (1 - RETICLE_FRACTION)  [past below reticle]
+  //   rangeEnd   = cursorTs + rangeSec * RETICLE_FRACTION         [future above reticle]
+  // TODO: verify rangeEnd never exceeds nowTs() + 60, rangeStart = cursorTs - rangeSec * (1 - RETICLE_FRACTION)
   // TODO: during video playback, cursorTs updates at ~30Hz; each update drives a
   //   rangeStart/rangeEnd change that triggers the data-fetch useEffect — consider
   //   debouncing in a follow-up PR if this causes excessive backend requests
   const { rangeStart, rangeEnd } = useMemo(() => {
-    const halfRange = rangeSec / 2;
-    const now = nowTs();
-    let start = cursorTs - halfRange;
-    let end = cursorTs + halfRange;
-    if (end > now) {
-      end = now;
-      start = now - rangeSec;
-    }
+    const start = cursorTs - rangeSec * (1 - RETICLE_FRACTION);
+    const end = Math.min(cursorTs + rangeSec * RETICLE_FRACTION, nowTs() + 60);
     return { rangeStart: start, rangeEnd: end };
   }, [cursorTs, rangeSec]);
 
@@ -169,7 +172,8 @@ export default function App() {
 
   // Keyboard navigation + Escape to close ops drawer
   // Shortcuts: ← / → = ±5s | Shift+← / → = ±30s | Cmd/Ctrl+← / → = ±5m
-  // TODO: add React Testing Library tests for keyboard navigation when frontend test harness is introduced
+  // TODO: test with React Testing Library — verify arrow keys adjust cursorTs,
+  //       skip when input focused, clamp at nowTs()
   useEffect(() => {
     const handler = (e) => {
       if (e.key === 'Escape') { setOpsOpen(false); return; }
@@ -185,15 +189,11 @@ export default function App() {
       if (e.key === 'ArrowLeft') delta = -delta;
       e.preventDefault();
 
-      setCursorTs(prev => {
-        const next = prev + delta;
-        const maxCursor = nowTs() - rangeSec / 2;
-        return Math.min(next, maxCursor);
-      });
+      setCursorTs(prev => Math.min(prev + delta, nowTs()));
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [rangeSec]);
+  }, []);
 
   // Mobile header expand/collapse
   const [healthExpanded, setHealthExpanded] = useState(false);
@@ -311,14 +311,10 @@ export default function App() {
     setHoverTs(null);
   }, []);
 
-  // ─── Pan: shift cursorTs by deltaSec, clamping so rangeEnd ≤ now ───
+  // ─── Pan: shift cursorTs by deltaSec, clamping at nowTs() ───
   const handlePan = useCallback((deltaSec) => {
-    setCursorTs(prev => {
-      const next = prev + deltaSec;
-      const maxCursor = nowTs() - rangeSec / 2;
-      return Math.min(next, maxCursor);
-    });
-  }, [rangeSec]);
+    setCursorTs(prev => Math.min(prev + deltaSec, nowTs()));
+  }, []);
 
   // ─── Zoom: change visible window width, keeping cursorTs fixed ───
   const handleZoomChange = useCallback((newRangeSec) => {
@@ -400,20 +396,19 @@ export default function App() {
     }
   }, [multiMode]);
 
-  // ─── Range presets ───
+  // ─── Range presets: snap cursorTs to now so reticle shows current time ───
   const setRange = useCallback((hours) => {
-    const newRangeSec = hours * 3600;
-    const now = nowTs();
-    setRangeSec(newRangeSec);
-    setCursorTs(now - newRangeSec / 2);
+    setRangeSec(hours * 3600);
+    setCursorTs(nowTs());
   }, []);
 
-  // ─── "Go to" handler ───
+  // ─── "Go to" handler: recenter view on ts, rangeSec unchanged ───
   const handleGoto = useCallback(() => {
     if (!gotoValue) return;
     const ts = new Date(gotoValue).getTime() / 1000;
     if (isNaN(ts)) return;
     setCursorTs(ts);
+    // Also load playback at the target ts
     handleSeek(ts);
   }, [gotoValue, handleSeek]);
 
