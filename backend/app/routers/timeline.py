@@ -498,7 +498,7 @@ async def get_timeline_density(
 
     async with get_db() as db:
         rows = await db.execute_fetchall(
-            """SELECT start_ts, end_ts, label, score, zones
+            """SELECT start_ts, end_ts, label
                FROM events
                WHERE camera = ?
                  AND (end_ts IS NULL OR end_ts >= ?)
