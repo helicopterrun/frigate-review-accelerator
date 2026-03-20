@@ -507,9 +507,8 @@ async def get_timeline_density(
             (camera, start, end),
         )
 
-    important_labels = set(settings.important_labels)
     buckets = get_time_index().compute_density_buckets(
-        rows, start, end, bucket_sec, important_labels=important_labels
+        rows, start, end, bucket_sec
     )
 
     return DensityResponse(
