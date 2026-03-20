@@ -225,6 +225,13 @@ export default function VerticalTimeline({
     // Same value as secondsPerPixel — computed locally to avoid extra dep.
     const spp = h > 0 ? (endTs - startTs) / h : 1;
 
+    // Tick interval — hoisted so step 9 (lock moment) can reference it.
+    const TICK_INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+    const MIN_TICK_SPACING_PX = 32;
+    const _maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
+    const _minIntervalSec = (endTs - startTs) / _maxTicks;
+    const tickSec = TICK_INTERVALS.find((t) => t >= _minIntervalSec) ?? 86400;
+
     // 1. Background
     ctx.fillStyle = '#090b10';
     ctx.fillRect(0, 0, LABEL_WIDTH, h);
@@ -334,26 +341,21 @@ export default function VerticalTimeline({
 
     // 6. Time tick labels + horizontal hairlines (proximity fade from reticle)
     // Fine-grained intervals (5/10/15/30s) support tight zoom levels.
-    const TICK_INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
-    const MIN_TICK_SPACING_PX = 32;
-    const maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
-    const minIntervalSec = (endTs - startTs) / maxTicks;
-    const tickSec = TICK_INTERVALS.find((t) => t >= minIntervalSec) ?? 86400;
+    // tickSec is hoisted above step 1 so step 9 (lock moment) can reference it.
 
     // TODO: unit test —
-    //   dist > 32  → fadeFactor = 1.0,  label renders
-    //   dist = 21  → fadeFactor ≈ 0.5,  label at half opacity
-    //   dist < 10  → fadeFactor = 0.0,  label skipped, hairline drawn
-    //   fadeFactor always in [0, 1] — Math.max/min clamp prevents flicker
-    //   ctx.globalAlpha === 1.0 after every iteration (no leak)
-    //   reticle label === formatTime(displayCursorRef.current) always
+    //   FADE_START=48, FADE_END=14 — label fades over ~34px window
+    //   tickPhase=0.0 (on tick)  → distToTickPx=0  → reticleAlpha=0.97
+    //   tickPhase=0.5 (midpoint) → distToTickPx=max → reticleAlpha=0.88
+    //   no Math.round in lock moment — stays continuous at all positions
+    //   ctx.globalAlpha === 1.0 after every loop iteration
 
     const firstTick = Math.ceil(startTs / tickSec) * tickSec;
     for (let t = firstTick; t <= endTs; t += tickSec) {
       const y = tsToY(t);
 
       // ── Hairline ── always drawn at correct y, never faded
-      ctx.strokeStyle = '#1a1e2b';
+      ctx.strokeStyle = 'rgba(26, 30, 43, 0.7)';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
       ctx.beginPath();
@@ -366,8 +368,8 @@ export default function VerticalTimeline({
       // Do NOT multiply by a second opacity curve — double-fading
       // causes labels to vanish too early and creates uneven density.
       const dist = Math.abs(y - reticleY);
-      const FADE_START = 32;
-      const FADE_END   = 10;
+      const FADE_START = 48;
+      const FADE_END   = 14;
       const fadeFactor = Math.max(0, Math.min(1,
         dist > FADE_START ? 1
         : dist < FADE_END  ? 0
@@ -376,17 +378,10 @@ export default function VerticalTimeline({
 
       if (fadeFactor <= 0) continue;  // hairline already drawn above
 
-      // Font and color: consistent size for all ticks — only the reticle
-      // gets emphasis. A size jump here would create a perceptual pop
-      // even with fading. Use font-weight and color-brightness only for
-      // the proximity-near-reticle effect.
-      const isNear = dist < 20;
-      ctx.font = isNear
-        ? 'bold 11px monospace'
-        : '11px monospace';
-      ctx.fillStyle = isNear
-        ? 'rgba(180, 200, 220, 1.0)'
-        : 'rgba(74, 79, 101, 1.0)';
+      // Uniform font and color for all ticks — the reticle handles emphasis.
+      // A font-weight or color shift here would compete with the reticle signal.
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillStyle = 'rgba(74, 79, 101, 1.0)';
 
       ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
       ctx.textAlign = 'right';
@@ -548,7 +543,20 @@ export default function VerticalTimeline({
       ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = 'rgba(190, 225, 250, 0.97)';
+
+      // Distance from cursor to nearest tick, computed in screen space
+      // using tick phase — no timestamp rounding, no coordinate divergence.
+      // tickPhase is 0 at a tick and 0.5 halfway between ticks.
+      // distPx is the pixel distance to the nearest tick line.
+      const tickPhase = (displayTs % tickSec) / tickSec;        // 0..1
+      const distToTickPx = Math.min(tickPhase, 1 - tickPhase)   // 0..0.5
+                           * (tickSec / spp);                    // → pixels
+
+      // Raise alpha slightly (<8px) for a "locked on tick" feel.
+      // Fully continuous — no snapping, no jump at tick midpoint.
+      const reticleAlpha = distToTickPx < 8 ? 0.97 : 0.88;
+
+      ctx.fillStyle = `rgba(190, 225, 250, ${reticleAlpha})`;
       ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
     }
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY]);
