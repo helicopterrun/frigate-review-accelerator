@@ -6,18 +6,18 @@
  * Horizontal zones (left to right):
  *   [0 … 58px]      — time tick labels (right-aligned, monospace 11px)
  *   [58px]           — 1px separator line
- *   [59 … w-18px]    — bar zone: segment bars, gap hatching, activity heatmap
- *   [w-18px … w]     — event color markers
+ *   [59 … w-18px]    — bar zone: density gradient, detection ticks, event markers
+ *   [w-18px … w]     — right edge (used by important-event diamond markers)
  *
  * Drawing order (bottom layer → top):
  *   1.  Background
  *   2.  Vertical separator lines
- *   3.  Activity heatmap
- *   4.  Segment bars
- *   5.  Gap hatching
- *   6.  "Now" dashed line (current wall-clock time, if in range)
- *   7.  Time tick labels + horizontal hairlines across bar zone
- *   8.  Event markers (right strip)
+ *   3.  Gap absence fill (subtle dark)
+ *   4.  Layer 1: Density gradient (interpolated Float32Array, blue spectrum)
+ *   5.  "Now" dashed line (current wall-clock time, if in range)
+ *   6.  Time tick labels + hairlines (proximity fade from reticle)
+ *   7.  Layer 2: Detection ticks with proximity-aware labels
+ *   8.  Layer 3: Important event markers (amber-red, diamond, snapshot dot)
  *   9.  Hover line (yellow, mouse position)
  *   10. Reticle: glow band + two thin lines + timestamp badge
  *
@@ -132,10 +132,9 @@ const btnStyle = {
 export default function VerticalTimeline({
   startTs,
   endTs,
-  segments = [],
   gaps = [],
   events = [],
-  activity = [],
+  densityData = null,
   cursorTs,
   onScrub,
   onScrubEnd,
@@ -221,6 +220,11 @@ export default function VerticalTimeline({
     const barStart = LABEL_WIDTH + 1;
     const barEnd = w - EVENT_WIDTH;
     const barW = barEnd - barStart;
+    const reticleY = h * RETICLE_FRACTION;
+
+    // Local spp for y → ts direction in density precomputation.
+    // Same value as secondsPerPixel — computed locally to avoid extra dep.
+    const spp = h > 0 ? (endTs - startTs) / h : 1;
 
     // 1. Background
     ctx.fillStyle = '#090b10';
@@ -233,89 +237,74 @@ export default function VerticalTimeline({
     ctx.fillRect(LABEL_WIDTH, 0, 1, h);
     ctx.fillRect(barEnd, 0, 1, h);
 
-    // 3. Activity heatmap — horizontal bands
-    if (activity.length > 0) {
-      const maxCount = Math.max(...activity.map((b) => b.count), 1);
-      for (let i = 0; i < activity.length; i++) {
-        const bucket = activity[i];
-        if (bucket.count === 0) continue;
-        const intensity = bucket.count / maxCount;
-        const nextBucket = activity[i + 1];
-        const bucketEnd = nextBucket ? nextBucket.bucket_ts : bucket.bucket_ts + 60;
-        const y1 = Math.max(0, tsToY(bucket.bucket_ts));
-        const y2 = Math.min(h, tsToY(bucketEnd));
-        if (y2 <= y1) continue;
-        ctx.fillStyle = `rgba(255,152,0,${0.07 + intensity * 0.30})`;
-        ctx.fillRect(barStart, y1, barW, y2 - y1);
-      }
-    }
-
-    // 4. Segment bars
-    for (const seg of segments) {
-      const y1 = Math.max(0, tsToY(seg.start_ts));
-      const y2 = Math.min(h, tsToY(seg.end_ts));
-      if (y2 <= y1) continue;
-      ctx.fillStyle = seg.has_previews ? '#1e5a8a' : '#163d5c';
-      ctx.fillRect(barStart, y1, barW, y2 - y1);
-    }
-
-    // 4b. Event density tinting — blend segment bars toward amber based on activity
-    if (events.length > 0) {
-      for (const seg of segments) {
-        const segDur = seg.end_ts - seg.start_ts;
-        if (segDur <= 0) continue;
-
-        let coveredSec = 0;
-        for (const evt of events) {
-          const evtEnd = evt.end_ts ?? evt.start_ts + 5;
-          const overlapStart = Math.max(seg.start_ts, evt.start_ts);
-          const overlapEnd = Math.min(seg.end_ts, evtEnd);
-          if (overlapEnd > overlapStart) coveredSec += overlapEnd - overlapStart;
-        }
-
-        const density = Math.min(1, coveredSec / Math.min(segDur, 300));
-        if (density < 0.01) continue;
-
-        const y1 = Math.max(0, tsToY(seg.start_ts));
-        const y2 = Math.min(h, tsToY(seg.end_ts));
-        if (y2 <= y1) continue;
-
-        const r = Math.round(30 + density * 154);
-        const g = Math.round(100 + density * 24);
-        const b = Math.round(160 - density * 118);
-        ctx.fillStyle = `rgba(${r},${g},${b},${0.3 + density * 0.5})`;
-        ctx.fillRect(barStart, y1, barW, y2 - y1);
-      }
-    }
-
-    // 5. Gap hatching — fill + diagonal lines (clipped to each gap rect)
+    // 3. Gap absence indication — subtle dark fill (no hatching)
     for (const gap of gaps) {
       const y1 = Math.max(0, tsToY(gap.start_ts));
       const y2 = Math.min(h, tsToY(gap.end_ts));
-      if (y2 - y1 < 2) continue;
-
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(barStart, y1, barW, y2 - y1);
-      ctx.clip();
-
-      ctx.fillStyle = 'rgba(35,12,12,0.75)';
+      if (y2 - y1 < 1) continue;
+      ctx.fillStyle = 'rgba(15, 5, 5, 0.3)';
       ctx.fillRect(barStart, y1, barW, y2 - y1);
-
-      ctx.strokeStyle = 'rgba(200,50,50,0.15)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      const spacing = 7;
-      const extent = barW + (y2 - y1);
-      for (let d = 0; d <= extent; d += spacing) {
-        ctx.moveTo(barStart + d, y1);
-        ctx.lineTo(barStart, y1 + d);
-      }
-      ctx.stroke();
-      ctx.restore();
     }
 
-    // 6. "Now" dashed line (green, if wall-clock is within range)
+    // 4. Layer 1: Density gradient
+    // TODO: extract _buildDensityArray(buckets, h, startTs, spp) as a pure
+    // function for unit testing — maps pixel rows to interpolated density.
+    if (densityData?.buckets?.length > 0) {
+      const buckets = densityData.buckets;
+      const maxTotal = Math.max(...buckets.map((b) => b.total), 1);
+
+      // Precompute Float32Array of normalized density per pixel row.
+      // O(h + n_buckets): monotonic pointer works because y→ts is increasing.
+      const densityArr = new Float32Array(h);
+      let bi = 0;
+      for (let y = 0; y < h; y++) {
+        const ts = startTs + y * spp;
+        while (bi < buckets.length - 1 && buckets[bi + 1].ts <= ts) bi++;
+        const lo = buckets[bi];
+        const hi = bi + 1 < buckets.length ? buckets[bi + 1] : null;
+        let norm;
+        if (hi) {
+          const span = hi.ts - lo.ts;
+          const t = span > 0 ? Math.max(0, Math.min(1, (ts - lo.ts) / span)) : 0;
+          norm = (lo.total * (1 - t) + hi.total * t) / maxTotal;
+        } else {
+          norm = lo.total / maxTotal;
+        }
+        densityArr[y] = Math.max(0, Math.min(1, norm));
+      }
+
+      // 3-tap box blur to soften gradient edges
+      const blurred = new Float32Array(h);
+      for (let y = 0; y < h; y++) {
+        const prev = y > 0 ? densityArr[y - 1] : densityArr[y];
+        const next = y < h - 1 ? densityArr[y + 1] : densityArr[y];
+        blurred[y] = 0.25 * prev + 0.5 * densityArr[y] + 0.25 * next;
+      }
+
+      // Render 1px rows — color mapped from density (blue spectrum)
+      for (let y = 0; y < h; y++) {
+        const n = blurred[y];
+        if (n < 0.01) continue;
+        let r, g, b, a;
+        if (n < 0.25) {
+          const t = n / 0.25;
+          r = 20; g = 50; b = 110; a = 0.04 + t * 0.08;
+        } else if (n < 0.5) {
+          const t = (n - 0.25) / 0.25;
+          r = 30; g = 80; b = 150; a = 0.12 + t * 0.13;
+        } else if (n < 0.75) {
+          const t = (n - 0.5) / 0.25;
+          r = 40; g = 130; b = 190; a = 0.25 + t * 0.20;
+        } else {
+          const t = (n - 0.75) / 0.25;
+          r = 80; g = 190; b = 230; a = 0.45 + t * 0.20;
+        }
+        ctx.fillStyle = `rgba(${r},${g},${b},${a.toFixed(3)})`;
+        ctx.fillRect(barStart, y, barW, 1);
+      }
+    }
+
+    // 5. "Now" dashed line (green, if wall-clock is within range)
     const currentWallTs = nowTs();
     if (currentWallTs >= startTs && currentWallTs <= endTs) {
       const ny = tsToY(currentWallTs);
@@ -330,72 +319,140 @@ export default function VerticalTimeline({
       ctx.restore();
     }
 
-    // 7. Time tick labels + horizontal hairlines across bar zone
+    // 6. Time tick labels + horizontal hairlines (proximity fade from reticle)
     // Fine-grained intervals (5/10/15/30s) support tight zoom levels.
     const TICK_INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
     const MIN_TICK_SPACING_PX = 32;
     const maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
     const minIntervalSec = (endTs - startTs) / maxTicks;
     const tickSec = TICK_INTERVALS.find((t) => t >= minIntervalSec) ?? 86400;
-
-    // Build per-tick-bucket event map for dots
-    const LABEL_COLORS_MAP = {
-      person: '#4CAF50', car: '#2196F3', dog: '#FF9800',
-      cat: '#9C27B0', default: '#607D8B',
-    };
-    const tickBucketEvents = {};
-    for (const evt of events) {
-      const bucketTs = Math.floor(evt.start_ts / tickSec) * tickSec;
-      if (!tickBucketEvents[bucketTs]) tickBucketEvents[bucketTs] = {};
-      tickBucketEvents[bucketTs][evt.label] =
-        (tickBucketEvents[bucketTs][evt.label] || 0) + 1;
-    }
+    const maxFadeDistance = h * 0.4;
 
     const firstTick = Math.ceil(startTs / tickSec) * tickSec;
     for (let t = firstTick; t <= endTs; t += tickSec) {
       const y = tsToY(t);
 
+      // Hairline across bar zone
       ctx.strokeStyle = '#1a1e2b';
       ctx.lineWidth = 1;
+      ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(barStart, y);
       ctx.lineTo(barEnd, y);
       ctx.stroke();
 
-      ctx.fillStyle = '#4a4f65';
-      ctx.font = '15px monospace';
+      // Proximity fade: labels nearest reticle are brighter and bolder
+      const distance = Math.abs(y - reticleY);
+      const opacity = 1.0 - Math.min(distance / maxFadeDistance, 0.7);
+      if (distance < 20) {
+        ctx.font = 'bold 13px monospace';
+        ctx.fillStyle = `rgba(180, 200, 220, ${opacity.toFixed(3)})`;
+      } else {
+        ctx.font = '11px monospace';
+        ctx.fillStyle = `rgba(74, 79, 101, ${opacity.toFixed(3)})`;
+      }
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.fillText(formatTimeShort(t), LABEL_WIDTH - 4, y);
-
-      // Colored dot when events occurred in this tick bucket
-      const bucketEvts = tickBucketEvents[t];
-      if (bucketEvts) {
-        const topLabel = Object.entries(bucketEvts)
-          .sort((a, b) => b[1] - a[1])[0][0];
-        const dotColor = LABEL_COLORS_MAP[topLabel] ?? LABEL_COLORS_MAP.default;
-        ctx.beginPath();
-        ctx.arc(LABEL_WIDTH - 18, y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = dotColor;
-        ctx.globalAlpha = 0.85;
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      }
     }
 
-    // 8. Event markers in right strip
+    // 7. Layer 2: Detection ticks with proximity-aware labels
+    // Ticks span 60% of bar zone width (centered). Opacity rises near reticle.
+    // Labels only near reticle (±60px), with 14px collision avoidance.
+    // TODO: extract _labelCollisionFilter(events, reticleY, tsToY) for unit testing.
+    const tickBarStart = barStart + barW * 0.2;
+    const tickBarEnd = barStart + barW * 0.8;
+    const readingZoneEvents = [];
+
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
     for (const evt of events) {
-      const y1 = Math.max(0, tsToY(evt.start_ts));
-      const y2 = Math.min(h, tsToY(evt.end_ts || evt.start_ts + 5));
-      if (y2 <= y1) continue;
+      const y = tsToY(evt.start_ts);
+      if (y < -2 || y > h + 2) continue;
+
+      const distFromReticle = Math.abs(y - reticleY);
+      const color = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
+
+      ctx.globalAlpha = distFromReticle <= 40 ? 0.9 : 0.6;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(tickBarStart, y);
+      ctx.lineTo(tickBarEnd, y);
+      ctx.stroke();
+
+      if (distFromReticle <= 60) {
+        readingZoneEvents.push({ evt, y, distFromReticle });
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Labels: closest to reticle first; skip if within 14px of an already-labeled event
+    // TODO: unit test — given N events within ±60px, only the closest group with
+    // ≥14px spacing should receive labels; all others should be unlabeled ticks.
+    readingZoneEvents.sort((a, b) => a.distFromReticle - b.distFromReticle);
+    const labeledYs = [];
+    for (const { evt, y } of readingZoneEvents) {
+      if (labeledYs.some((ly) => Math.abs(y - ly) < 14)) continue;
+      labeledYs.push(y);
       ctx.fillStyle = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
-      ctx.fillRect(barEnd + 1, y1, EVENT_WIDTH - 1, Math.max(y2 - y1, 2));
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(evt.label, LABEL_WIDTH - 4, y);
+    }
+
+    // 8. Layer 3: Important event markers (amber-red, 2px line + diamond)
+    // Cross-references density buckets (important=true) with individual events.
+    // TODO: extract _importantEvents(events, densityBuckets, bucketSec) for testing.
+    if (densityData?.buckets?.length > 0) {
+      const bSec = densityData.bucket_sec || 15;
+      const importantStarts = new Set(
+        densityData.buckets.filter((b) => b.important).map((b) => b.ts)
+      );
+      const importantColor = 'rgba(220, 80, 60, 0.7)';
+
+      for (const evt of events) {
+        const bucketStart = Math.floor(evt.start_ts / bSec) * bSec;
+        if (!importantStarts.has(bucketStart)) continue;
+
+        const y = tsToY(evt.start_ts);
+        if (y < -2 || y > h + 2) continue;
+
+        // 2px full-width line
+        ctx.strokeStyle = importantColor;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(barStart, y);
+        ctx.lineTo(barEnd, y);
+        ctx.stroke();
+
+        // Diamond at right edge of bar zone
+        const dm = 4;
+        ctx.fillStyle = importantColor;
+        ctx.beginPath();
+        ctx.moveTo(barEnd, y - dm);
+        ctx.lineTo(barEnd + dm, y);
+        ctx.lineTo(barEnd, y + dm);
+        ctx.lineTo(barEnd - dm, y);
+        ctx.closePath();
+        ctx.fill();
+
+        // Snapshot indicator dot at left edge
+        if (evt.has_snapshot) {
+          ctx.beginPath();
+          ctx.arc(barStart + 4, y, 2, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(220, 80, 60, 0.9)';
+          ctx.fill();
+        }
+      }
     }
 
     // 9. Hover line (yellow, only when mouse is over canvas)
     if (hoverY !== null) {
       ctx.strokeStyle = 'rgba(255,220,80,0.85)';
       ctx.lineWidth = 1;
+      ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(barStart, hoverY);
       ctx.lineTo(barEnd, hoverY);
@@ -407,8 +464,6 @@ export default function VerticalTimeline({
     // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
     const displayTs = displayCursorRef.current;
     if (displayTs != null) {
-      const reticleY = h * RETICLE_FRACTION;
-
       // Subtle glow band (40px tall, centered on reticleY)
       ctx.fillStyle = 'rgba(60, 160, 220, 0.06)';
       ctx.fillRect(barStart, reticleY - 20, barW, 40);
@@ -416,6 +471,7 @@ export default function VerticalTimeline({
       // Two thin horizontal lines with a 20px gap between them
       ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
       ctx.lineWidth = 1;
+      ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(barStart, reticleY - 10);
       ctx.lineTo(barEnd, reticleY - 10);
@@ -444,7 +500,7 @@ export default function VerticalTimeline({
       ctx.fillStyle = 'rgba(160, 210, 240, 0.95)';
       ctx.fillText(label, badgeCx, reticleY);
     }
-  }, [dims, startTs, endTs, range, segments, gaps, events, activity, hoverY, tsToY]);
+  }, [dims, startTs, endTs, gaps, events, densityData, hoverY, tsToY]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
