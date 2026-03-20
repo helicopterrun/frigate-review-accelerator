@@ -138,8 +138,6 @@ export default function VerticalTimeline({
   activeLabels = null,
   cursorTs,
   autoplayState = 'idle',
-  onScrub,
-  onScrubEnd,
   onSeek,
   onPan,
   onZoomChange,
@@ -159,7 +157,6 @@ export default function VerticalTimeline({
   const drawCanvasRef = useRef(null);         // always points to latest draw fn
 
   const [dims, setDims] = useState({ w: 215, h: 600 });
-  const [hoverY, setHoverY] = useState(null);
 
   const debouncedPreviewRequest = useDebounce(
     (ts) => { if (onPreviewRequest) onPreviewRequest(ts); },
@@ -464,18 +461,7 @@ export default function VerticalTimeline({
       }
     }
 
-    // 9. Hover line (yellow, only when mouse is over canvas)
-    if (hoverY !== null) {
-      ctx.strokeStyle = 'rgba(255,220,80,0.85)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(barStart, hoverY);
-      ctx.lineTo(barEnd, hoverY);
-      ctx.stroke();
-    }
-
-    // 10. Reticle at fixed Y = h * RETICLE_FRACTION
+    // 9. Reticle at fixed Y = h * RETICLE_FRACTION
     // The reticle Y is a constant — it never moves. cursorTs always maps here
     // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
     const displayTs = displayCursorRef.current;
@@ -529,7 +515,7 @@ export default function VerticalTimeline({
       ctx.fillStyle = 'rgba(160, 210, 240, 0.95)';
       ctx.fillText(label, badgeCx, reticleY);
     }
-  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, hoverY, autoplayState, tsToY]);
+  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
@@ -609,22 +595,16 @@ export default function VerticalTimeline({
   const handleMouseDown = useCallback(
     (e) => {
       isDragging.current = true;
-      const ts = getTs(e);
-      if (ts != null && onScrub) onScrub(ts);
     },
-    [getTs, onScrub]
+    []
   );
 
   const handleMouseMove = useCallback(
     (e) => {
-      const rect = canvasRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      setHoverY(e.clientY - rect.top);
       const ts = getTs(e);
-      if (ts != null && onScrub) onScrub(ts);
       if (ts != null) debouncedPreviewRequest(ts);
     },
-    [getTs, onScrub, debouncedPreviewRequest]
+    [getTs, debouncedPreviewRequest]
   );
 
   // Click = recenter with 250ms ease-out animation.
@@ -672,9 +652,7 @@ export default function VerticalTimeline({
 
   const handleMouseLeave = useCallback(() => {
     isDragging.current = false;
-    setHoverY(null);
-    if (onScrubEnd) onScrubEnd();
-  }, [onScrubEnd]);
+  }, []);
 
   return (
     <div
