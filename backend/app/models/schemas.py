@@ -119,3 +119,18 @@ class CameraPreviewStatus(BaseModel):
     pending_recent: int       # pending within recency window
     pending_historical: int   # pending outside recency window
     pct_recent_complete: float
+
+
+class DensityBucket(BaseModel):
+    ts: float
+    counts: dict[str, int]
+    total: int
+    important: bool
+
+
+class DensityResponse(BaseModel):
+    camera: str
+    start_ts: float
+    end_ts: float
+    bucket_sec: int
+    buckets: list[DensityBucket]

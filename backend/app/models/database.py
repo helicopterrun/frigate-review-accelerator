@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS events (
     score           REAL,
     has_clip        INTEGER NOT NULL DEFAULT 0,
     has_snapshot     INTEGER NOT NULL DEFAULT 0,
-    synced_at       REAL NOT NULL
+    synced_at       REAL NOT NULL,
+    zones           TEXT NOT NULL DEFAULT '[]'  -- JSON list of zone names entered
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_camera_time
@@ -82,6 +83,12 @@ def init_db_sync():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+    # Idempotent migration: add zones column to existing databases.
+    # New databases already have it from the SCHEMA above.
+    try:
+        conn.execute("ALTER TABLE events ADD COLUMN zones TEXT NOT NULL DEFAULT '[]'")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.commit()
     conn.close()
 
