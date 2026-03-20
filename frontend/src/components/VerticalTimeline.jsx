@@ -136,6 +136,7 @@ export default function VerticalTimeline({
   events = [],
   densityData = null,
   cursorTs,
+  autoplayState = 'idle',
   onScrub,
   onScrubEnd,
   onSeek,
@@ -464,8 +465,21 @@ export default function VerticalTimeline({
     // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
     const displayTs = displayCursorRef.current;
     if (displayTs != null) {
-      // Subtle glow band (40px tall, centered on reticleY)
-      ctx.fillStyle = 'rgba(60, 160, 220, 0.06)';
+      // Reticle glow — color and intensity respond to autoplayState:
+      //   'idle'             → base blue at 0.06 alpha
+      //   'advancing'        → blue pulsing 0.06→0.12 on 3s sine (drawn at current time)
+      //   'approaching_event'→ amber-red at 0.10 (distinct from density blue)
+      let glowStyle;
+      if (autoplayState === 'approaching_event') {
+        glowStyle = 'rgba(220, 80, 60, 0.10)';
+      } else if (autoplayState === 'advancing') {
+        const t = (performance.now() / 3000) * Math.PI * 2;
+        const alpha = (0.06 + 0.06 * (0.5 + 0.5 * Math.sin(t))).toFixed(3);
+        glowStyle = `rgba(60, 160, 220, ${alpha})`;
+      } else {
+        glowStyle = 'rgba(60, 160, 220, 0.06)';
+      }
+      ctx.fillStyle = glowStyle;
       ctx.fillRect(barStart, reticleY - 20, barW, 40);
 
       // Two thin horizontal lines with a 20px gap between them
@@ -500,7 +514,7 @@ export default function VerticalTimeline({
       ctx.fillStyle = 'rgba(160, 210, 240, 0.95)';
       ctx.fillText(label, badgeCx, reticleY);
     }
-  }, [dims, startTs, endTs, gaps, events, densityData, hoverY, tsToY]);
+  }, [dims, startTs, endTs, gaps, events, densityData, hoverY, autoplayState, tsToY]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
