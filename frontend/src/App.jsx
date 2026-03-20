@@ -46,6 +46,9 @@ import { nowTs, formatDateTime, formatTime, bucketSizeForRange } from './utils/t
 // Exported so VerticalTimeline can use the same value for rendering.
 export const RETICLE_FRACTION = 1 / 3;
 
+// Autoplay: idle threshold before timeline starts advancing.
+const AUTOPLAY_DELAY_MS = 1500;
+
 const MIN_RANGE_SEC = 15 * 60;
 const MAX_RANGE_SEC = 7 * 24 * 3600;
 
@@ -196,6 +199,8 @@ export default function App() {
       if (e.key === 'ArrowLeft') delta = -delta;
       e.preventDefault();
 
+      lastInteractionRef.current = Date.now();
+      autoplayActiveRef.current = false;
       setCursorTs(prev => Math.min(prev + delta, nowTs()));
     };
     window.addEventListener('keydown', handler);
@@ -209,6 +214,11 @@ export default function App() {
     const t = setTimeout(() => setHealthExpanded(false), 4000);
     return () => clearTimeout(t);
   }, [healthExpanded]);
+
+  // Autoplay toggle — persisted to localStorage, default enabled
+  const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
+    try { return localStorage.getItem('frigate-autoplay-enabled') !== 'false'; } catch { return true; }
+  });
 
   // Label filter state — persisted to localStorage, null means "all"
   const [activeLabels, setActiveLabels] = useState(() => {
@@ -228,6 +238,82 @@ export default function App() {
   const playbackTargetRef = useRef(null);
   useEffect(() => { cursorTsRef.current = cursorTs; }, [cursorTs]);
   useEffect(() => { playbackTargetRef.current = playbackTarget; }, [playbackTarget]);
+
+  // ── Autoplay refs — all reads/writes in RAF loop; no state to avoid 60fps re-renders ──
+  // TODO: verify RAF cleanup cancels animationFrame on unmount (no leak).
+  const lastInteractionRef = useRef(Date.now());
+  const autoplayActiveRef = useRef(false);
+  const autoplayStartRef = useRef(Date.now());
+  const autoplayEnabledRef = useRef(true);   // synced with autoplayEnabled state below
+  const autoplayRafRef = useRef(null);
+  // nearEventCacheRef: sorted filteredEvents + next upcoming event ahead of cursor.
+  // Updated by useEffect on filteredEvents (infrequent); re-searched inside setCursorTs.
+  // TODO: verify pullFactor never drops below 0.2 and cache invalidates on filteredEvents change.
+  const nearEventCacheRef = useRef({ sorted: [], event: null });
+
+  // Sync autoplayEnabledRef so the RAF loop (stable effect, no deps) can read it.
+  useEffect(() => { autoplayEnabledRef.current = autoplayEnabled; }, [autoplayEnabled]);
+
+  // Update near-event cache whenever filteredEvents changes.
+  // filteredEvents is stable between fetches (~30s), so this runs infrequently.
+  // (defined later — populated once filteredEvents is derived below)
+
+  // ─── Autoplay RAF loop ──────────────────────────────────────────────────────
+  // Invariant: no state in deps — reads refs only, advances via functional setCursorTs.
+  // TODO: test that cancelAnimationFrame is called on unmount with no leaked frames.
+  useEffect(() => {
+    function tick() {
+      const now = Date.now();
+      const idleMs = now - lastInteractionRef.current;
+      const threshold = autoplayEnabledRef.current ? AUTOPLAY_DELAY_MS : Infinity;
+
+      if (idleMs >= threshold) {
+        if (!autoplayActiveRef.current) {
+          autoplayActiveRef.current = true;
+          autoplayStartRef.current = now;
+        }
+
+        // Ease-in over 300ms: advance rate ramps 0→1x
+        const easeMs = Math.min(now - autoplayStartRef.current, 300);
+        const easeFactor = easeMs / 300;
+        const baseAdvanceSec = (1 / 60) * easeFactor;
+
+        setCursorTs(prev => {
+          let advanceSec = baseAdvanceSec;
+
+          // Magnetization: decelerate near upcoming events (never below 20% rate).
+          // Cache miss: if cursor passed the cached event, find the next one.
+          // TODO: verify pullFactor clamp — distSec→0 gives pullFactor=0.2, distSec≥10 gives 1.0.
+          let nextEvent = nearEventCacheRef.current.event;
+          if (nextEvent && nextEvent.start_ts <= prev) {
+            // Cursor has passed the cached event — search forward in sorted list.
+            nextEvent = nearEventCacheRef.current.sorted.find(e => e.start_ts > prev) ?? null;
+            nearEventCacheRef.current = { ...nearEventCacheRef.current, event: nextEvent };
+          }
+          if (nextEvent) {
+            const distSec = nextEvent.start_ts - prev;
+            if (distSec > 0 && distSec < 10) {
+              const pullFactor = 0.2 + 0.8 * (distSec / 10);
+              advanceSec *= pullFactor;
+            }
+          }
+
+          return Math.min(prev + advanceSec, nowTs());
+        });
+      } else {
+        if (autoplayActiveRef.current) {
+          autoplayActiveRef.current = false;
+        }
+      }
+
+      autoplayRafRef.current = requestAnimationFrame(tick);
+    }
+
+    autoplayRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (autoplayRafRef.current) cancelAnimationFrame(autoplayRafRef.current);
+    };
+  }, []); // stable — all values read from refs
 
   // ─── Init: load cameras + health ───
   useEffect(() => {
@@ -331,6 +417,14 @@ export default function App() {
     return importantOnly ? sorted.filter(e => IMPORTANT_LABELS.has(e.label)) : sorted;
   }, [filteredEvents, importantOnly, IMPORTANT_LABELS]);
 
+  // Update near-event cache whenever filteredEvents changes so the RAF
+  // magnetization loop has an up-to-date sorted list to work with.
+  useEffect(() => {
+    const sorted = [...filteredEvents].sort((a, b) => a.start_ts - b.start_ts);
+    const next = sorted.find(e => e.start_ts > (cursorTsRef.current ?? 0)) ?? null;
+    nearEventCacheRef.current = { sorted, event: next };
+  }, [filteredEvents]);
+
   // ─── Range change — kept for SplitView backward compat ───
   const handleRangeChange = useCallback((newStart, newEnd) => {
     const newRange = newEnd - newStart;
@@ -341,7 +435,10 @@ export default function App() {
 
   // ─── Scrub handler: sets hover position for preview overlay ───
   // cursorTs is NOT updated on hover — only clicking (handleSeek) recenters the view.
+  // TODO: verify markInteraction is called on all user input paths (scroll, click, keyboard).
   const handleScrub = useCallback((ts) => {
+    lastInteractionRef.current = Date.now();
+    autoplayActiveRef.current = false;
     const snapped = snapToCoverage(ts, timelineData?.segments);
     setHoverTs(snapped);
   }, [timelineData]);
@@ -353,11 +450,15 @@ export default function App() {
 
   // ─── Pan: shift cursorTs by deltaSec, clamping at nowTs() ───
   const handlePan = useCallback((deltaSec) => {
+    lastInteractionRef.current = Date.now();
+    autoplayActiveRef.current = false;
     setCursorTs(prev => Math.min(prev + deltaSec, nowTs()));
   }, []);
 
   // ─── Zoom: change visible window width, keeping cursorTs fixed ───
   const handleZoomChange = useCallback((newRangeSec) => {
+    lastInteractionRef.current = Date.now();
+    autoplayActiveRef.current = false;
     if (newRangeSec < MIN_RANGE_SEC || newRangeSec > MAX_RANGE_SEC) return;
     setRangeSec(newRangeSec);
   }, []);
@@ -366,6 +467,8 @@ export default function App() {
   const handleSeek = useCallback(
     async (ts) => {
       if (!selectedCamera) return;
+      lastInteractionRef.current = Date.now();
+      autoplayActiveRef.current = false;
       setHoverTs(null);
       setCursorTs(ts);
       setActiveEventSnapshot(null);
@@ -517,6 +620,24 @@ export default function App() {
     hoverTs != null && selectedCamera
       ? `/api/preview/${selectedCamera}/${hoverTs}`
       : null;
+
+  // ─── Derive autoplayState from refs at render time ───
+  // Refs don't trigger renders, but cursorTs updating ~60fps during autoplay means
+  // this is re-evaluated each frame. Safe to read refs during render in React.
+  let autoplayState = 'idle';
+  if (autoplayActiveRef.current) {
+    const nextEvent = nearEventCacheRef.current.event;
+    if (nextEvent) {
+      const distSec = nextEvent.start_ts - cursorTs;
+      if (distSec > 0 && distSec < 10) {
+        autoplayState = 'approaching_event';
+      } else {
+        autoplayState = 'advancing';
+      }
+    } else {
+      autoplayState = 'advancing';
+    }
+  }
 
   // ─── Render ───
   if (loading) {
@@ -815,6 +936,29 @@ export default function App() {
                   fontSize: 14,
                 }}
               >⚡</button>
+
+              {/* Autoplay toggle */}
+              <button
+                onClick={() => {
+                  setAutoplayEnabled(v => {
+                    const next = !v;
+                    try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {}
+                    if (!next) autoplayActiveRef.current = false;
+                    return next;
+                  });
+                }}
+                title={autoplayEnabled ? 'Autoplay on — click to pause' : 'Autoplay off — click to enable'}
+                style={{
+                  background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${autoplayEnabled ? '#4dd0e1' : '#333'}`,
+                  color: autoplayEnabled ? '#4dd0e1' : '#666',
+                  borderRadius: 6,
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                }}
+              >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
             </div>
           )}
         </div>
@@ -897,6 +1041,7 @@ export default function App() {
                 onSeek={handleSeek}
                 onPan={handlePan}
                 onZoomChange={handleZoomChange}
+                autoplayState={autoplayState}
                 isMobile={isMobile}
                 onPreviewRequest={(ts) => {
                   const halfWindow = 5 * 60;
