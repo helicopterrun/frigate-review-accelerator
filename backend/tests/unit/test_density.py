@@ -48,13 +48,22 @@ class TestComputeDensityBuckets:
         buckets = idx.compute_density_buckets(events, 0.0, 30.0, 15)
         assert all(not b["important"] for b in buckets)
 
-    def test_custom_important_labels(self, idx):
-        """Custom important_labels set overrides the default."""
+    def test_custom_importance_fn(self, idx):
+        """Custom importance_fn overrides the default label-based predicate."""
         events = [{"start_ts": 5.0, "end_ts": 8.0, "label": "person"}]
         buckets = idx.compute_density_buckets(
-            events, 0.0, 15.0, 15, important_labels={"person"}
+            events, 0.0, 15.0, 15, importance_fn=lambda evt: evt["label"] == "person"
         )
         assert buckets[0]["important"] is True
+
+    def test_custom_importance_fn_false(self, idx):
+        """Custom importance_fn returning False leaves bucket non-important."""
+        events = [{"start_ts": 5.0, "end_ts": 8.0, "label": "cat"}]
+        # Even though 'cat' is in the default set, a custom fn overrides
+        buckets = idx.compute_density_buckets(
+            events, 0.0, 15.0, 15, importance_fn=lambda evt: evt["label"] == "person"
+        )
+        assert buckets[0]["important"] is False
 
     def test_active_event_no_end_time(self, idx):
         """Event with end_ts=None uses 5s fallback duration."""

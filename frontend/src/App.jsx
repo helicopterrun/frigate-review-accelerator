@@ -147,6 +147,11 @@ export default function App() {
 
   const [timelineData, setTimelineData] = useState(null);
   const [densityData, setDensityData] = useState(null);
+  const [currentEventIndex, setCurrentEventIndex] = useState(null);
+  // TODO: importantOnly and the Phase 1 label set must stay in sync with
+  // settings.important_labels in backend/app/config.py. Consider fetching
+  // the list from a /api/config endpoint in Phase 2 instead of hardcoding.
+  const [importantOnly, setImportantOnly] = useState(false);
   const [previewFrames, setPreviewFrames] = useState([]);
   const [cursorTs, setCursorTs] = useState(() => nowTs());
   const [rangeSec, setRangeSec] = useState(8 * 3600);
@@ -315,6 +320,17 @@ export default function App() {
     return timelineData.events.filter(e => activeLabels.has(e.label));
   }, [timelineData, activeLabels]);
 
+  // Phase 1 importance: label-based hardcoded set.
+  // TODO: sync with settings.important_labels in backend/app/config.py.
+  // Phase 2 will fetch this list from a shared config endpoint.
+  // TODO: unit test — verify importantOnly correctly filters navEvents list
+  // and that currentEventIndex stays in bounds after filteredEvents changes.
+  const IMPORTANT_LABELS = useMemo(() => new Set(['cat', 'bird', 'bear', 'horse']), []);
+  const navEvents = useMemo(() => {
+    const sorted = [...filteredEvents].sort((a, b) => a.start_ts - b.start_ts);
+    return importantOnly ? sorted.filter(e => IMPORTANT_LABELS.has(e.label)) : sorted;
+  }, [filteredEvents, importantOnly, IMPORTANT_LABELS]);
+
   // ─── Range change — kept for SplitView backward compat ───
   const handleRangeChange = useCallback((newStart, newEnd) => {
     const newRange = newEnd - newStart;
@@ -456,17 +472,22 @@ export default function App() {
 
   // ─── Event navigation ───
   const navigateEvent = useCallback(async (direction) => {
-    if (!filteredEvents.length) return;
-    const sorted = [...filteredEvents].sort((a, b) => a.start_ts - b.start_ts);
+    if (!navEvents.length) return;
     const current = cursorTs ?? 0;
 
-    let target;
+    let targetIdx;
     if (direction === 'next') {
-      target = sorted.find(e => e.start_ts > current + 1) ?? sorted[0];
+      const idx = navEvents.findIndex(e => e.start_ts > current + 1);
+      targetIdx = idx >= 0 ? idx : 0;
     } else {
-      target = [...sorted].reverse().find(e => e.start_ts < current - 1)
-               ?? sorted[sorted.length - 1];
+      const idx = [...navEvents].map((e, i) => i).reverse().find(
+        i => navEvents[i].start_ts < current - 1
+      );
+      targetIdx = idx != null ? idx : navEvents.length - 1;
     }
+
+    const target = navEvents[targetIdx];
+    setCurrentEventIndex(targetIdx);
 
     if (!target) return;
 
@@ -489,7 +510,7 @@ export default function App() {
     }
 
     // setCursorTs(target.start_ts) above recenters the derived range automatically
-  }, [filteredEvents, cursorTs, selectedCamera]);
+  }, [navEvents, cursorTs, selectedCamera]);
 
   // ─── Derive scrub preview URL ───
   const activePreviewUrl =
@@ -732,15 +753,71 @@ export default function App() {
         </div>
       )}
 
-      {/* Label filter pills (single-camera mode only) */}
+      {/* Label filter pills + event navigator (single-camera mode only) */}
       {!multiMode && (
-        <LabelFilterPills
-          availableLabels={availableLabels}
-          activeLabels={activeLabels}
-          onToggle={toggleLabel}
-          onToggleAll={toggleAllLabels}
-          isMobile={isMobile}
-        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
+          <LabelFilterPills
+            availableLabels={availableLabels}
+            activeLabels={activeLabels}
+            onToggle={toggleLabel}
+            onToggleAll={toggleAllLabels}
+            isMobile={isMobile}
+          />
+
+          {navEvents.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', flexShrink: 0 }}>
+              {/* Event navigator */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid #333',
+                borderRadius: 6,
+                padding: '4px 12px',
+                fontFamily: 'monospace',
+                fontSize: 13,
+                fontWeight: 700,
+                color: '#e0e0e0',
+              }}>
+                <button
+                  onClick={() => navigateEvent('prev')}
+                  style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}
+                  onMouseEnter={e => e.target.style.color = '#4dd0e1'}
+                  onMouseLeave={e => e.target.style.color = '#aaa'}
+                  title="Previous event"
+                >◀</button>
+                <span>
+                  EVENT {currentEventIndex != null ? currentEventIndex + 1 : '—'} / {navEvents.length}
+                  {importantOnly && ' ⚡'}
+                </span>
+                <button
+                  onClick={() => navigateEvent('next')}
+                  style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}
+                  onMouseEnter={e => e.target.style.color = '#4dd0e1'}
+                  onMouseLeave={e => e.target.style.color = '#aaa'}
+                  title="Next event"
+                >▶</button>
+              </div>
+
+              {/* Important-only toggle */}
+              <button
+                onClick={() => { setImportantOnly(v => !v); setCurrentEventIndex(null); }}
+                title={importantOnly ? 'Showing important events only — click to show all' : 'Click to show important events only'}
+                style={{
+                  background: importantOnly ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${importantOnly ? '#4dd0e1' : '#333'}`,
+                  color: importantOnly ? '#4dd0e1' : '#666',
+                  borderRadius: 6,
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  fontFamily: 'monospace',
+                  fontSize: 14,
+                }}
+              >⚡</button>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Main content */}
@@ -827,27 +904,6 @@ export default function App() {
                 }}
               />
             </div>
-
-            {/* Prev/Next event navigation */}
-            {filteredEvents.length > 0 && (
-              <div style={{
-                display: 'flex', alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '4px 8px',
-                borderTop: '1px solid #1e2130',
-                flexShrink: 0,
-              }}>
-                <button onClick={() => navigateEvent('prev')} style={styles.navBtn}>
-                  ‹ prev
-                </button>
-                <span style={{ fontSize: 10, color: '#444', fontFamily: 'monospace' }}>
-                  {filteredEvents.length} evt
-                </span>
-                <button onClick={() => navigateEvent('next')} style={styles.navBtn}>
-                  next ›
-                </button>
-              </div>
-            )}
 
             {/* Bottom range label */}
             <div style={{ ...styles.rangeLabel, borderTop: '1px solid #1e2130', borderBottom: 'none' }}>
@@ -966,16 +1022,6 @@ const styles = {
     color: '#555',
     borderBottom: '1px solid #1e2130',
     flexShrink: 0,
-    fontFamily: 'monospace',
-  },
-  navBtn: {
-    background: '#1a1d27',
-    border: '1px solid #333',
-    color: '#aaa',
-    padding: '4px 10px',
-    borderRadius: 4,
-    cursor: 'pointer',
-    fontSize: 12,
     fontFamily: 'monospace',
   },
   loading: { color: '#888', textAlign: 'center', paddingTop: 100, fontSize: 16 },

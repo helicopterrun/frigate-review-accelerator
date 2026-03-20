@@ -136,7 +136,7 @@ class TimeIndex:
         range_start: float,
         range_end: float,
         bucket_sec: int,
-        important_labels: set[str] | None = None,
+        importance_fn=None,
     ) -> list[dict]:
         """Bucket tracked objects with overlap-aware counting.
 
@@ -146,14 +146,27 @@ class TimeIndex:
 
         events: iterable of DB rows (start_ts, end_ts, label, ...) or dicts
                 with the same keys.
-        important_labels: set of labels that set the important=True flag.
-                          Defaults to {"cat", "bird", "bear", "horse"}.
+        importance_fn: callable(event_dict) -> bool
+            If None, uses label-based default from settings.important_labels.
+            Phase 2 will pass a zone-aware predicate here — the density endpoint
+            stays unchanged; only the predicate changes.
 
         Returns list[dict] matching DensityBucket shape:
           {ts, counts, total, important}
         """
-        if important_labels is None:
-            important_labels = {"cat", "bird", "bear", "horse"}
+        # TODO: Phase 2 — pass a zone-aware predicate from the router so that
+        # importance is determined by label + zone membership, not label alone.
+        # Example predicate:
+        #   def zone_importance(evt):
+        #       return (
+        #           evt["label"] == "person"
+        #           and "front_yard" in json.loads(evt.get("zones", "[]"))
+        #       ) or evt["label"] in {"cat", "bird", "bear", "horse"}
+        # The important_labels config must stay in sync with any hardcoded
+        # frontend Phase 1 label list (see App.jsx isImportant).
+        if importance_fn is None:
+            important_set = set(settings.important_labels)
+            importance_fn = lambda evt: evt.get("label") in important_set  # noqa: E731
 
         n_buckets = max(1, math.ceil((range_end - range_start) / bucket_sec))
         result = []
@@ -169,11 +182,13 @@ class TimeIndex:
                     evt_start = evt["start_ts"]
                     evt_end = evt.get("end_ts")
                     evt_label = evt["label"]
+                    evt_dict = evt
                 else:
                     # DB row: (start_ts, end_ts, label, ...)
                     evt_start = evt[0]
                     evt_end = evt[1]
                     evt_label = evt[2]
+                    evt_dict = {"start_ts": evt[0], "end_ts": evt[1], "label": evt[2]}
 
                 if evt_end is None:
                     evt_end = evt_start + 5  # active event fallback
@@ -181,7 +196,7 @@ class TimeIndex:
                 # Overlap check: event spans this bucket
                 if evt_start < b_end and evt_end > b_start:
                     counts[evt_label] = counts.get(evt_label, 0) + 1
-                    if evt_label in important_labels:
+                    if not important and importance_fn(evt_dict):
                         important = True
 
             result.append({
