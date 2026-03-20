@@ -457,7 +457,7 @@ export default function VideoPlayer({
   }, []);
 
   const hasTarget = playbackTarget != null;
-  const showOverlay = scrubPreviewUrl != null && eventSnapshot == null;
+  const showOverlay = scrubPreviewUrl != null && !isPlaying && eventSnapshot == null;
   const showPlaceholder = !hasTarget && !showOverlay && !eventSnapshot;
 
   return (

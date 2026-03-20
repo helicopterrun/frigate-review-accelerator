@@ -4,7 +4,7 @@
  * v3 layout:
  *   - 100vh flex-column, no scroll
  *   - Single-camera: 2-column layout (VideoPlayer left, VerticalTimeline right)
- *   - Hover on VerticalTimeline shows preview overlay on VideoPlayer (hoverTs)
+ *   - Reticle position (cursorTs) drives preview overlay on VideoPlayer (75ms debounce)
  *   - Click on VerticalTimeline commits playback (handleSeek)
  *   - "Go to" datetime input in controls bar (single-camera mode only)
  *   - SplitView path unchanged
@@ -152,7 +152,6 @@ export default function App() {
   const [previewFrames, setPreviewFrames] = useState([]);
   const [cursorTs, setCursorTs] = useState(() => nowTs());
   const [rangeSec, setRangeSec] = useState(8 * 3600);
-  const [hoverTs, setHoverTs] = useState(null);
   const [playbackTarget, setPlaybackTarget] = useState(null);
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
@@ -173,6 +172,24 @@ export default function App() {
     const end = Math.min(cursor + rangeSec * RETICLE_FRACTION, nowTs() + 60);
     return { rangeStart: start, rangeEnd: end };
   }, [cursorTs, rangeSec]);
+
+  const [reticlePreviewUrl, setReticlePreviewUrl] = useState(null);
+
+  // Preview image for the VideoPlayer overlay, derived from the reticle
+  // position (cursorTs) with a short debounce so rapid autoplay / scroll
+  // does not hammer the preview endpoint.
+  // TODO: add frontend test verifying reticlePreviewUrl updates within 75ms
+  // of a cursorTs change and is null when selectedCamera is null.
+  useEffect(() => {
+    if (!selectedCamera || cursorTs == null) {
+      setReticlePreviewUrl(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      setReticlePreviewUrl(`/api/preview/${selectedCamera}/${cursorTs}`);
+    }, 75);
+    return () => clearTimeout(timer);
+  }, [selectedCamera, cursorTs]);
 
   const [gotoValue, setGotoValue] = useState(() => toDatetimeLocal(nowTs()));
 
@@ -442,21 +459,6 @@ export default function App() {
     setCursorTs(newStart + newRange / 2);
   }, []);
 
-  // ─── Scrub handler: sets hover position for preview overlay ───
-  // cursorTs is NOT updated on hover — only clicking (handleSeek) recenters the view.
-  // TODO: verify markInteraction is called on all user input paths (scroll, click, keyboard).
-  const handleScrub = useCallback((ts) => {
-    lastInteractionRef.current = Date.now();
-    autoplayActiveRef.current = false;
-    const snapped = snapToCoverage(ts, timelineData?.segments);
-    setHoverTs(snapped);
-  }, [timelineData]);
-
-  // ─── Scrub end: clear hover ───
-  const handleScrubEnd = useCallback(() => {
-    setHoverTs(null);
-  }, []);
-
   // ─── Pan: shift cursorTs by deltaSec, clamping at nowTs() ───
   const handlePan = useCallback((deltaSec) => {
     lastInteractionRef.current = Date.now();
@@ -478,7 +480,6 @@ export default function App() {
       if (!selectedCamera) return;
       lastInteractionRef.current = Date.now();
       autoplayActiveRef.current = false;
-      setHoverTs(null);
       setCursorTs(ts);
       setActiveEventSnapshot(null);
 
@@ -540,7 +541,6 @@ export default function App() {
     setSelectedCamera(name);
     const cam = cameras.find(c => c.name === name);
     setCursorTs(cam?.latest_ts ?? nowTs());
-    setHoverTs(null);
     setPlaybackTarget(null);
     setTimelineData(null);
     setDensityData(null);
@@ -641,12 +641,6 @@ export default function App() {
 
     // setCursorTs(target.start_ts) above recenters the derived range automatically
   }, [navEvents, cursorTs, selectedCamera]);
-
-  // ─── Derive scrub preview URL ───
-  const activePreviewUrl =
-    hoverTs != null && selectedCamera
-      ? `/api/preview/${selectedCamera}/${hoverTs}`
-      : null;
 
   // ─── Derive autoplayState from refs at render time ───
   // Refs don't trigger renders, but cursorTs updating ~60fps during autoplay means
@@ -907,7 +901,7 @@ export default function App() {
                 camera={selectedCamera}
                 onTimeUpdate={handlePlaybackTimeUpdate}
                 onSegmentAdvance={handleSegmentAdvance}
-                scrubPreviewUrl={activePreviewUrl}
+                scrubPreviewUrl={reticlePreviewUrl}
                 isMobile={isMobile}
                 eventSnapshot={activeEventSnapshot}
                 onSeek={handleSeek}
@@ -956,8 +950,6 @@ export default function App() {
                 densityData={densityData}
                 activeLabels={activeLabels}
                 cursorTs={cursorTs}
-                onScrub={handleScrub}
-                onScrubEnd={handleScrubEnd}
                 onSeek={handleSeek}
                 onPan={handlePan}
                 onZoomChange={handleZoomChange}
