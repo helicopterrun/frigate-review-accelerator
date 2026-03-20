@@ -37,7 +37,7 @@ import {
   requestPreviews,
   eventSnapshotUrl,
 } from './utils/api.js';
-import { todayStartTs, nowTs, formatDateTime, formatTime } from './utils/time.js';
+import { nowTs, formatDateTime, formatTime } from './utils/time.js';
 
 const MIN_RANGE_SEC = 15 * 60;
 const MAX_RANGE_SEC = 7 * 24 * 3600;
@@ -140,24 +140,60 @@ export default function App() {
 
   const [timelineData, setTimelineData] = useState(null);
   const [previewFrames, setPreviewFrames] = useState([]);
-  const [cursorTs, setCursorTs] = useState(null);
+  const [cursorTs, setCursorTs] = useState(() => nowTs() - 12 * 3600);
+  const [rangeSec, setRangeSec] = useState(24 * 3600);
   const [hoverTs, setHoverTs] = useState(null);
   const [playbackTarget, setPlaybackTarget] = useState(null);
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  const [rangeStart, setRangeStart] = useState(todayStartTs());
-  const [rangeEnd, setRangeEnd] = useState(nowTs());
+  // ── Derived range: cursorTs is always at vertical center ───────────────────
+  // TODO: add test verifying rangeEnd never exceeds nowTs() when cursorTs is near now
+  // TODO: during video playback, cursorTs updates at ~30Hz; each update drives a
+  //   rangeStart/rangeEnd change that triggers the data-fetch useEffect — consider
+  //   debouncing in a follow-up PR if this causes excessive backend requests
+  const { rangeStart, rangeEnd } = useMemo(() => {
+    const halfRange = rangeSec / 2;
+    const now = nowTs();
+    let start = cursorTs - halfRange;
+    let end = cursorTs + halfRange;
+    if (end > now) {
+      end = now;
+      start = now - rangeSec;
+    }
+    return { rangeStart: start, rangeEnd: end };
+  }, [cursorTs, rangeSec]);
 
   const [gotoValue, setGotoValue] = useState(() => toDatetimeLocal(nowTs()));
 
-  // Escape key closes ops drawer
+  // Keyboard navigation + Escape to close ops drawer
+  // Shortcuts: ← / → = ±5s | Shift+← / → = ±30s | Cmd/Ctrl+← / → = ±5m
+  // TODO: add React Testing Library tests for keyboard navigation when frontend test harness is introduced
   useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') setOpsOpen(false); };
+    const handler = (e) => {
+      if (e.key === 'Escape') { setOpsOpen(false); return; }
+      const tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+
+      let delta;
+      if (e.metaKey || e.ctrlKey) delta = 5 * 60;
+      else if (e.shiftKey) delta = 30;
+      else delta = 5;
+
+      if (e.key === 'ArrowLeft') delta = -delta;
+      e.preventDefault();
+
+      setCursorTs(prev => {
+        const next = prev + delta;
+        const maxCursor = nowTs() - rangeSec / 2;
+        return Math.min(next, maxCursor);
+      });
+    };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [rangeSec]);
 
   // Mobile header expand/collapse
   const [healthExpanded, setHealthExpanded] = useState(false);
@@ -255,25 +291,39 @@ export default function App() {
     return timelineData.events.filter(e => activeLabels.has(e.label));
   }, [timelineData, activeLabels]);
 
-  // ─── Range change (from zoom or presets) ───
+  // ─── Range change — kept for SplitView backward compat ───
   const handleRangeChange = useCallback((newStart, newEnd) => {
     const newRange = newEnd - newStart;
     if (newRange < MIN_RANGE_SEC || newRange > MAX_RANGE_SEC) return;
-    setRangeStart(newStart);
-    setRangeEnd(newEnd);
+    setRangeSec(newRange);
+    setCursorTs(newStart + newRange / 2);
   }, []);
 
-  // ─── Scrub handler: sets hover position + moves cursor line ───
-  // Snaps to nearest covered segment so preview and cursor never land in a gap.
+  // ─── Scrub handler: sets hover position for preview overlay ───
+  // cursorTs is NOT updated on hover — only clicking (handleSeek) recenters the view.
   const handleScrub = useCallback((ts) => {
     const snapped = snapToCoverage(ts, timelineData?.segments);
     setHoverTs(snapped);
-    setCursorTs(snapped);
   }, [timelineData]);
 
-  // ─── Scrub end: clear hover (cursor stays at last position) ───
+  // ─── Scrub end: clear hover ───
   const handleScrubEnd = useCallback(() => {
     setHoverTs(null);
+  }, []);
+
+  // ─── Pan: shift cursorTs by deltaSec, clamping so rangeEnd ≤ now ───
+  const handlePan = useCallback((deltaSec) => {
+    setCursorTs(prev => {
+      const next = prev + deltaSec;
+      const maxCursor = nowTs() - rangeSec / 2;
+      return Math.min(next, maxCursor);
+    });
+  }, [rangeSec]);
+
+  // ─── Zoom: change visible window width, keeping cursorTs fixed ───
+  const handleZoomChange = useCallback((newRangeSec) => {
+    if (newRangeSec < MIN_RANGE_SEC || newRangeSec > MAX_RANGE_SEC) return;
+    setRangeSec(newRangeSec);
   }, []);
 
   // ─── Seek handler: commits playback, clears hover + snapshot ───
@@ -286,6 +336,7 @@ export default function App() {
 
       try {
         const target = await fetchPlaybackTarget(selectedCamera, ts);
+        console.log('[APP] setPlaybackTarget from timeline click/seek', target);
         setPlaybackTarget(target);
         setError(null);
       } catch (err) {
@@ -304,6 +355,7 @@ export default function App() {
       try {
         const nextTs = playbackTargetRef.current?.segment_end_ts ?? (cursorTsRef.current ?? 0);
         const target = await fetchPlaybackTarget(selectedCamera, nextTs + 0.1);
+        console.log('[APP] setPlaybackTarget from auto-advance', target);
         setPlaybackTarget(target);
       } catch {}
     },
@@ -350,9 +402,10 @@ export default function App() {
 
   // ─── Range presets ───
   const setRange = useCallback((hours) => {
-    const end = nowTs();
-    setRangeStart(end - hours * 3600);
-    setRangeEnd(end);
+    const newRangeSec = hours * 3600;
+    const now = nowTs();
+    setRangeSec(newRangeSec);
+    setCursorTs(now - newRangeSec / 2);
   }, []);
 
   // ─── "Go to" handler ───
@@ -360,10 +413,9 @@ export default function App() {
     if (!gotoValue) return;
     const ts = new Date(gotoValue).getTime() / 1000;
     if (isNaN(ts)) return;
-    const halfRange = (rangeEnd - rangeStart) / 2;
-    handleRangeChange(ts - halfRange, ts + halfRange);
+    setCursorTs(ts);
     handleSeek(ts);
-  }, [gotoValue, rangeStart, rangeEnd, handleRangeChange, handleSeek]);
+  }, [gotoValue, handleSeek]);
 
   // ─── Label filter handlers ───
   const toggleLabel = useCallback((label) => {
@@ -402,6 +454,7 @@ export default function App() {
     setCursorTs(target.start_ts);
     try {
       const playTarget = await fetchPlaybackTarget(selectedCamera, target.start_ts);
+      console.log('[APP] setPlaybackTarget from event navigation', playTarget);
       setPlaybackTarget(playTarget);
     } catch {}
 
@@ -416,12 +469,8 @@ export default function App() {
       setActiveEventSnapshot(null);
     }
 
-    // Re-center range if event is outside current view
-    if (target.start_ts < rangeStart || target.start_ts > rangeEnd) {
-      const halfRange = (rangeEnd - rangeStart) / 2;
-      handleRangeChange(target.start_ts - halfRange, target.start_ts + halfRange);
-    }
-  }, [filteredEvents, cursorTs, selectedCamera, rangeStart, rangeEnd, handleRangeChange]);
+    // setCursorTs(target.start_ts) above recenters the derived range automatically
+  }, [filteredEvents, cursorTs, selectedCamera]);
 
   // ─── Derive scrub preview URL ───
   const activePreviewUrl =
@@ -751,7 +800,8 @@ export default function App() {
                 onScrub={handleScrub}
                 onScrubEnd={handleScrubEnd}
                 onSeek={handleSeek}
-                onRangeChange={handleRangeChange}
+                onPan={handlePan}
+                onZoomChange={handleZoomChange}
                 isMobile={isMobile}
                 onPreviewRequest={(ts) => {
                   const halfWindow = 5 * 60;

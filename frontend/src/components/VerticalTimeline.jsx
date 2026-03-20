@@ -63,8 +63,13 @@ const ZOOM_STOP_LABELS = [
   '1h', '2h', '4h', '8h', '12h', '18h', '24h', '48h', '7d',
 ];
 
-const PAN_FRACTION = 0.15; // 15% of range per scroll tick
-const MIN_RANGE_SEC = 15 * 60;
+/** Zoom-aware pan fraction: slower at fine zoom, faster at wide zoom. */
+function panFraction(rangeSec) {
+  if (rangeSec <= 1800)  return 0.05;  // ≤30m → precise (5%)
+  if (rangeSec <= 3600)  return 0.08;  // ≤1h  → precise
+  if (rangeSec <= 28800) return 0.12;  // ≤8h  → medium
+  return 0.18;                          // >8h  → fast
+}
 
 const EVENT_COLORS = {
   person: '#4CAF50',
@@ -114,7 +119,8 @@ export default function VerticalTimeline({
   onScrub,
   onScrubEnd,
   onSeek,
-  onRangeChange,
+  onPan,
+  onZoomChange,
   onPreviewRequest = null,
   isMobile = false,
 }) {
@@ -122,6 +128,7 @@ export default function VerticalTimeline({
   const containerRef = useRef(null);
   const isDragging = useRef(false);
   const touchStartRef = useRef(null);
+  const scrollTimestamps = useRef([]);
 
   const [dims, setDims] = useState({ w: 215, h: 600 });
   const [hoverY, setHoverY] = useState(null);
@@ -356,9 +363,9 @@ export default function VerticalTimeline({
       ctx.stroke();
     }
 
-    // 10. Playback cursor (red) + floating timestamp badge
+    // 10. Playback cursor (red) fixed at vertical center + timestamp badge
     if (cursorTs != null) {
-      const cy = tsToY(cursorTs);
+      const cy = h / 2; // cursor is always at center — timeline scrolls under it
 
       ctx.strokeStyle = '#ff4444';
       ctx.lineWidth = 4;
@@ -389,29 +396,28 @@ export default function VerticalTimeline({
     }
   }, [dims, startTs, endTs, range, segments, gaps, events, activity, cursorTs, hoverY, tsToY]);
 
-  // ── Scroll-to-pan ───────────────────────────────────────────────────────────
+  // ── Scroll-to-pan: zoom-aware sensitivity + velocity acceleration ────────────
+  // TODO: add unit tests for velocity calculation when frontend test harness is introduced
   const handleWheel = useCallback(
     (e) => {
-      if (!onRangeChange) return;
+      if (!onPan) return;
       e.preventDefault();
 
-      const panAmount = range * PAN_FRACTION;
-      // deltaY < 0 = scroll up = go backward in time (negative delta)
-      const delta = e.deltaY < 0 ? -panAmount : panAmount;
+      const now = Date.now();
+      // Keep only timestamps within the 200ms velocity window
+      scrollTimestamps.current = scrollTimestamps.current.filter(t => now - t < 200);
+      scrollTimestamps.current.push(now);
 
-      const now = nowTs();
-      let newStart = startTs + delta;
-      let newEnd = endTs + delta;
+      const velocityFactor = scrollTimestamps.current.length / 3;
+      const fraction = panFraction(range);
+      const baseDelta = range * fraction;
+      const effectiveDelta = baseDelta * (1 + Math.min(velocityFactor, 3));
 
-      // Clamp: don't scroll past "now"
-      if (newEnd > now) {
-        newEnd = now;
-        newStart = now - range;
-      }
-
-      onRangeChange(newStart, newEnd);
+      // deltaY < 0 = scroll up = go backward in time
+      const delta = e.deltaY < 0 ? -effectiveDelta : effectiveDelta;
+      onPan(delta);
     },
-    [startTs, endTs, range, onRangeChange]
+    [range, onPan]
   );
 
   useEffect(() => {
@@ -421,31 +427,13 @@ export default function VerticalTimeline({
     return () => canvas.removeEventListener('wheel', handleWheel);
   }, [handleWheel]);
 
-  // ── Zoom: apply a stop index, centering on cursorTs or midpoint ─────────────
+  // ── Zoom: apply a stop index; App.jsx keeps cursorTs fixed while range changes ─
   const applyZoom = useCallback(
     (idx) => {
       const clamped = Math.max(0, Math.min(ZOOM_STOPS.length - 1, idx));
-      const newRange = ZOOM_STOPS[clamped];
-
-      // Center on cursor if it's within view, otherwise on midpoint
-      const mid = (startTs + endTs) / 2;
-      const center =
-        cursorTs != null && cursorTs >= startTs && cursorTs <= endTs
-          ? cursorTs
-          : mid;
-
-      const now = nowTs();
-      let newStart = center - newRange / 2;
-      let newEnd = center + newRange / 2;
-
-      if (newEnd > now) {
-        newEnd = now;
-        newStart = now - newRange;
-      }
-
-      if (onRangeChange) onRangeChange(newStart, newEnd);
+      if (onZoomChange) onZoomChange(ZOOM_STOPS[clamped]);
     },
-    [startTs, endTs, cursorTs, onRangeChange]
+    [onZoomChange]
   );
 
   // ── Mouse handlers ──────────────────────────────────────────────────────────
@@ -528,15 +516,10 @@ export default function VerticalTimeline({
           const dy = touch.clientY - (touchStartRef.current?.y ?? touch.clientY);
           const isHorizontalSwipe = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10;
 
-          if (isHorizontalSwipe && onRangeChange) {
-            const panFraction = -dx / dims.w * 0.5;
-            const panAmount = range * panFraction;
-            const newStart = startTs + panAmount;
-            const newEnd = endTs + panAmount;
-            const now = nowTs();
-            if (newEnd <= now && newEnd - newStart >= MIN_RANGE_SEC) {
-              onRangeChange(newStart, newEnd);
-            }
+          if (isHorizontalSwipe && onPan) {
+            const fraction = -dx / dims.w * 0.5;
+            const panAmount = range * fraction;
+            onPan(panAmount);
             touchStartRef.current = { x: touch.clientX, y: touch.clientY };
             return;
           }
