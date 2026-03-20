@@ -143,6 +143,7 @@ export default function VerticalTimeline({
   onZoomChange,
   onPreviewRequest = null,
   isMobile = false,
+  timeFormat = '12h',
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -386,24 +387,27 @@ export default function VerticalTimeline({
       ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(formatTimeShort(t), LABEL_WIDTH - 4, y);
+      ctx.fillText(formatTimeShort(t, timeFormat), LABEL_WIDTH - 4, y);
       ctx.globalAlpha = 1.0;          // ALWAYS reset immediately
     }
 
     // 7. Layer 2: Detection ticks with proximity-aware labels
     // Ticks span 60% of bar zone width (centered). Opacity rises near reticle.
     // Labels only near reticle (±60px), with 14px collision avoidance.
+    // Independent of densityData — renders whenever events prop is non-empty.
     // TODO: extract _labelCollisionFilter(events, reticleY, tsToY) for unit testing.
     const tickBarStart = barStart + barW * 0.2;
     const tickBarEnd = barStart + barW * 0.8;
     const readingZoneEvents = [];
 
+    let renderedEventCount = 0;
     ctx.lineWidth = 1;
     ctx.setLineDash([]);
     for (const evt of events) {
       const y = tsToY(evt.start_ts);
       if (y < -2 || y > h + 2) continue;
 
+      renderedEventCount++;
       const distFromReticle = Math.abs(y - reticleY);
       const color = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
 
@@ -419,6 +423,14 @@ export default function VerticalTimeline({
       }
     }
     ctx.globalAlpha = 1;
+
+    if (events.length > 0 && renderedEventCount === 0) {
+      console.warn(
+        '[VerticalTimeline] Events present but no markers rendered. ' +
+        'Check that events are in range and tsToY is returning valid values.',
+        { eventCount: events.length, startTs, endTs }
+      );
+    }
 
     // Labels: closest to reticle first; skip if within 14px of an already-labeled event
     // TODO: unit test — given N events within ±60px, only the closest group with
@@ -539,7 +551,7 @@ export default function VerticalTimeline({
       // Invariant: this label MUST equal what a tick at cursor_time would
       // show. When tsToY(cursor_time) === reticleY, both values are the same
       // timestamp — any divergence indicates a coordinate system bug.
-      const label = formatTime(displayTs);
+      const label = formatTime(displayTs, timeFormat);
       ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -559,7 +571,7 @@ export default function VerticalTimeline({
       ctx.fillStyle = `rgba(190, 225, 250, ${reticleAlpha})`;
       ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
     }
-  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY]);
+  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
