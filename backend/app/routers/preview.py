@@ -45,6 +45,10 @@ log = logging.getLogger(__name__)
 # Strong references to active on-demand tasks — prevents GC before completion
 _active_demand_tasks: set[asyncio.Task] = set()
 
+# Limit concurrent on-demand preview generation tasks to avoid overwhelming ffmpeg.
+# At most 3 tasks run concurrently; additional requests queue behind the semaphore.
+_demand_semaphore = asyncio.Semaphore(3)
+
 
 # ---------------------------------------------------------------------------
 # LRU image cache
@@ -274,10 +278,11 @@ async def request_previews(
     get_scheduler().enqueue_viewport(camera, start, end)
 
     async def _run():
-        try:
-            await process_pending_async(limit=30, min_start_ts=start)
-        except Exception:
-            pass
+        async with _demand_semaphore:
+            try:
+                await process_pending_async(limit=30, min_start_ts=start)
+            except Exception:
+                pass
 
     task = asyncio.create_task(_run())
     _active_demand_tasks.add(task)

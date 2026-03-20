@@ -34,17 +34,13 @@ import {
   fetchTimeline,
   fetchPreviewStrip,
   fetchPlaybackTarget,
+  fetchSegmentInfo,
   fetchHealth,
   requestPreviews,
   eventSnapshotUrl,
 } from './utils/api.js';
 import { nowTs, formatDateTime, formatTime, bucketSizeForRange } from './utils/time.js';
-
-// Reticle sits at the upper third of the VerticalTimeline viewport.
-// RETICLE_FRACTION of the range is "future" (above reticle);
-// (1 - RETICLE_FRACTION) is "past" (below reticle).
-// Exported so VerticalTimeline can use the same value for rendering.
-export const RETICLE_FRACTION = 1 / 3;
+import { RETICLE_FRACTION } from './utils/constants.js';
 
 // Autoplay: idle threshold before timeline starts advancing.
 const AUTOPLAY_DELAY_MS = 1500;
@@ -170,9 +166,14 @@ export default function App() {
   // TODO: during video playback, cursorTs updates at ~30Hz; each update drives a
   //   rangeStart/rangeEnd change that triggers the data-fetch useEffect — consider
   //   debouncing in a follow-up PR if this causes excessive backend requests
+  // Defensive guard: cursorTs should never be null after init, but if a future
+  // code path sets it to null the fallback prevents NaN from cascading into
+  // API requests, the RAF autoplay loop, and event navigation.
+  // TODO: add frontend test verifying rangeStart/rangeEnd never NaN on camera switch.
   const { rangeStart, rangeEnd } = useMemo(() => {
-    const start = cursorTs - rangeSec * (1 - RETICLE_FRACTION);
-    const end = Math.min(cursorTs + rangeSec * RETICLE_FRACTION, nowTs() + 60);
+    const cursor = cursorTs ?? nowTs();
+    const start = cursor - rangeSec * (1 - RETICLE_FRACTION);
+    const end = Math.min(cursor + rangeSec * RETICLE_FRACTION, nowTs() + 60);
     return { rangeStart: start, rangeEnd: end };
   }, [cursorTs, rangeSec]);
 
@@ -494,20 +495,31 @@ export default function App() {
     [selectedCamera]
   );
 
-  // ─── Segment advance: fixes cursor drift bug ───
-  // TODO: add test verifying onSegmentAdvance prop is stable across
-  // cursorTs updates (does not change reference on timeupdate events)
+  // ─── Segment advance: resolves nextSegmentId → start_ts via fetchSegmentInfo ───
+  // Previously read playbackTargetRef directly, which could be null after a camera
+  // switch, causing fetchPlaybackTarget to be called at ts=0. Now uses the
+  // segment ID VideoPlayer provides, with a ref-based fallback if the lookup fails.
+  // TODO: add frontend test verifying onSegmentAdvance is stable across cursorTs updates.
   const handleSegmentAdvance = useCallback(
     async (nextSegmentId) => {
-      if (!selectedCamera) return;
+      if (!selectedCamera || !nextSegmentId) return;
       try {
-        const nextTs = playbackTargetRef.current?.segment_end_ts ?? (cursorTsRef.current ?? 0);
-        const target = await fetchPlaybackTarget(selectedCamera, nextTs + 0.1);
+        const info = await fetchSegmentInfo(nextSegmentId);
+        const target = await fetchPlaybackTarget(selectedCamera, info.start_ts + 0.1);
         console.log('[APP] setPlaybackTarget from auto-advance', target);
         setPlaybackTarget(target);
-      } catch {}
+      } catch {
+        // Fallback: use segment_end_ts from the ref if segment info lookup fails.
+        const fallbackTs = playbackTargetRef.current?.segment_end_ts;
+        if (fallbackTs) {
+          try {
+            const target = await fetchPlaybackTarget(selectedCamera, fallbackTs + 0.1);
+            setPlaybackTarget(target);
+          } catch {}
+        }
+      }
     },
-    [selectedCamera]   // no longer depends on cursorTs or playbackTarget
+    [selectedCamera]
   );
 
   // ─── Playback time tracking ───
@@ -521,15 +533,22 @@ export default function App() {
   }, []);
 
   // ─── Camera switch ───
+  // Uses cam.latest_ts (from /api/cameras) so the new camera's reticle lands at
+  // its most recent footage rather than the previous camera's time position.
+  // Falls back to nowTs() — never sets cursorTs to null which would NaN-cascade
+  // into rangeStart/rangeEnd, API fetches, and the autoplay RAF loop.
   const handleCameraChange = useCallback((name) => {
     setSelectedCamera(name);
-    setCursorTs(null);
+    const cam = cameras.find(c => c.name === name);
+    setCursorTs(cam?.latest_ts ?? nowTs());
     setHoverTs(null);
     setPlaybackTarget(null);
     setTimelineData(null);
+    setDensityData(null);
     setPreviewFrames([]);
     setActiveEventSnapshot(null);
-  }, []);
+    setCurrentEventIndex(null);
+  }, [cameras]);
 
   // ─── Multi-camera selection ───
   const handleSelectMany = useCallback((names) => {

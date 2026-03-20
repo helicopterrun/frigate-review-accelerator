@@ -34,7 +34,7 @@
 
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { formatTimeShort, clampTs, nowTs } from '../utils/time.js';
-import { RETICLE_FRACTION } from '../App.jsx';
+import { RETICLE_FRACTION } from '../utils/constants.js';
 
 function useDebounce(fn, delay) {
   const timer = useRef(null);
