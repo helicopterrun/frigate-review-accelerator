@@ -135,6 +135,7 @@ export default function VerticalTimeline({
   gaps = [],
   events = [],
   densityData = null,
+  activeLabels = null,
   cursorTs,
   autoplayState = 'idle',
   onScrub,
@@ -250,9 +251,23 @@ export default function VerticalTimeline({
     // 4. Layer 1: Density gradient
     // TODO: extract _buildDensityArray(buckets, h, startTs, spp) as a pure
     // function for unit testing — maps pixel rows to interpolated density.
+    // TODO: unit test client-side filter — verify effectiveTotal excludes filtered labels
+    // when activeLabels is set, e.g. turning off "car" reduces density in car-heavy buckets.
     if (densityData?.buckets?.length > 0) {
       const buckets = densityData.buckets;
-      const maxTotal = Math.max(...buckets.map((b) => b.total), 1);
+
+      // Client-side label filtering: density endpoint returns all labels per bucket.
+      // When activeLabels is set, sum only the active label counts for the gradient.
+      // Invariant: if "car" is off, car counts are excluded from density AND ticks AND markers.
+      // Ticks/markers use `events` (already filteredEvents from App.jsx) — no change needed there.
+      function effectiveTotal(bucket) {
+        if (activeLabels === null) return bucket.total;
+        return Object.entries(bucket.counts)
+          .filter(([label]) => activeLabels.has(label))
+          .reduce((sum, [, count]) => sum + count, 0);
+      }
+
+      const maxTotal = Math.max(...buckets.map((b) => effectiveTotal(b)), 1);
 
       // Precompute Float32Array of normalized density per pixel row.
       // O(h + n_buckets): monotonic pointer works because y→ts is increasing.
@@ -267,9 +282,9 @@ export default function VerticalTimeline({
         if (hi) {
           const span = hi.ts - lo.ts;
           const t = span > 0 ? Math.max(0, Math.min(1, (ts - lo.ts) / span)) : 0;
-          norm = (lo.total * (1 - t) + hi.total * t) / maxTotal;
+          norm = (effectiveTotal(lo) * (1 - t) + effectiveTotal(hi) * t) / maxTotal;
         } else {
-          norm = lo.total / maxTotal;
+          norm = effectiveTotal(lo) / maxTotal;
         }
         densityArr[y] = Math.max(0, Math.min(1, norm));
       }
@@ -514,7 +529,7 @@ export default function VerticalTimeline({
       ctx.fillStyle = 'rgba(160, 210, 240, 0.95)';
       ctx.fillText(label, badgeCx, reticleY);
     }
-  }, [dims, startTs, endTs, gaps, events, densityData, hoverY, autoplayState, tsToY]);
+  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, hoverY, autoplayState, tsToY]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.

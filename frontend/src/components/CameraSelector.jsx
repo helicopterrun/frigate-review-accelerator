@@ -49,11 +49,7 @@ export default function CameraSelector({
           }}
         >
           {cameras.map((cam) => (
-            <option key={cam.name} value={cam.name}>
-              {isMobile
-                ? cam.name
-                : `${cam.name} (${cam.segment_count} segs · ${cam.preview_count} frames)`}
-            </option>
+            <option key={cam.name} value={cam.name}>{cam.name}</option>
           ))}
         </select>
       </div>
