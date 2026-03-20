@@ -134,31 +134,24 @@ class TimeIndex:
     def auto_resolution(range_sec: float) -> int:
         """Select bucket resolution (seconds per bucket) from range duration.
 
-        < 1h    →   10s  (~360 buckets max)
-        < 4h    →   30s  (~480 buckets max)
-        < 12h   →   60s  (~720 buckets max)
-        < 24h   →  120s  (~720 buckets max)
-        < 72h   →  300s  (~864 buckets max)
-        < 7d    →  600s  (~1008 max; see note)
-        >= 7d   → 1200s
+        Updated for timeline redesign — aligned with tracked object
+        durations (min 5s) and rendering budget (~2000 buckets max for
+        the density-only endpoint).
 
-        Keeps bucket count within frontend rendering budget (~50–900).
-        Note: the < 7d tier can reach ~1008 buckets at exactly 7 days — callers
-        that need hard ≤900 should use the >= 7d tier or pass resolution explicitly.
+        ≤30m  →  5s  (max  360 buckets)
+        ≤1h   →  5s  (max  720 buckets)
+        ≤8h   → 15s  (max 1920 buckets)
+        >8h   → 60s  (max 1440 buckets at 24h)
+
+        Keep in sync with bucketSizeForRange() in frontend/src/utils/time.js.
         """
-        if range_sec < 3600:
-            return 10
-        if range_sec < 14400:
-            return 30
-        if range_sec < 43200:
-            return 60
-        if range_sec < 86400:
-            return 120
-        if range_sec < 259200:
-            return 300
-        if range_sec < 604800:
-            return 600
-        return 1200
+        if range_sec <= 1800:
+            return 5
+        if range_sec <= 3600:
+            return 5
+        if range_sec <= 28800:
+            return 15
+        return 60
 
     # ------------------------------------------------------------------
     # Timeline buckets (Phase 4)
