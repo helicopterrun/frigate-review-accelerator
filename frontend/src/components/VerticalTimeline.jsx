@@ -52,7 +52,7 @@ const ZOOM_PRESETS = [
   { label: '30m', sec: 30 * 60 },
   { label: '1h',  sec: 60 * 60 },
   { label: '8h',  sec: 8 * 3600 },
-  { label: '24h', sec: 24 * 3600 },
+  { label: '1d',  sec: 24 * 3600 },
 ];
 
 // Full slider stops — kept for smooth fine-grained zooming
@@ -394,7 +394,15 @@ export default function VerticalTimeline({
     // 7. Layer 2: Detection ticks with proximity-aware labels
     // Ticks span 60% of bar zone width (centered). Opacity rises near reticle.
     // Labels only near reticle (±60px), with 14px collision avoidance.
-    // Independent of densityData — renders whenever events prop is non-empty.
+    //
+    // Z-ORDER INVARIANT: must render AFTER grid/hairlines (step 6) and
+    // BEFORE density overlay (future step). Event markers are primary
+    // signal and must remain visible regardless of other layers.
+    //
+    // INDEPENDENCE INVARIANT: this layer must NEVER depend on densityData,
+    // preview state, or autoplay state. If events disappear, it is a data
+    // or wiring bug — do not suppress them here.
+    //
     // TODO: extract _labelCollisionFilter(events, reticleY, tsToY) for unit testing.
     const tickBarStart = barStart + barW * 0.2;
     const tickBarEnd = barStart + barW * 0.8;
@@ -404,12 +412,26 @@ export default function VerticalTimeline({
     ctx.lineWidth = 1;
     ctx.setLineDash([]);
     for (const evt of events) {
-      const y = tsToY(evt.start_ts);
+      // Timestamp field guard: Frigate events use start_ts in the local
+      // DB schema (event_sync.py maps start_time → start_ts). If a future
+      // schema change breaks this, the fallback chain prevents silent
+      // failures and the warning below will fire.
+      const ts = evt.start_ts ?? evt.start_time ?? evt.timestamp;
+      if (ts == null) continue;
+
+      const y = tsToY(ts);
       if (y < -2 || y > h + 2) continue;
 
       renderedEventCount++;
       const distFromReticle = Math.abs(y - reticleY);
       const color = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
+
+      if (!EVENT_COLORS[evt.label]) {
+        // Log unknown labels — helps catch label casing mismatches
+        // (e.g. "person:face" or "Person"). If this fires on every render,
+        // add the label to EVENT_COLORS instead of silencing the warn.
+        console.warn('[VerticalTimeline] Unknown event label:', evt.label);
+      }
 
       ctx.globalAlpha = distFromReticle <= 40 ? 0.9 : 0.6;
       ctx.strokeStyle = color;
@@ -422,14 +444,17 @@ export default function VerticalTimeline({
         readingZoneEvents.push({ evt, y, distFromReticle });
       }
     }
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = 1.0;
 
     if (events.length > 0 && renderedEventCount === 0) {
-      console.warn(
-        '[VerticalTimeline] Events present but no markers rendered. ' +
-        'Check that events are in range and tsToY is returning valid values.',
-        { eventCount: events.length, startTs, endTs }
-      );
+      console.warn('[VerticalTimeline] Events present but no markers rendered', {
+        eventCount: events.length,
+        startTs,
+        endTs,
+        minEventTs: Math.min(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
+        maxEventTs: Math.max(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
+        sampleEvent: events[0],
+      });
     }
 
     // Labels: closest to reticle first; skip if within 14px of an already-labeled event

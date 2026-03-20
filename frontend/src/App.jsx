@@ -830,7 +830,7 @@ export default function App() {
               ))}
             </div>
             {[1, 4, 8, 24].map((h) => (
-              <button key={h} onClick={() => setRange(h)} style={{ ...styles.rangeBtn, padding: '10px 16px', fontSize: '15px', minHeight: 44, flexShrink: 0 }}>{h}h</button>
+              <button key={h} onClick={() => setRange(h)} style={{ ...styles.rangeBtn, padding: '10px 16px', fontSize: '15px', minHeight: 44, flexShrink: 0 }}>{h === 24 ? '1d' : `${h}h`}</button>
             ))}
           </div>
         </div>
@@ -860,7 +860,7 @@ export default function App() {
           {/* 3. Event nav + ⚡ */}
           {!multiMode && navEvents.length > 0 && (
             <>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 6, padding: '4px 12px', fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#e0e0e0' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 6, padding: '4px 12px', fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#e0e0e0', flexShrink: 0, whiteSpace: 'nowrap' }}>
                 <button onClick={() => navigateEvent('prev')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }} onMouseEnter={e => e.target.style.color = '#4dd0e1'} onMouseLeave={e => e.target.style.color = '#aaa'} title="Previous event">◀</button>
                 <span>EVENT {currentEventIndex != null ? currentEventIndex + 1 : '—'} / {navEvents.length}{importantOnly && ' ⚡'}</span>
                 <button onClick={() => navigateEvent('next')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }} onMouseEnter={e => e.target.style.color = '#4dd0e1'} onMouseLeave={e => e.target.style.color = '#aaa'} title="Next event">▶</button>
@@ -869,60 +869,65 @@ export default function App() {
             </>
           )}
 
-          {/* 4. Autoplay toggle */}
-          {!multiMode && (
-            <button
-              onClick={() => { setAutoplayEnabled(v => { const next = !v; try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {} if (!next) autoplayActiveRef.current = false; return next; }); }}
-              title={autoplayEnabled ? 'Autoplay on — click to pause' : 'Autoplay off — click to enable'}
-              style={{ ...styles.iconBtn, borderColor: autoplayEnabled ? '#4dd0e1' : '#333', color: autoplayEnabled ? '#4dd0e1' : '#666', background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', fontSize: 12 }}
-            >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
-          )}
+          {/* Settings group: separator from navigation group */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, borderLeft: '1px solid #2a2d37', marginLeft: 8, paddingLeft: 8 }}>
 
-          {/* 5. Time format toggle */}
-          <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
-            {['12h', '24h'].map((fmt) => (
+            {/* 4. Autoplay toggle */}
+            {!multiMode && (
               <button
-                key={fmt}
-                onClick={() => handleTimeFormatToggle(fmt)}
-                style={{
-                  background: timeFormat === fmt ? '#2a3a5c' : '#1a1d27',
-                  border: 'none',
-                  color: timeFormat === fmt ? '#90c8f0' : '#666',
-                  padding: '4px 10px',
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  fontFamily: 'monospace',
-                }}
-              >{fmt}</button>
-            ))}
-          </div>
+                onClick={() => { setAutoplayEnabled(v => { const next = !v; try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {} if (!next) autoplayActiveRef.current = false; return next; }); }}
+                title={autoplayEnabled ? 'Autoplay on — click to pause' : 'Autoplay off — click to enable'}
+                style={{ ...styles.iconBtn, borderColor: autoplayEnabled ? '#4dd0e1' : '#333', color: autoplayEnabled ? '#4dd0e1' : '#666', background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', fontSize: 12 }}
+              >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
+            )}
 
-          {/* 6. Zoom presets */}
-          <div style={styles.rangeButtons}>
-            {[1, 4, 8, 24].map((h) => (
-              <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>{h}h</button>
-            ))}
-          </div>
-
-          {/* 7. Goto — far right, single-camera only */}
-          {!multiMode && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ color: '#666', fontSize: 13 }}>Go to:</span>
-              <input
-                type="datetime-local"
-                value={gotoValue}
-                onChange={(e) => setGotoValue(e.target.value)}
-                style={{ colorScheme: 'dark', background: '#1a1d27', border: '1px solid #333', color: '#aaa', padding: '3px 6px', borderRadius: 4, fontSize: 13 }}
-              />
-              <button onClick={handleGoto} style={styles.rangeBtn}>Go</button>
+            {/* 5. Time format toggle */}
+            <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
+              {['12h', '24h'].map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => handleTimeFormatToggle(fmt)}
+                  style={{
+                    background: timeFormat === fmt ? '#2a3a5c' : '#1a1d27',
+                    border: 'none',
+                    color: timeFormat === fmt ? '#90c8f0' : '#666',
+                    padding: '4px 10px',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                  }}
+                >{fmt}</button>
+              ))}
             </div>
-          )}
 
-          {/* 8. Split — far right */}
-          <button
-            onClick={handleToggleMultiMode}
-            style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa' }}
-          >{multiMode ? '◈ Single' : '◈ Split'}</button>
+            {/* 6. Zoom presets */}
+            <div style={styles.rangeButtons}>
+              {[1, 4, 8, 24].map((h) => (
+                <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>{h === 24 ? '1d' : `${h}h`}</button>
+              ))}
+            </div>
+
+            {/* 7. Goto — single-camera only */}
+            {!multiMode && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ color: '#666', fontSize: 13 }}>Go to:</span>
+                <input
+                  type="datetime-local"
+                  value={gotoValue}
+                  onChange={(e) => setGotoValue(e.target.value)}
+                  style={{ colorScheme: 'dark', background: '#1a1d27', border: '1px solid #333', color: '#aaa', padding: '3px 6px', borderRadius: 4, fontSize: 13 }}
+                />
+                <button onClick={handleGoto} style={styles.rangeBtn}>Go</button>
+              </div>
+            )}
+
+            {/* 8. Split */}
+            <button
+              onClick={handleToggleMultiMode}
+              style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa' }}
+            >{multiMode ? '◈ Single' : '◈ Split'}</button>
+
+          </div>
         </div>
       )}
 
