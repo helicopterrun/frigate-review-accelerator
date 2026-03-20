@@ -21,23 +21,23 @@ export async function fetchCameras() {
 }
 
 /** GET /api/timeline?camera=X&start=Y&end=Z */
-export async function fetchTimeline(camera, startTs, endTs) {
+export async function fetchTimeline(camera, startTs, endTs, options = {}) {
   const params = new URLSearchParams({
     camera,
     start: String(startTs),
     end: String(endTs),
   });
-  return apiFetch(`/timeline?${params}`);
+  return apiFetch(`/timeline?${params}`, options);
 }
 
 /** GET /api/preview-strip/{camera}?start=X&end=Y&max_frames=N */
-export async function fetchPreviewStrip(camera, startTs, endTs, maxFrames = 300) {
+export async function fetchPreviewStrip(camera, startTs, endTs, maxFrames = 300, options = {}) {
   const params = new URLSearchParams({
     start: String(startTs),
     end: String(endTs),
     max_frames: String(maxFrames),
   });
-  return apiFetch(`/preview-strip/${camera}?${params}`);
+  return apiFetch(`/preview-strip/${camera}?${params}`, options);
 }
 
 /**
@@ -119,14 +119,14 @@ export function eventSnapshotUrl(eventId) {
  *
  * TODO: add unit tests verifying bucket shape matches DensityResponse schema.
  */
-export async function fetchDensity(camera, startTs, endTs, bucketSec) {
+export async function fetchDensity(camera, startTs, endTs, bucketSec, options = {}) {
   const params = new URLSearchParams({
     camera,
     start: String(startTs),
     end: String(endTs),
   });
   if (bucketSec != null) params.set('bucket_sec', String(bucketSec));
-  return apiFetch(`/timeline/density?${params}`);
+  return apiFetch(`/timeline/density?${params}`, options);
 }
 
 /** GET /api/health */
