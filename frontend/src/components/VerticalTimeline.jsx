@@ -32,7 +32,7 @@
  * is active, falling back to the cursorTs prop when idle.
  */
 
-import { useRef, useEffect, useState, useCallback } from 'react';
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { formatTimeShort, clampTs, nowTs } from '../utils/time.js';
 import { RETICLE_FRACTION } from '../App.jsx';
 
@@ -47,6 +47,15 @@ function useDebounce(fn, delay) {
 const LABEL_WIDTH = 58;
 const EVENT_WIDTH = 18;
 
+// Named presets for quick-jump buttons (spec Section 6)
+const ZOOM_PRESETS = [
+  { label: '30m', sec: 30 * 60 },
+  { label: '1h',  sec: 60 * 60 },
+  { label: '8h',  sec: 8 * 3600 },
+  { label: '24h', sec: 24 * 3600 },
+];
+
+// Full slider stops — kept for smooth fine-grained zooming
 const ZOOM_STOPS = [
   5 * 60,         // 5m
   8 * 60,         // 8m
@@ -161,14 +170,21 @@ export default function VerticalTimeline({
   // Derive zoom index from live range (no separate state — always in sync)
   const zoomIdx = nearestZoomIdx(range);
 
+  // Explicit seconds-per-pixel mapping — used by tsToY/yToTs and canvas rendering.
+  // Derived, never stored as state. Required by PR4 density gradient rendering.
+  const secondsPerPixel = useMemo(
+    () => (dims.h > 0 ? (endTs - startTs) / dims.h : 1),
+    [startTs, endTs, dims.h]
+  );
+
   const tsToY = useCallback(
-    (ts) => ((ts - startTs) / range) * dims.h,
-    [startTs, range, dims.h]
+    (ts) => (ts - startTs) / secondsPerPixel,
+    [startTs, secondsPerPixel]
   );
 
   const yToTs = useCallback(
-    (y) => clampTs(startTs + (y / dims.h) * range, startTs, endTs),
-    [startTs, endTs, range, dims.h]
+    (y) => clampTs(startTs + y * secondsPerPixel, startTs, endTs),
+    [startTs, endTs, secondsPerPixel]
   );
 
   // ── ResizeObserver ──────────────────────────────────────────────────────────
@@ -315,10 +331,11 @@ export default function VerticalTimeline({
     }
 
     // 7. Time tick labels + horizontal hairlines across bar zone
-    const TICK_INTERVALS = [300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
-    const MIN_TICK_SPACING_PX = 28;
+    // Fine-grained intervals (5/10/15/30s) support tight zoom levels.
+    const TICK_INTERVALS = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+    const MIN_TICK_SPACING_PX = 32;
     const maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
-    const minIntervalSec = range / maxTicks;
+    const minIntervalSec = (endTs - startTs) / maxTicks;
     const tickSec = TICK_INTERVALS.find((t) => t >= minIntervalSec) ?? 86400;
 
     // Build per-tick-bucket event map for dots
@@ -628,65 +645,95 @@ export default function VerticalTimeline({
       <div
         style={{
           display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-          padding: '6px 8px',
+          flexDirection: 'column',
+          gap: 4,
+          padding: '5px 8px 6px',
           flexShrink: 0,
           borderTop: '1px solid #1e2130',
           background: '#090b10',
         }}
       >
-        {/* − = zoom out = larger range = higher index */}
-        <button
-          style={{
-            ...btnStyle,
-            width: isMobile ? 36 : 28,
-            height: isMobile ? 36 : 28,
-            fontSize: isMobile ? 20 : 16,
-          }}
-          onClick={() => applyZoom(zoomIdx + 1)}
-          disabled={zoomIdx >= ZOOM_STOPS.length - 1}
-          title="Zoom out"
-        >
-          −
-        </button>
+        {/* Preset buttons */}
+        <div style={{ display: 'flex', gap: 4 }}>
+          {ZOOM_PRESETS.map((preset) => {
+            const isActive = Math.abs(range - preset.sec) <= preset.sec * 0.05;
+            return (
+              <button
+                key={preset.label}
+                onClick={() => { if (onZoomChange) onZoomChange(preset.sec); }}
+                style={{
+                  ...btnStyle,
+                  flex: 1,
+                  width: 'auto',
+                  height: 20,
+                  padding: '0 0',
+                  fontSize: 11,
+                  background: isActive ? '#1e3a5c' : '#1a1d27',
+                  color: isActive ? '#90c8f0' : '#888',
+                  border: `1px solid ${isActive ? '#3a6a9c' : '#333'}`,
+                }}
+                title={`Zoom to ${preset.label}`}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
+        </div>
 
-        <input
-          type="range"
-          min={0}
-          max={ZOOM_STOPS.length - 1}
-          value={zoomIdx}
-          onChange={(e) => applyZoom(Number(e.target.value))}
-          style={{ flex: 1, accentColor: '#4a90d9', cursor: 'pointer' }}
-        />
+        {/* Fine slider row */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* − = zoom out = larger range = higher index */}
+          <button
+            style={{
+              ...btnStyle,
+              width: isMobile ? 36 : 28,
+              height: isMobile ? 36 : 28,
+              fontSize: isMobile ? 20 : 16,
+            }}
+            onClick={() => applyZoom(zoomIdx + 1)}
+            disabled={zoomIdx >= ZOOM_STOPS.length - 1}
+            title="Zoom out"
+          >
+            −
+          </button>
 
-        {/* Label: current zoom stop */}
-        <span
-          style={{
-            fontSize: 11,
-            fontFamily: 'monospace',
-            color: '#666',
-            minWidth: 28,
-            textAlign: 'right',
-          }}
-        >
-          {ZOOM_STOP_LABELS[zoomIdx]}
-        </span>
+          <input
+            type="range"
+            min={0}
+            max={ZOOM_STOPS.length - 1}
+            value={zoomIdx}
+            onChange={(e) => applyZoom(Number(e.target.value))}
+            style={{ flex: 1, accentColor: '#4a90d9', cursor: 'pointer' }}
+          />
 
-        {/* + = zoom in = smaller range = lower index */}
-        <button
-          style={{
-            ...btnStyle,
-            width: isMobile ? 36 : 28,
-            height: isMobile ? 36 : 28,
-            fontSize: isMobile ? 20 : 16,
-          }}
-          onClick={() => applyZoom(zoomIdx - 1)}
-          disabled={zoomIdx <= 0}
-          title="Zoom in"
-        >
-          +
-        </button>
+          {/* Label: current zoom stop */}
+          <span
+            style={{
+              fontSize: 11,
+              fontFamily: 'monospace',
+              color: '#666',
+              minWidth: 28,
+              textAlign: 'right',
+            }}
+          >
+            {ZOOM_STOP_LABELS[zoomIdx]}
+          </span>
+
+          {/* + = zoom in = smaller range = lower index */}
+          <button
+            style={{
+              ...btnStyle,
+              width: isMobile ? 36 : 28,
+              height: isMobile ? 36 : 28,
+              fontSize: isMobile ? 20 : 16,
+            }}
+            onClick={() => applyZoom(zoomIdx - 1)}
+            disabled={zoomIdx <= 0}
+            title="Zoom in"
+          >
+            +
+          </button>
+        </div>
       </div>
     </div>
   );

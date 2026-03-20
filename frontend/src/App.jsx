@@ -37,7 +37,7 @@ import {
   requestPreviews,
   eventSnapshotUrl,
 } from './utils/api.js';
-import { nowTs, formatDateTime, formatTime } from './utils/time.js';
+import { nowTs, formatDateTime, formatTime, bucketSizeForRange } from './utils/time.js';
 
 // Reticle sits at the upper third of the VerticalTimeline viewport.
 // RETICLE_FRACTION of the range is "future" (above reticle);
@@ -259,6 +259,9 @@ export default function App() {
 
     async function load() {
       try {
+        // bucketSizeForRange selects zoom-appropriate resolution for PR3 density endpoint.
+        // Keep in sync with TimeIndex.auto_resolution() in backend/app/services/time_index.py.
+        const _bucketSize = bucketSizeForRange(rangeSec); // eslint-disable-line no-unused-vars
         const [tl, strip] = await Promise.all([
           fetchTimeline(selectedCamera, rangeStart, rangeEnd),
           fetchPreviewStrip(selectedCamera, rangeStart, rangeEnd, 300),

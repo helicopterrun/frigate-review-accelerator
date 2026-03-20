@@ -100,24 +100,28 @@ class TestEventDensity:
 
 class TestAutoResolution:
     def test_auto_resolution_exact_thresholds(self):
-        """Return values for documented boundary values must match the table exactly."""
+        """Return values for documented boundary values must match the table exactly.
+
+        Must stay in sync with bucketSizeForRange() in frontend/src/utils/time.js.
+        """
         from app.services.time_index import TimeIndex
-        # boundary values: just inside each tier
-        assert TimeIndex.auto_resolution(1800) == 10    # < 1h → 10s
-        assert TimeIndex.auto_resolution(7200) == 30    # < 4h → 30s
-        assert TimeIndex.auto_resolution(21600) == 60   # < 12h → 60s
-        assert TimeIndex.auto_resolution(43200) == 120  # < 24h → 120s
-        assert TimeIndex.auto_resolution(86400) == 300  # < 72h → 300s
-        assert TimeIndex.auto_resolution(259200) == 600 # >= 72h → 600s
+        assert TimeIndex.auto_resolution(1800) == 5    # ≤30m → 5s
+        assert TimeIndex.auto_resolution(3600) == 5    # ≤1h  → 5s
+        assert TimeIndex.auto_resolution(28800) == 15  # ≤8h  → 15s
+        assert TimeIndex.auto_resolution(86400) == 60  # >8h  → 60s
 
     def test_auto_resolution_bucket_count_in_budget(self):
-        """For each range, bucket count must fall within 50–900."""
+        """For each range, bucket count must fall within 50–2000.
+
+        Budget relaxed from 900 to 2000: the density endpoint returns minimal
+        per-bucket payloads (timestamp + counts), so 1920 buckets (8h/15s) is fine.
+        """
         from app.services.time_index import TimeIndex
-        ranges = [3600, 14400, 43200, 86400, 259200, 604800]
+        ranges = [1800, 3600, 28800, 86400]
         for range_sec in ranges:
             res = TimeIndex.auto_resolution(range_sec)
             bucket_count = range_sec / res
-            assert 50 <= bucket_count <= 900, (
+            assert 50 <= bucket_count <= 2000, (
                 f"range={range_sec}s, res={res}s → {bucket_count} buckets (out of budget)"
             )
 

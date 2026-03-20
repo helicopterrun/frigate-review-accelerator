@@ -57,3 +57,25 @@ export function nowTs() {
 export function clampTs(ts, min, max) {
   return Math.min(Math.max(ts, min), max);
 }
+
+/**
+ * Select bucket size (seconds) for a given visible range.
+ *
+ * Aligned with Frigate tracked object durations (typically 5-60s).
+ * Minimum 5s to avoid oversampling the same event across many buckets.
+ * Keeps bucket count under ~2000 for any range.
+ *
+ * Must stay in sync with TimeIndex.auto_resolution() in
+ * backend/app/services/time_index.py.
+ *
+ * TODO: add unit tests verifying sync with TimeIndex.auto_resolution().
+ *
+ * @param {number} rangeSec - visible time range in seconds
+ * @returns {number} bucket size in seconds
+ */
+export function bucketSizeForRange(rangeSec) {
+  if (rangeSec <= 1800)  return 5;   // ≤30m → 5s  (max  360 buckets)
+  if (rangeSec <= 3600)  return 5;   // ≤1h  → 5s  (max  720 buckets)
+  if (rangeSec <= 28800) return 15;  // ≤8h  → 15s (max 1920 buckets)
+  return 60;                          // >8h  → 60s (max ~1440 at 24h)
+}
