@@ -33,7 +33,7 @@
  */
 
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { formatTimeShort, clampTs, nowTs } from '../utils/time.js';
+import { formatTimeShort, formatTime, clampTs, nowTs } from '../utils/time.js';
 import { RETICLE_FRACTION } from '../utils/constants.js';
 
 function useDebounce(fn, delay) {
@@ -339,13 +339,20 @@ export default function VerticalTimeline({
     const maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
     const minIntervalSec = (endTs - startTs) / maxTicks;
     const tickSec = TICK_INTERVALS.find((t) => t >= minIntervalSec) ?? 86400;
-    const maxFadeDistance = h * 0.4;
+
+    // TODO: unit test —
+    //   dist > 32  → fadeFactor = 1.0,  label renders
+    //   dist = 21  → fadeFactor ≈ 0.5,  label at half opacity
+    //   dist < 10  → fadeFactor = 0.0,  label skipped, hairline drawn
+    //   fadeFactor always in [0, 1] — Math.max/min clamp prevents flicker
+    //   ctx.globalAlpha === 1.0 after every iteration (no leak)
+    //   reticle label === formatTime(displayCursorRef.current) always
 
     const firstTick = Math.ceil(startTs / tickSec) * tickSec;
     for (let t = firstTick; t <= endTs; t += tickSec) {
       const y = tsToY(t);
 
-      // Hairline across bar zone
+      // ── Hairline ── always drawn at correct y, never faded
       ctx.strokeStyle = '#1a1e2b';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
@@ -354,19 +361,38 @@ export default function VerticalTimeline({
       ctx.lineTo(barEnd, y);
       ctx.stroke();
 
-      // Proximity fade: labels nearest reticle are brighter and bolder
-      const distance = Math.abs(y - reticleY);
-      const opacity = 1.0 - Math.min(distance / maxFadeDistance, 0.7);
-      if (distance < 20) {
-        ctx.font = 'bold 13px monospace';
-        ctx.fillStyle = `rgba(180, 200, 220, ${opacity.toFixed(3)})`;
-      } else {
-        ctx.font = '11px monospace';
-        ctx.fillStyle = `rgba(74, 79, 101, ${opacity.toFixed(3)})`;
-      }
+      // ── Label fade near reticle ──
+      // fadeFactor drives ALL opacity near the reticle.
+      // Do NOT multiply by a second opacity curve — double-fading
+      // causes labels to vanish too early and creates uneven density.
+      const dist = Math.abs(y - reticleY);
+      const FADE_START = 32;
+      const FADE_END   = 10;
+      const fadeFactor = Math.max(0, Math.min(1,
+        dist > FADE_START ? 1
+        : dist < FADE_END  ? 0
+        : (dist - FADE_END) / (FADE_START - FADE_END)
+      ));
+
+      if (fadeFactor <= 0) continue;  // hairline already drawn above
+
+      // Font and color: consistent size for all ticks — only the reticle
+      // gets emphasis. A size jump here would create a perceptual pop
+      // even with fading. Use font-weight and color-brightness only for
+      // the proximity-near-reticle effect.
+      const isNear = dist < 20;
+      ctx.font = isNear
+        ? 'bold 11px monospace'
+        : '11px monospace';
+      ctx.fillStyle = isNear
+        ? 'rgba(180, 200, 220, 1.0)'
+        : 'rgba(74, 79, 101, 1.0)';
+
+      ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.fillText(formatTimeShort(t), LABEL_WIDTH - 4, y);
+      ctx.globalAlpha = 1.0;          // ALWAYS reset immediately
     }
 
     // 7. Layer 2: Detection ticks with proximity-aware labels
@@ -494,26 +520,36 @@ export default function VerticalTimeline({
       ctx.lineTo(barEnd, reticleY + 10);
       ctx.stroke();
 
-      // Timestamp badge centered in the gap
-      const label = formatTimeShort(displayTs);
-      ctx.font = 'bold 14px monospace';
+      // COORDINATE SYSTEM INVARIANT
+      // reticle_time = displayCursorRef.current = cursorTs from App.jsx
+      // reticle_y    = h * RETICLE_FRACTION (never moves)
+      //
+      // Strong form: when a tick timestamp t equals cursor_time,
+      //   tsToY(t) === reticleY  (within floating point tolerance)
+      //   tick label and reticle label represent the same instant
+      //
+      // Violation of this means tsToY and the reticle Y are out of sync —
+      // fix the coordinate system, do not patch the rendering.
+      //
+      // Future enhancement (NOT in this PR): consider slightly increasing
+      // label brightness or weight within ~40px of reticle for a "focus
+      // zone" effect. Must be purely visual — no position changes.
+
+      // Reticle reads the passing scale — no box, no border, no background.
+      // Font weight 600 (more controlled than bold) + system monospace stack
+      // for clean rendering across platforms.
+      // Math.round(reticleY) + 0.5: pixel-aligns the baseline regardless of
+      // devicePixelRatio, preventing sub-pixel blur on non-retina displays.
+      //
+      // Invariant: this label MUST equal what a tick at cursor_time would
+      // show. When tsToY(cursor_time) === reticleY, both values are the same
+      // timestamp — any divergence indicates a coordinate system bug.
+      const label = formatTime(displayTs);
+      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const textW = ctx.measureText(label).width;
-      const badgePad = 4;
-      const badgeCx = barStart + barW / 2;
-      const badgeX = badgeCx - textW / 2 - badgePad;
-
-      ctx.fillStyle = 'rgba(10, 20, 35, 0.88)';
-      ctx.strokeStyle = 'rgba(100, 180, 220, 0.5)';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.rect(badgeX, reticleY - 9, textW + badgePad * 2, 18);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = 'rgba(160, 210, 240, 0.95)';
-      ctx.fillText(label, badgeCx, reticleY);
+      ctx.fillStyle = 'rgba(190, 225, 250, 0.97)';
+      ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
     }
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
