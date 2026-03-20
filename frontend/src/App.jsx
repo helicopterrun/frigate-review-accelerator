@@ -811,10 +811,9 @@ export default function App() {
               <VerticalTimeline
                 startTs={rangeStart}
                 endTs={rangeEnd}
-                segments={timelineData?.segments || []}
                 gaps={timelineData?.gaps || []}
                 events={filteredEvents}
-                activity={timelineData?.activity || []}
+                densityData={densityData}
                 cursorTs={cursorTs}
                 onScrub={handleScrub}
                 onScrubEnd={handleScrubEnd}
