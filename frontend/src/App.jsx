@@ -39,7 +39,7 @@ import {
   requestPreviews,
   eventSnapshotUrl,
 } from './utils/api.js';
-import { nowTs, formatDateTime, formatTime, bucketSizeForRange } from './utils/time.js';
+import { nowTs, formatDateTime, formatTime, formatTimeShort, bucketSizeForRange } from './utils/time.js';
 import { RETICLE_FRACTION } from './utils/constants.js';
 
 // Autoplay: idle threshold before timeline starts advancing.
@@ -227,6 +227,16 @@ export default function App() {
     const t = setTimeout(() => setHealthExpanded(false), 4000);
     return () => clearTimeout(t);
   }, [healthExpanded]);
+
+  // Time format toggle — persisted to localStorage, default 12h
+  const [timeFormat, setTimeFormat] = useState(
+    () => { try { return localStorage.getItem('frigate-time-format') || '12h'; } catch { return '12h'; } }
+  );
+
+  const handleTimeFormatToggle = useCallback((fmt) => {
+    setTimeFormat(fmt);
+    try { localStorage.setItem('frigate-time-format', fmt); } catch {}
+  }, []);
 
   // Autoplay toggle — persisted to localStorage, default enabled
   const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
@@ -603,6 +613,8 @@ export default function App() {
   // ─── Event navigation ───
   const navigateEvent = useCallback(async (direction) => {
     if (!navEvents.length) return;
+    lastInteractionRef.current = Date.now();
+    autoplayActiveRef.current = false;
     const current = cursorTs ?? 0;
 
     let targetIdx;
@@ -799,6 +811,24 @@ export default function App() {
                 style={{ ...styles.iconBtn, borderColor: autoplayEnabled ? '#4dd0e1' : '#333', color: autoplayEnabled ? '#4dd0e1' : '#666', background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', fontSize: 11, flexShrink: 0 }}
               >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
             )}
+            <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden', flexShrink: 0, minHeight: 32 }}>
+              {['12h', '24h'].map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => handleTimeFormatToggle(fmt)}
+                  style={{
+                    background: timeFormat === fmt ? '#2a3a5c' : '#1a1d27',
+                    border: 'none',
+                    color: timeFormat === fmt ? '#90c8f0' : '#666',
+                    padding: '6px 10px',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                    minHeight: 32,
+                  }}
+                >{fmt}</button>
+              ))}
+            </div>
             {[1, 4, 8, 24].map((h) => (
               <button key={h} onClick={() => setRange(h)} style={{ ...styles.rangeBtn, padding: '10px 16px', fontSize: '15px', minHeight: 44, flexShrink: 0 }}>{h}h</button>
             ))}
@@ -848,14 +878,33 @@ export default function App() {
             >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
           )}
 
-          {/* 5. Zoom presets */}
+          {/* 5. Time format toggle */}
+          <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
+            {['12h', '24h'].map((fmt) => (
+              <button
+                key={fmt}
+                onClick={() => handleTimeFormatToggle(fmt)}
+                style={{
+                  background: timeFormat === fmt ? '#2a3a5c' : '#1a1d27',
+                  border: 'none',
+                  color: timeFormat === fmt ? '#90c8f0' : '#666',
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontFamily: 'monospace',
+                }}
+              >{fmt}</button>
+            ))}
+          </div>
+
+          {/* 6. Zoom presets */}
           <div style={styles.rangeButtons}>
             {[1, 4, 8, 24].map((h) => (
               <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>{h}h</button>
             ))}
           </div>
 
-          {/* 6. Goto — far right, single-camera only */}
+          {/* 7. Goto — far right, single-camera only */}
           {!multiMode && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ color: '#666', fontSize: 13 }}>Go to:</span>
@@ -869,7 +918,7 @@ export default function App() {
             </div>
           )}
 
-          {/* 7. Split — far right */}
+          {/* 8. Split — far right */}
           <button
             onClick={handleToggleMultiMode}
             style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa' }}
@@ -912,7 +961,7 @@ export default function App() {
             {/* Footer: timestamp + coverage stats */}
             <div style={styles.viewerFooter}>
               <span style={styles.timestamp}>
-                {cursorTs ? (isMobile ? formatTime(cursorTs) : formatDateTime(cursorTs)) : '—'}
+                {cursorTs ? (isMobile ? formatTime(cursorTs, timeFormat) : formatDateTime(cursorTs, timeFormat)) : '—'}
               </span>
               {timelineData && (
                 <span style={styles.coverageStats}>
@@ -934,10 +983,7 @@ export default function App() {
           }}>
             {/* Top range label */}
             <div style={styles.rangeLabel}>
-              {new Date(rangeStart * 1000).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+              {formatTimeShort(rangeStart, timeFormat)}
             </div>
 
             {/* VerticalTimeline */}
@@ -955,6 +1001,7 @@ export default function App() {
                 onZoomChange={handleZoomChange}
                 autoplayState={autoplayState}
                 isMobile={isMobile}
+                timeFormat={timeFormat}
                 onPreviewRequest={(ts) => {
                   const halfWindow = 5 * 60;
                   requestPreviews(selectedCamera, ts - halfWindow, ts + halfWindow).catch(() => {});
@@ -964,10 +1011,7 @@ export default function App() {
 
             {/* Bottom range label */}
             <div style={{ ...styles.rangeLabel, borderTop: '1px solid #1e2130', borderBottom: 'none' }}>
-              {new Date(rangeEnd * 1000).toLocaleTimeString([], {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+              {formatTimeShort(rangeEnd, timeFormat)}
             </div>
           </div>
         </div>

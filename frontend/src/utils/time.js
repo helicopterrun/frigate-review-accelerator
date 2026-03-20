@@ -2,16 +2,27 @@
  * Time formatting and conversion utilities.
  */
 
-/** Format a Unix timestamp as HH:MM:SS */
-export function formatTime(ts) {
+/** Format a Unix timestamp as h:MM:SS AM/PM (12h) or HH:MM:SS (24h) */
+export function formatTime(ts, format = '12h') {
   const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('en-US', { hour12: false });
+  const str = d.toLocaleTimeString('en-US', {
+    hour12: format === '12h',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  return format === '12h' ? str.replace(/^0/, '') : str;
 }
 
-/** Format a Unix timestamp as HH:MM */
-export function formatTimeShort(ts) {
+/** Format a Unix timestamp as h:MM AM/PM (12h) or HH:MM (24h) */
+export function formatTimeShort(ts, format = '12h') {
   const d = new Date(ts * 1000);
-  return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  const str = d.toLocaleTimeString('en-US', {
+    hour12: format === '12h',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return format === '12h' ? str.replace(/^0/, '') : str;
 }
 
 /** Format a Unix timestamp as YYYY-MM-DD */
@@ -20,9 +31,9 @@ export function formatDate(ts) {
   return d.toLocaleDateString('en-CA'); // ISO format
 }
 
-/** Format a Unix timestamp as YYYY-MM-DD HH:MM:SS */
-export function formatDateTime(ts) {
-  return `${formatDate(ts)} ${formatTime(ts)}`;
+/** Format a Unix timestamp as YYYY-MM-DD + time */
+export function formatDateTime(ts, format = '12h') {
+  return `${formatDate(ts)} ${formatTime(ts, format)}`;
 }
 
 /** Format duration in seconds as M:SS or H:MM:SS */
