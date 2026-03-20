@@ -94,45 +94,43 @@ function toDatetimeLocal(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function LabelFilterPills({ availableLabels, activeLabels, onToggle, onToggleAll, isMobile }) {
+// TODO: unit test — verify labelCounts updates when timelineData changes,
+// and that count badges show 0 for labels with no events in range.
+function LabelFilterPills({ availableLabels, activeLabels, onToggle, onToggleAll, labelCounts = {}, isMobile }) {
   if (!availableLabels?.length) return null;
   const allActive = activeLabels === null;
 
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, padding: '4px 0', alignItems: 'center' }}>
-      <span style={{ fontSize: 11, color: '#555', marginRight: 2, flexShrink: 0 }}>
-        Filter:
-      </span>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, alignItems: 'center' }}>
       <button
         onClick={onToggleAll}
         style={{
-          padding: '3px 9px', borderRadius: 12,
-          border: `1px solid ${allActive ? '#aaa' : '#333'}`,
+          padding: '5px 14px', borderRadius: 16,
+          border: `${allActive ? '2px' : '1px'} solid ${allActive ? '#aaa' : '#2a2d37'}`,
           background: allActive ? '#2a2d37' : 'transparent',
           color: allActive ? '#e0e0e0' : '#555',
-          fontSize: isMobile ? 13 : 11,
+          fontSize: 13, fontWeight: allActive ? 600 : 400,
           cursor: 'pointer', fontFamily: 'monospace', flexShrink: 0,
+          transition: 'all 0.15s ease',
         }}
       >all</button>
       {availableLabels.map(label => {
         const color = LABEL_COLORS[label] ?? LABEL_COLORS.default;
         const isActive = activeLabels === null || activeLabels.has(label);
+        const count = labelCounts[label] ?? 0;
         return (
           <button key={label} onClick={() => onToggle(label)} style={{
-            padding: '3px 9px', borderRadius: 12,
-            border: `1px solid ${isActive ? color : '#333'}`,
-            background: isActive ? `${color}22` : 'transparent',
+            padding: '5px 14px', borderRadius: 16,
+            border: `${isActive ? '2px' : '1px'} solid ${isActive ? color : '#2a2d37'}`,
+            background: isActive ? `${color}18` : 'transparent',
             color: isActive ? color : '#555',
-            fontSize: isMobile ? 13 : 11,
+            fontSize: 13, fontWeight: isActive ? 600 : 400,
             cursor: 'pointer', fontFamily: 'monospace',
             display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+            transition: 'all 0.15s ease',
           }}>
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%',
-              background: isActive ? color : '#555',
-              display: 'inline-block', flexShrink: 0,
-            }}/>
             {label}
+            <span style={{ opacity: 0.6, marginLeft: 2, fontSize: 11 }}>{count}</span>
           </button>
         );
       })}
@@ -398,6 +396,17 @@ export default function App() {
   const availableLabels = useMemo(() => {
     if (!timelineData?.events?.length) return [];
     return [...new Set(timelineData.events.map(e => e.label))].sort();
+  }, [timelineData]);
+
+  // Count per label across all events in range (unfiltered) — used by pill badges.
+  // TODO: unit test — verify counts update when timelineData changes and
+  // that filter persistence survives a localStorage round-trip.
+  const labelCounts = useMemo(() => {
+    const counts = {};
+    for (const evt of timelineData?.events ?? []) {
+      counts[evt.label] = (counts[evt.label] || 0) + 1;
+    }
+    return counts;
   }, [timelineData]);
 
   const filteredEvents = useMemo(() => {
@@ -728,239 +737,131 @@ export default function App() {
 
       {error && <div style={styles.error}>{error}</div>}
 
-      {/* Controls */}
+      {/* Controls — final layout: Camera → Filters → Events → Auto → Zoom → Goto → Split */}
       {isMobile ? (
         <div style={{ flexShrink: 0, marginBottom: 8 }}>
-          {/* Row 1: Camera + Split */}
+          {/* Row 1: Camera (full width) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-            {!multiMode ? (
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <CameraSelector
-                  cameras={cameras}
-                  selected={selectedCamera}
-                  onSelect={handleCameraChange}
-                  isMobile={true}
-                />
-              </div>
-            ) : (
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <CameraSelector
-                  cameras={cameras}
-                  selectedMany={selectedCameras}
-                  onSelectMany={handleSelectMany}
-                  multiMode={true}
-                  maxSelect={4}
-                  isMobile={true}
-                />
-              </div>
-            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {!multiMode ? (
+                <CameraSelector cameras={cameras} selected={selectedCamera} onSelect={handleCameraChange} isMobile={true} />
+              ) : (
+                <CameraSelector cameras={cameras} selectedMany={selectedCameras} onSelectMany={handleSelectMany} multiMode={true} maxSelect={4} isMobile={true} />
+              )}
+            </div>
             <button
               onClick={handleToggleMultiMode}
-              style={{
-                ...styles.rangeBtn,
-                borderColor: multiMode ? '#2196F3' : '#333',
-                color: multiMode ? '#2196F3' : '#aaa',
-                padding: '10px 16px',
-                fontSize: '15px',
-                minHeight: 44,
-                flexShrink: 0,
-              }}
-            >
-              {multiMode ? '◈ Single' : '◈ Split'}
-            </button>
+              style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa', padding: '10px 16px', fontSize: '15px', minHeight: 44, flexShrink: 0 }}
+            >{multiMode ? '◈ Single' : '◈ Split'}</button>
           </div>
-          {/* Row 2: Range presets + Go group */}
+
+          {/* Row 2: Filter pills (horizontal scroll) */}
+          {!multiMode && availableLabels.length > 0 && (
+            <div style={{ overflowX: 'auto', marginBottom: 6, paddingBottom: 2 }}>
+              <LabelFilterPills
+                availableLabels={availableLabels}
+                activeLabels={activeLabels}
+                onToggle={toggleLabel}
+                onToggleAll={toggleAllLabels}
+                labelCounts={labelCounts}
+                isMobile={true}
+              />
+            </div>
+          )}
+
+          {/* Row 3: Event nav + autoplay + zoom presets (horizontal scroll, no goto) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', overflowX: 'auto' }}>
-            {[1, 4, 8, 24].map((h) => (
-              <button key={h} onClick={() => setRange(h)} style={{
-                ...styles.rangeBtn,
-                padding: '10px 16px',
-                fontSize: '15px',
-                minHeight: 44,
-                flexShrink: 0,
-              }}>
-                {h}h
-              </button>
-            ))}
-            {!multiMode && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                <input
-                  type="datetime-local"
-                  value={gotoValue}
-                  onChange={(e) => setGotoValue(e.target.value)}
-                  style={{
-                    colorScheme: 'dark',
-                    background: '#1a1d27',
-                    border: '1px solid #333',
-                    color: '#aaa',
-                    padding: '3px 6px',
-                    borderRadius: 4,
-                    fontSize: 16,
-                  }}
-                />
-                <button onClick={handleGoto} style={{
-                  ...styles.rangeBtn,
-                  padding: '10px 16px',
-                  fontSize: '15px',
-                  minHeight: 44,
-                  flexShrink: 0,
-                }}>
-                  Go
-                </button>
-              </div>
+            {!multiMode && navEvents.length > 0 && (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 6, padding: '6px 10px', fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#e0e0e0', flexShrink: 0 }}>
+                  <button onClick={() => navigateEvent('prev')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}>◀</button>
+                  <span>EVENT {currentEventIndex != null ? currentEventIndex + 1 : '—'} / {navEvents.length}{importantOnly && ' ⚡'}</span>
+                  <button onClick={() => navigateEvent('next')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}>▶</button>
+                </div>
+                <button onClick={() => { setImportantOnly(v => !v); setCurrentEventIndex(null); }} style={{ ...styles.iconBtn, borderColor: importantOnly ? '#4dd0e1' : '#333', color: importantOnly ? '#4dd0e1' : '#666', background: importantOnly ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', flexShrink: 0 }} title="Important only">⚡</button>
+              </>
             )}
+            {!multiMode && (
+              <button
+                onClick={() => { setAutoplayEnabled(v => { const next = !v; try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {} if (!next) autoplayActiveRef.current = false; return next; }); }}
+                style={{ ...styles.iconBtn, borderColor: autoplayEnabled ? '#4dd0e1' : '#333', color: autoplayEnabled ? '#4dd0e1' : '#666', background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', fontSize: 11, flexShrink: 0 }}
+              >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
+            )}
+            {[1, 4, 8, 24].map((h) => (
+              <button key={h} onClick={() => setRange(h)} style={{ ...styles.rangeBtn, padding: '10px 16px', fontSize: '15px', minHeight: 44, flexShrink: 0 }}>{h}h</button>
+            ))}
           </div>
         </div>
       ) : (
+        /* Desktop: single row — Camera → Filters → [spacer] → Events → Auto → Zoom → Goto → Split */
         <div style={styles.controls}>
+          {/* 1. Camera */}
           {!multiMode ? (
-            <CameraSelector
-              cameras={cameras}
-              selected={selectedCamera}
-              onSelect={handleCameraChange}
-            />
+            <CameraSelector cameras={cameras} selected={selectedCamera} onSelect={handleCameraChange} />
           ) : (
-            <CameraSelector
-              cameras={cameras}
-              selectedMany={selectedCameras}
-              onSelectMany={handleSelectMany}
-              multiMode={true}
-              maxSelect={4}
+            <CameraSelector cameras={cameras} selectedMany={selectedCameras} onSelectMany={handleSelectMany} multiMode={true} maxSelect={4} />
+          )}
+
+          {/* 2. Filter pills — inline, no "Filter:" label */}
+          {!multiMode && availableLabels.length > 0 && (
+            <LabelFilterPills
+              availableLabels={availableLabels}
+              activeLabels={activeLabels}
+              onToggle={toggleLabel}
+              onToggleAll={toggleAllLabels}
+              labelCounts={labelCounts}
             />
           )}
 
-          <button
-            onClick={handleToggleMultiMode}
-            style={{
-              ...styles.rangeBtn,
-              borderColor: multiMode ? '#2196F3' : '#333',
-              color: multiMode ? '#2196F3' : '#aaa',
-            }}
-          >
-            {multiMode ? '◈ Single' : '◈ Split'}
-          </button>
+          <div style={{ flex: 1 }} />
 
-          {/* "Go to" group — single-camera mode only */}
+          {/* 3. Event nav + ⚡ */}
+          {!multiMode && navEvents.length > 0 && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 6, padding: '4px 12px', fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#e0e0e0' }}>
+                <button onClick={() => navigateEvent('prev')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }} onMouseEnter={e => e.target.style.color = '#4dd0e1'} onMouseLeave={e => e.target.style.color = '#aaa'} title="Previous event">◀</button>
+                <span>EVENT {currentEventIndex != null ? currentEventIndex + 1 : '—'} / {navEvents.length}{importantOnly && ' ⚡'}</span>
+                <button onClick={() => navigateEvent('next')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }} onMouseEnter={e => e.target.style.color = '#4dd0e1'} onMouseLeave={e => e.target.style.color = '#aaa'} title="Next event">▶</button>
+              </div>
+              <button onClick={() => { setImportantOnly(v => !v); setCurrentEventIndex(null); }} title={importantOnly ? 'Important only — click for all' : 'Click for important only'} style={{ ...styles.iconBtn, borderColor: importantOnly ? '#4dd0e1' : '#333', color: importantOnly ? '#4dd0e1' : '#666', background: importantOnly ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)' }}>⚡</button>
+            </>
+          )}
+
+          {/* 4. Autoplay toggle */}
+          {!multiMode && (
+            <button
+              onClick={() => { setAutoplayEnabled(v => { const next = !v; try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {} if (!next) autoplayActiveRef.current = false; return next; }); }}
+              title={autoplayEnabled ? 'Autoplay on — click to pause' : 'Autoplay off — click to enable'}
+              style={{ ...styles.iconBtn, borderColor: autoplayEnabled ? '#4dd0e1' : '#333', color: autoplayEnabled ? '#4dd0e1' : '#666', background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', fontSize: 12 }}
+            >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
+          )}
+
+          {/* 5. Zoom presets */}
+          <div style={styles.rangeButtons}>
+            {[1, 4, 8, 24].map((h) => (
+              <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>{h}h</button>
+            ))}
+          </div>
+
+          {/* 6. Goto — far right, single-camera only */}
           {!multiMode && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ color: '#666', fontSize: 16 }}>Go to:</span>
+              <span style={{ color: '#666', fontSize: 13 }}>Go to:</span>
               <input
                 type="datetime-local"
                 value={gotoValue}
                 onChange={(e) => setGotoValue(e.target.value)}
-                style={{
-                  colorScheme: 'dark',
-                  background: '#1a1d27',
-                  border: '1px solid #333',
-                  color: '#aaa',
-                  padding: '3px 6px',
-                  borderRadius: 4,
-                  fontSize: 16,
-                }}
+                style={{ colorScheme: 'dark', background: '#1a1d27', border: '1px solid #333', color: '#aaa', padding: '3px 6px', borderRadius: 4, fontSize: 13 }}
               />
-              <button onClick={handleGoto} style={styles.rangeBtn}>
-                Go
-              </button>
+              <button onClick={handleGoto} style={styles.rangeBtn}>Go</button>
             </div>
           )}
 
-          <div style={styles.rangeButtons}>
-            {[1, 4, 8, 24].map((h) => (
-              <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>
-                {h}h
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Label filter pills + event navigator (single-camera mode only) */}
-      {!multiMode && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', flexShrink: 0 }}>
-          <LabelFilterPills
-            availableLabels={availableLabels}
-            activeLabels={activeLabels}
-            onToggle={toggleLabel}
-            onToggleAll={toggleAllLabels}
-            isMobile={isMobile}
-          />
-
-          {navEvents.length > 0 && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', flexShrink: 0 }}>
-              {/* Event navigator */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                background: 'rgba(255,255,255,0.04)',
-                border: '1px solid #333',
-                borderRadius: 6,
-                padding: '4px 12px',
-                fontFamily: 'monospace',
-                fontSize: 13,
-                fontWeight: 700,
-                color: '#e0e0e0',
-              }}>
-                <button
-                  onClick={() => navigateEvent('prev')}
-                  style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}
-                  onMouseEnter={e => e.target.style.color = '#4dd0e1'}
-                  onMouseLeave={e => e.target.style.color = '#aaa'}
-                  title="Previous event"
-                >◀</button>
-                <span>
-                  EVENT {currentEventIndex != null ? currentEventIndex + 1 : '—'} / {navEvents.length}
-                  {importantOnly && ' ⚡'}
-                </span>
-                <button
-                  onClick={() => navigateEvent('next')}
-                  style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}
-                  onMouseEnter={e => e.target.style.color = '#4dd0e1'}
-                  onMouseLeave={e => e.target.style.color = '#aaa'}
-                  title="Next event"
-                >▶</button>
-              </div>
-
-              {/* Important-only toggle */}
-              <button
-                onClick={() => { setImportantOnly(v => !v); setCurrentEventIndex(null); }}
-                title={importantOnly ? 'Showing important events only — click to show all' : 'Click to show important events only'}
-                style={{
-                  background: importantOnly ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${importantOnly ? '#4dd0e1' : '#333'}`,
-                  color: importantOnly ? '#4dd0e1' : '#666',
-                  borderRadius: 6,
-                  padding: '4px 10px',
-                  cursor: 'pointer',
-                  fontFamily: 'monospace',
-                  fontSize: 14,
-                }}
-              >⚡</button>
-
-              {/* Autoplay toggle */}
-              <button
-                onClick={() => {
-                  setAutoplayEnabled(v => {
-                    const next = !v;
-                    try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {}
-                    if (!next) autoplayActiveRef.current = false;
-                    return next;
-                  });
-                }}
-                title={autoplayEnabled ? 'Autoplay on — click to pause' : 'Autoplay off — click to enable'}
-                style={{
-                  background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${autoplayEnabled ? '#4dd0e1' : '#333'}`,
-                  color: autoplayEnabled ? '#4dd0e1' : '#666',
-                  borderRadius: 6,
-                  padding: '4px 10px',
-                  cursor: 'pointer',
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                }}
-              >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
-            </div>
-          )}
+          {/* 7. Split — far right */}
+          <button
+            onClick={handleToggleMultiMode}
+            style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa' }}
+          >{multiMode ? '◈ Single' : '◈ Split'}</button>
         </div>
       )}
 
@@ -1035,6 +936,7 @@ export default function App() {
                 gaps={timelineData?.gaps || []}
                 events={filteredEvents}
                 densityData={densityData}
+                activeLabels={activeLabels}
                 cursorTs={cursorTs}
                 onScrub={handleScrub}
                 onScrubEnd={handleScrubEnd}
@@ -1118,6 +1020,16 @@ const styles = {
     borderRadius: 4,
     cursor: 'pointer',
     fontSize: 16,
+  },
+  iconBtn: {
+    background: 'rgba(255,255,255,0.04)',
+    border: '1px solid #333',
+    color: '#666',
+    padding: '4px 10px',
+    borderRadius: 6,
+    cursor: 'pointer',
+    fontFamily: 'monospace',
+    fontSize: 14,
   },
   singleLayout: {
     display: 'flex',
