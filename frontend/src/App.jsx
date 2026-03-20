@@ -163,9 +163,6 @@ export default function App() {
   //   rangeStart = cursorTs - rangeSec * (1 - RETICLE_FRACTION)  [past below reticle]
   //   rangeEnd   = cursorTs + rangeSec * RETICLE_FRACTION         [future above reticle]
   // TODO: verify rangeEnd never exceeds nowTs() + 60, rangeStart = cursorTs - rangeSec * (1 - RETICLE_FRACTION)
-  // TODO: during video playback, cursorTs updates at ~30Hz; each update drives a
-  //   rangeStart/rangeEnd change that triggers the data-fetch useEffect — consider
-  //   debouncing in a follow-up PR if this causes excessive backend requests
   // Defensive guard: cursorTs should never be null after init, but if a future
   // code path sets it to null the fallback prevents NaN from cascading into
   // API requests, the RAF autoplay loop, and event navigation.
@@ -345,20 +342,21 @@ export default function App() {
   }, []);
 
   // ─── Load timeline + previews (single camera mode) ───
+  // Debounced 300ms + AbortController: prevents connection exhaustion when
+  // autoplay or rapid scrubbing drives rangeStart/rangeEnd at ~60fps.
+  // TODO: add frontend test verifying at most 1 in-flight timeline request
+  // exists at any time — debounce + abort should make this hold true.
   useEffect(() => {
     if (!selectedCamera || multiMode) return;
-    let cancelled = false;
+    const controller = new AbortController();
 
-    async function load() {
+    const timer = setTimeout(async () => {
       try {
-        // bucketSizeForRange selects zoom-appropriate resolution for PR3 density endpoint.
-        // Keep in sync with TimeIndex.auto_resolution() in backend/app/services/time_index.py.
-        const _bucketSize = bucketSizeForRange(rangeSec); // eslint-disable-line no-unused-vars
+        const opts = { signal: controller.signal };
         const [tl, strip] = await Promise.all([
-          fetchTimeline(selectedCamera, rangeStart, rangeEnd),
-          fetchPreviewStrip(selectedCamera, rangeStart, rangeEnd, 300),
+          fetchTimeline(selectedCamera, rangeStart, rangeEnd, opts),
+          fetchPreviewStrip(selectedCamera, rangeStart, rangeEnd, 300, opts),
         ]);
-        if (cancelled) return;
 
         setTimelineData(tl);
         setPreviewFrames(strip.frames || []);
@@ -366,12 +364,12 @@ export default function App() {
 
         requestPreviews(selectedCamera, rangeStart, rangeEnd).catch(() => {});
       } catch (err) {
-        if (!cancelled) setError(`Timeline load failed: ${err.message}`);
+        if (err.name === 'AbortError') return;
+        setError(`Timeline load failed: ${err.message}`);
       }
-    }
+    }, 300);
 
-    load();
-    return () => { cancelled = true; };
+    return () => { controller.abort(); clearTimeout(timer); };
   }, [selectedCamera, rangeStart, rangeEnd, multiMode]);
 
   // ─── Debounced density fetch (pan-optimized) ───
@@ -381,16 +379,17 @@ export default function App() {
   // TODO: add frontend test verifying this fires at most once per 100ms burst.
   useEffect(() => {
     if (!selectedCamera || multiMode) return;
+    const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
         const bucketSec = bucketSizeForRange(rangeSec);
-        const density = await fetchDensity(selectedCamera, rangeStart, rangeEnd, bucketSec);
+        const density = await fetchDensity(selectedCamera, rangeStart, rangeEnd, bucketSec, { signal: controller.signal });
         setDensityData(density);
       } catch {
         // Density is best-effort — don't surface errors for pan-time fetches
       }
     }, 100);
-    return () => clearTimeout(timer);
+    return () => { controller.abort(); clearTimeout(timer); };
   }, [selectedCamera, rangeStart, rangeEnd, rangeSec, multiMode]);
 
   // ─── Derived label lists ───
