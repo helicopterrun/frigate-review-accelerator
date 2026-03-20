@@ -5,6 +5,7 @@ checks `last_event_sync_ts` per camera from `scan_state` and fetches only
 events newer than that, keeping API calls small.
 """
 
+import json
 import logging
 import sqlite3
 import time
@@ -98,6 +99,7 @@ def sync_frigate_events_sync(camera: str | None = None, db_path=None) -> int:
                 rows_to_upsert = []
                 for evt in events:
                     try:
+                        zones_json = json.dumps(evt.get("zones", []))
                         rows_to_upsert.append((
                             str(evt["id"]),
                             cam,
@@ -108,6 +110,7 @@ def sync_frigate_events_sync(camera: str | None = None, db_path=None) -> int:
                             int(bool(evt.get("has_clip", False))),
                             int(bool(evt.get("has_snapshot", False))),
                             now,
+                            zones_json,
                         ))
                     except (KeyError, TypeError, ValueError) as exc:
                         log.debug("Skipping malformed event %s: %s", evt.get("id"), exc)
@@ -115,14 +118,15 @@ def sync_frigate_events_sync(camera: str | None = None, db_path=None) -> int:
                 if rows_to_upsert:
                     conn.executemany(
                         """INSERT INTO events
-                           (id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           (id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at, zones)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(id) DO UPDATE SET
-                             end_ts      = excluded.end_ts,
-                             score       = excluded.score,
-                             has_clip    = excluded.has_clip,
+                             end_ts       = excluded.end_ts,
+                             score        = excluded.score,
+                             has_clip     = excluded.has_clip,
                              has_snapshot = excluded.has_snapshot,
-                             synced_at   = excluded.synced_at""",
+                             synced_at    = excluded.synced_at,
+                             zones        = excluded.zones""",
                         rows_to_upsert,
                     )
                     total_synced += len(rows_to_upsert)

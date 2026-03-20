@@ -256,6 +256,120 @@ async def test_timeline_buckets_has_preview_from_db_not_filesystem(client, monke
     assert any(has_preview_values), "Expected has_preview=True from DB row, got all False"
 
 
+# ---------------------------------------------------------------------------
+# Density endpoint
+# ---------------------------------------------------------------------------
+
+def _insert_event(db_path, camera, start_ts, end_ts, label="person", zones=None):
+    """Insert a test event row directly into the DB."""
+    import json
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """INSERT INTO events
+               (id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at, zones)
+               VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)""",
+        (f"{camera}-{start_ts}", camera, start_ts, end_ts, label, 0.9, time.time(),
+         json.dumps(zones or [])),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def test_density_endpoint_returns_correct_shape(client):
+    """GET /api/timeline/density returns DensityResponse shape."""
+    resp = await client.get(
+        "/api/timeline/density",
+        params={"camera": "density-cam", "start": 1700000000.0, "end": 1700003600.0},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["camera"] == "density-cam"
+    assert data["start_ts"] == pytest.approx(1700000000.0)
+    assert data["end_ts"] == pytest.approx(1700003600.0)
+    assert "bucket_sec" in data
+    assert isinstance(data["buckets"], list)
+    assert len(data["buckets"]) > 0
+    # Each bucket has required fields
+    bucket = data["buckets"][0]
+    assert "ts" in bucket
+    assert "counts" in bucket
+    assert "total" in bucket
+    assert "important" in bucket
+
+
+async def test_density_endpoint_auto_resolution(client):
+    """Omitting bucket_sec uses auto_resolution based on range."""
+    resp = await client.get(
+        "/api/timeline/density",
+        params={"camera": "auto-res-cam", "start": 1700000000.0, "end": 1700003600.0},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # 1h range → auto_resolution = 5s
+    assert data["bucket_sec"] == 5
+
+
+async def test_density_endpoint_respects_explicit_bucket_sec(client):
+    """Explicit bucket_sec=30 is used verbatim."""
+    resp = await client.get(
+        "/api/timeline/density",
+        params={
+            "camera": "explicit-bucket-cam",
+            "start": 1700000000.0,
+            "end": 1700003600.0,
+            "bucket_sec": 30,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["bucket_sec"] == 30
+    # 1h / 30s = 120 buckets
+    assert len(data["buckets"]) == 120
+
+
+async def test_density_endpoint_counts_events(client):
+    """Events in the range show up as non-zero totals in matching buckets."""
+    from app import config
+    db_path = config.settings.database_path
+    _insert_event(db_path, "count-cam", 1700040010.0, 1700040020.0, label="car")
+
+    resp = await client.get(
+        "/api/timeline/density",
+        params={
+            "camera": "count-cam",
+            "start": 1700040000.0,
+            "end": 1700040060.0,
+            "bucket_sec": 30,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    # First bucket [0, 30) contains the event
+    first = data["buckets"][0]
+    assert first["total"] == 1
+    assert first["counts"].get("car") == 1
+
+
+async def test_density_endpoint_important_flag(client):
+    """Bucket containing a 'cat' event → important=True."""
+    from app import config
+    db_path = config.settings.database_path
+    _insert_event(db_path, "important-cam", 1700050005.0, 1700050010.0, label="cat")
+
+    resp = await client.get(
+        "/api/timeline/density",
+        params={
+            "camera": "important-cam",
+            "start": 1700050000.0,
+            "end": 1700050030.0,
+            "bucket_sec": 30,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["buckets"][0]["important"] is True
+
+
 async def test_worker_one_query_per_camera_group(test_app, monkeypatch):
     """10 jobs across 2 cameras → exactly 2 DB execute_fetchall queries issued."""
     from contextlib import asynccontextmanager

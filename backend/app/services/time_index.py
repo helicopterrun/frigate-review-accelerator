@@ -128,6 +128,72 @@ class TimeIndex:
         ]
 
     # ------------------------------------------------------------------
+    # Density bucketing
+    # ------------------------------------------------------------------
+    def compute_density_buckets(
+        self,
+        events,
+        range_start: float,
+        range_end: float,
+        bucket_sec: int,
+        important_labels: set[str] | None = None,
+    ) -> list[dict]:
+        """Bucket tracked objects with overlap-aware counting.
+
+        A tracked object spanning buckets A through C is counted in A, B, AND C.
+        This gives an accurate density reading for the canvas gradient, unlike
+        start_ts-only bucketing which under-reports long-lived objects.
+
+        events: iterable of DB rows (start_ts, end_ts, label, ...) or dicts
+                with the same keys.
+        important_labels: set of labels that set the important=True flag.
+                          Defaults to {"cat", "bird", "bear", "horse"}.
+
+        Returns list[dict] matching DensityBucket shape:
+          {ts, counts, total, important}
+        """
+        if important_labels is None:
+            important_labels = {"cat", "bird", "bear", "horse"}
+
+        n_buckets = max(1, math.ceil((range_end - range_start) / bucket_sec))
+        result = []
+
+        for i in range(n_buckets):
+            b_start = range_start + i * bucket_sec
+            b_end = b_start + bucket_sec
+            counts: dict[str, int] = {}
+            important = False
+
+            for evt in events:
+                if isinstance(evt, dict):
+                    evt_start = evt["start_ts"]
+                    evt_end = evt.get("end_ts")
+                    evt_label = evt["label"]
+                else:
+                    # DB row: (start_ts, end_ts, label, ...)
+                    evt_start = evt[0]
+                    evt_end = evt[1]
+                    evt_label = evt[2]
+
+                if evt_end is None:
+                    evt_end = evt_start + 5  # active event fallback
+
+                # Overlap check: event spans this bucket
+                if evt_start < b_end and evt_end > b_start:
+                    counts[evt_label] = counts.get(evt_label, 0) + 1
+                    if evt_label in important_labels:
+                        important = True
+
+            result.append({
+                "ts": b_start,
+                "counts": counts,
+                "total": sum(counts.values()),
+                "important": important,
+            })
+
+        return result
+
+    # ------------------------------------------------------------------
     # Resolution selection
     # ------------------------------------------------------------------
     @staticmethod

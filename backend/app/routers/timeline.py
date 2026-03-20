@@ -23,6 +23,8 @@ from app.services.time_index import get_time_index
 from app.models.schemas import (
     ActivityBucket,
     CameraInfo,
+    DensityBucket,
+    DensityResponse,
     EventInfo,
     GapInfo,
     HealthResponse,
@@ -467,6 +469,56 @@ async def get_timeline_buckets(
         "bucket_count": len(buckets),
         "buckets": buckets,
     }
+
+
+@router.get("/timeline/density", response_model=DensityResponse)
+async def get_timeline_density(
+    camera: str = Query(...),
+    start: float = Query(...),
+    end: float = Query(...),
+    bucket_sec: int | None = Query(None, ge=1, le=3600),
+):
+    # INVARIANT: Timeline endpoints are READ-ONLY.
+    # This function must NEVER trigger: preview generation, ffprobe,
+    # filesystem scans, or segment iteration.
+    # If you are adding writes here — stop and reconsider.
+    """Lightweight per-bucket tracked object counts for canvas density rendering.
+
+    Use this during panning instead of the full /api/timeline endpoint.
+    Returns only density data — no segments, gaps, or preview info.
+
+    bucket_sec omitted → auto-selected via TimeIndex.auto_resolution(end - start).
+    Overlapping events are counted in every bucket they span (unlike activity
+    in /api/timeline which counts only at start_ts).
+    """
+    from app.services.time_index import TimeIndex, get_time_index
+
+    if bucket_sec is None:
+        bucket_sec = TimeIndex.auto_resolution(end - start)
+
+    async with get_db() as db:
+        rows = await db.execute_fetchall(
+            """SELECT start_ts, end_ts, label, score, zones
+               FROM events
+               WHERE camera = ?
+                 AND (end_ts IS NULL OR end_ts >= ?)
+                 AND start_ts <= ?
+               ORDER BY start_ts""",
+            (camera, start, end),
+        )
+
+    important_labels = set(settings.important_labels)
+    buckets = get_time_index().compute_density_buckets(
+        rows, start, end, bucket_sec, important_labels=important_labels
+    )
+
+    return DensityResponse(
+        camera=camera,
+        start_ts=start,
+        end_ts=end,
+        bucket_sec=bucket_sec,
+        buckets=[DensityBucket(**b) for b in buckets],
+    )
 
 
 @router.get("/debug/stats")

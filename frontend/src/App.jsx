@@ -30,6 +30,7 @@ import AdminPanel from './components/AdminPanel.jsx';
 import SplitView from './components/SplitView.jsx';
 import {
   fetchCameras,
+  fetchDensity,
   fetchTimeline,
   fetchPreviewStrip,
   fetchPlaybackTarget,
@@ -145,6 +146,7 @@ export default function App() {
   const [multiMode, setMultiMode] = useState(false);
 
   const [timelineData, setTimelineData] = useState(null);
+  const [densityData, setDensityData] = useState(null);
   const [previewFrames, setPreviewFrames] = useState([]);
   const [cursorTs, setCursorTs] = useState(() => nowTs());
   const [rangeSec, setRangeSec] = useState(8 * 3600);
@@ -281,6 +283,25 @@ export default function App() {
     load();
     return () => { cancelled = true; };
   }, [selectedCamera, rangeStart, rangeEnd, multiMode]);
+
+  // ─── Debounced density fetch (pan-optimized) ───
+  // Fires 100ms after range changes to coalesce rapid pan events.
+  // The full timeline fetch above stays as the source of truth for
+  // segments/gaps; this provides lightweight density updates during scrolling.
+  // TODO: add frontend test verifying this fires at most once per 100ms burst.
+  useEffect(() => {
+    if (!selectedCamera || multiMode) return;
+    const timer = setTimeout(async () => {
+      try {
+        const bucketSec = bucketSizeForRange(rangeSec);
+        const density = await fetchDensity(selectedCamera, rangeStart, rangeEnd, bucketSec);
+        setDensityData(density);
+      } catch {
+        // Density is best-effort — don't surface errors for pan-time fetches
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [selectedCamera, rangeStart, rangeEnd, rangeSec, multiMode]);
 
   // ─── Derived label lists ───
   const availableLabels = useMemo(() => {

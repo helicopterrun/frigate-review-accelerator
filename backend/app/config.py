@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     frigate_vod_enabled: bool = True
     frigate_vod_window_sec: int = 86400  # width of HLS window to request from Frigate (24 h)
 
+    # Labels that trigger "important" flag in density buckets.
+    # Phase 1: label-only rules. Phase 2 adds zone-based rules.
+    # Override via IMPORTANT_LABELS='["cat","bird","bear"]' in .env
+    important_labels: list[str] = ["cat", "bird", "bear", "horse"]
+
     def ensure_dirs(self):
         """Create required directories if they don't exist."""
         self.preview_output_path.mkdir(parents=True, exist_ok=True)

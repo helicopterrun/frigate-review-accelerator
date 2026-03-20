@@ -110,6 +110,25 @@ export function eventSnapshotUrl(eventId) {
   return `${API_BASE}/events/${eventId}/snapshot`;
 }
 
+/**
+ * GET /api/timeline/density?camera=X&start=Y&end=Z&bucket_sec=N
+ *
+ * Lightweight density data for canvas rendering. Use during panning
+ * instead of the full /api/timeline endpoint — returns only per-bucket
+ * tracked object counts (no segments, gaps, or preview info).
+ *
+ * TODO: add unit tests verifying bucket shape matches DensityResponse schema.
+ */
+export async function fetchDensity(camera, startTs, endTs, bucketSec) {
+  const params = new URLSearchParams({
+    camera,
+    start: String(startTs),
+    end: String(endTs),
+  });
+  if (bucketSec != null) params.set('bucket_sec', String(bucketSec));
+  return apiFetch(`/timeline/density?${params}`);
+}
+
 /** GET /api/health */
 export async function fetchHealth() {
   return apiFetch('/health');
