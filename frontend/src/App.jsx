@@ -981,7 +981,7 @@ export default function App() {
           {/* Right/bottom: vertical timeline column */}
           <div style={{
             ...styles.timelineCol,
-            width: isMobile ? '100%' : 230,
+            width: isMobile ? '100%' : 280,
             flex: isMobile ? 1 : undefined,
             minHeight: isMobile ? 320 : undefined,
             flexShrink: isMobile ? undefined : 0,
@@ -1122,7 +1122,7 @@ const styles = {
     fontSize: 16,
   },
   timelineCol: {
-    width: 230,
+    width: 280,
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
