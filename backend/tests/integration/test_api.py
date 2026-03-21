@@ -407,3 +407,70 @@ async def test_worker_one_query_per_camera_group(test_app, monkeypatch):
 
     # Must have made exactly 2 execute_fetchall calls — one per camera group
     assert mock_db.execute_fetchall.call_count == 2
+
+
+async def test_worker_scheduler_jobs_row_name_access(test_app, monkeypatch):
+    """Row column-name access must not raise KeyError or IndexError.
+
+    Previously rows were accessed by positional index (s[0], s[1], ...).
+    After the fix, named access (s["id"], s["camera"], ...) is used.
+    This test patches the DB to return a real sqlite3.Row-like dict and
+    verifies generate_previews_for_segment is called with the correct kwargs.
+    """
+    import sqlite3
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.services.preview_scheduler import PreviewJob, Priority
+    from app.services.worker import _process_scheduler_jobs
+
+    # Build a sqlite3.Row for cam-a that contains job's bucket_ts in range
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """CREATE TABLE segments
+           (id INTEGER, camera TEXT, start_ts REAL, end_ts REAL,
+            duration REAL, path TEXT)"""
+    )
+    conn.execute(
+        "INSERT INTO segments VALUES (42, 'cam-a', 1700000000.0, 1700000010.0, 10.0, 'cam-a/seg.mp4')"
+    )
+    row = conn.execute("SELECT id, camera, start_ts, end_ts, duration, path FROM segments").fetchone()
+
+    jobs = [PreviewJob(
+        priority=Priority.VIEWPORT, enqueued_at=0.0,
+        bucket_ts=1700000005.0, camera="cam-a",
+    )]
+
+    mock_db = AsyncMock()
+    mock_db.execute_fetchall = AsyncMock(return_value=[row])
+    mock_db.executemany = AsyncMock()
+    mock_db.execute = AsyncMock()
+    mock_db.commit = AsyncMock()
+
+    @asynccontextmanager
+    async def mock_get_db():
+        yield mock_db
+
+    called_with = {}
+
+    def fake_generate(segment_path, camera, start_ts, end_ts, duration, segment_id, target_bucket_ts):
+        called_with.update(dict(
+            segment_path=segment_path, camera=camera,
+            start_ts=start_ts, end_ts=end_ts,
+            duration=duration, segment_id=segment_id,
+        ))
+        return []  # no frames — we just want to verify the call signature
+
+    monkeypatch.setattr("app.services.worker.get_db", mock_get_db)
+    monkeypatch.setattr("app.services.worker.generate_previews_for_segment", fake_generate)
+
+    await _process_scheduler_jobs(jobs)
+
+    # Named access must have resolved correctly
+    assert called_with["segment_id"] == 42
+    assert called_with["camera"] == "cam-a"
+    assert called_with["segment_path"] == "cam-a/seg.mp4"
+    assert called_with["start_ts"] == pytest.approx(1700000000.0)
+    assert called_with["end_ts"] == pytest.approx(1700000010.0)
+    assert called_with["duration"] == pytest.approx(10.0)

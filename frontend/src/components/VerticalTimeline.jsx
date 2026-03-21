@@ -154,9 +154,11 @@ export default function VerticalTimeline({
 
   // Animation refs — no state to avoid per-frame re-renders
   // TODO: verify animation ref doesn't leak — must cancel on unmount and on new click during active animation
-  const displayCursorRef = useRef(cursorTs);  // what the canvas currently displays
-  const animRef = useRef(null);               // { from, to, startTime, rafId } | null
-  const drawCanvasRef = useRef(null);         // always points to latest draw fn
+  const displayCursorRef = useRef(cursorTs);    // what the canvas currently displays
+  const animRef = useRef(null);                 // { from, to, startTime, rafId } | null
+  const drawCanvasRef = useRef(null);           // always points to latest draw fn
+  const drawReticleOnlyRef = useRef(null);      // always points to latest drawReticleOnly fn
+  const canvasSnapshotRef = useRef(null);       // ImageData snapshot saved after layer 8, before reticle
 
   const [dims, setDims] = useState({ w: 215, h: 600 });
 
@@ -520,6 +522,11 @@ export default function VerticalTimeline({
       }
     }
 
+    // Save snapshot of canvas after all data layers, before the reticle.
+    // drawReticleOnly() uses this to restore and redraw only the reticle,
+    // avoiding the full O(h) density gradient pass on every cursorTs change.
+    canvasSnapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
     // 9. Reticle at fixed Y = h * RETICLE_FRACTION
     // The reticle Y is a constant — it never moves. cursorTs always maps here
     // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
@@ -608,12 +615,97 @@ export default function VerticalTimeline({
   // Trigger canvas redraw whenever draw deps change (data, layout, hover).
   useEffect(() => { drawCanvas(); }, [drawCanvas]);
 
+  /** Reticle-only redraw — restores the pre-reticle snapshot and draws only layer 9.
+   *  Called on every cursorTs change during autoplay (~60fps) to avoid the full
+   *  O(h * density_buckets) density gradient pass.  Falls back to drawCanvas when
+   *  no snapshot is available (first render, after a resize, etc.). */
+  const drawReticleOnly = useCallback(() => {
+    const canvas = canvasRef.current;
+    const snapshot = canvasSnapshotRef.current;
+    if (!canvas || !snapshot) {
+      drawCanvasRef.current?.();
+      return;
+    }
+
+    const { w, h } = dims;
+    const dpr = window.devicePixelRatio || 1;
+
+    // If dims changed since snapshot was saved, fall back to full redraw.
+    if (snapshot.width !== w * dpr || snapshot.height !== h * dpr) {
+      drawCanvasRef.current?.();
+      return;
+    }
+
+    const ctx = canvas.getContext('2d');
+
+    // putImageData writes at physical pixel coords — reset transform first.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.putImageData(snapshot, 0, 0);
+    // Re-apply DPR scale for all subsequent drawing (logical CSS pixels).
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const barStart = LABEL_WIDTH + 1;
+    const barEnd = w - EVENT_WIDTH;
+    const barW = barEnd - barStart;
+    const reticleY = h * RETICLE_FRACTION;
+    const spp = h > 0 ? (endTs - startTs) / h : 1;
+
+    const TICK_INTERVALS_LOCAL = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
+    const MIN_TICK_SPACING_PX = 32;
+    const _maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
+    const _minIntervalSec = h > 0 ? (endTs - startTs) / _maxTicks : 1;
+    const tickSec = TICK_INTERVALS_LOCAL.find((t) => t >= _minIntervalSec) ?? 86400;
+
+    const displayTs = displayCursorRef.current;
+    if (displayTs != null) {
+      let glowStyle;
+      if (autoplayState === 'approaching_event') {
+        glowStyle = 'rgba(220, 80, 60, 0.10)';
+      } else if (autoplayState === 'advancing') {
+        const t = (performance.now() / 3000) * Math.PI * 2;
+        const alpha = (0.06 + 0.06 * (0.5 + 0.5 * Math.sin(t))).toFixed(3);
+        glowStyle = `rgba(60, 160, 220, ${alpha})`;
+      } else {
+        glowStyle = 'rgba(60, 160, 220, 0.06)';
+      }
+      ctx.fillStyle = glowStyle;
+      ctx.fillRect(barStart, reticleY - 20, barW, 40);
+
+      ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(barStart, reticleY - 10);
+      ctx.lineTo(barEnd, reticleY - 10);
+      ctx.moveTo(barStart, reticleY + 10);
+      ctx.lineTo(barEnd, reticleY + 10);
+      ctx.stroke();
+
+      const label = formatTime(displayTs, timeFormat);
+      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const tickPhase = (displayTs % tickSec) / tickSec;
+      const distToTickPx = Math.min(tickPhase, 1 - tickPhase) * (tickSec / spp);
+      const reticleAlpha = distToTickPx < 8 ? 0.97 : 0.88;
+
+      ctx.fillStyle = `rgba(190, 225, 250, ${reticleAlpha})`;
+      ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
+    }
+  }, [dims, startTs, endTs, autoplayState, timeFormat]);
+
+  useEffect(() => { drawReticleOnlyRef.current = drawReticleOnly; }, [drawReticleOnly]);
+
+  // TODO: test drawReticleOnly is called (not drawCanvas) during
+  // autoplay — verify canvas snapshot is saved after step 8 and
+  // restored correctly on rapid cursorTs updates
   // Sync displayCursorRef from cursorTs prop when no animation is running,
   // then immediately redraw so cursor position stays current during playback.
   useEffect(() => {
     if (!animRef.current) {
       displayCursorRef.current = cursorTs;
-      drawCanvasRef.current?.();
+      drawReticleOnlyRef.current?.();
     }
   }, [cursorTs]);
 

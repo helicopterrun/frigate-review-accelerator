@@ -68,6 +68,8 @@ export default function VideoPlayer({
   const _hlsExtendingRef = useRef(false);
   const _lastExtendTs = useRef(0);
 
+  const displayTimeRef = useRef(null);
+
   const [isPlaying, setIsPlaying] = useState(false);
   const [displayTime, setDisplayTime] = useState(null);
   const [error, setError] = useState(null);
@@ -405,6 +407,7 @@ export default function VideoPlayer({
     }
 
     setDisplayTime(absoluteTs);
+    displayTimeRef.current = absoluteTs;
     if (onTimeUpdate) onTimeUpdate(absoluteTs);
 
     if (isHlsActive.current && hlsWindowEndTs.current && !_hlsExtendingRef.current) {
@@ -415,10 +418,13 @@ export default function VideoPlayer({
     }
   }, [playbackTarget, onTimeUpdate, extendHlsWindow]);
 
+  // TODO: test displayTimeRef is current when handleEnded fires after
+  // long playback session — stale state version of this bug was fixed
+  // in fix(frontend): displayTimeRef for handleEnded stale closure
   const handleEnded = useCallback(() => {
     if (isHlsActive.current) {
-      if (displayTime && !_hlsExtendingRef.current) {
-        extendHlsWindow(displayTime);
+      if (displayTimeRef.current && !_hlsExtendingRef.current) {
+        extendHlsWindow(displayTimeRef.current);
         return;
       }
       setIsPlaying(false);
