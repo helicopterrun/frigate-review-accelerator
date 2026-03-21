@@ -57,6 +57,7 @@ export default function VideoPlayer({
   eventSnapshot = null,
   onSeek = null,
   onPlaybackStart = null,
+  preloadTargetTs = null,
 }) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null);
@@ -67,6 +68,13 @@ export default function VideoPlayer({
   const hlsWindowEndTs = useRef(null);
   const _hlsExtendingRef = useRef(false);
   const _lastExtendTs = useRef(0);
+
+  // TODO: add frontend test — when preload ts matches playbackTarget ts,
+  // the Hls swap path fires and loadHls is NOT called.
+  const hlsPreloadRef = useRef(null);     // Hls instance for speculative preload
+  const preloadCameraRef = useRef(null);
+  const preloadTargetTsRef = useRef(null);
+  const preloadRequestIdRef = useRef(0);  // cancels stale preload fetches
 
   const displayTimeRef = useRef(null);
 
@@ -117,6 +125,60 @@ export default function VideoPlayer({
     };
   }, [scrubPreviewUrl]);
 
+  // ── Speculative HLS preload — initiated by VerticalTimeline slow-scrub hint ──
+  useEffect(() => {
+    if (!preloadTargetTs || !camera || !Hls.isSupported()) return;
+
+    // Skip if main player is already playing near this timestamp
+    if (
+      playbackTarget &&
+      Math.abs(playbackTarget.requested_ts - preloadTargetTs) < 5
+    ) return;
+
+    // Skip if already preloaded for this exact camera + ts window
+    if (
+      hlsPreloadRef.current &&
+      preloadCameraRef.current === camera &&
+      preloadTargetTsRef.current !== null &&
+      Math.abs(preloadTargetTsRef.current - preloadTargetTs) < 5
+    ) return;
+
+    // Cancel any previous in-flight preload fetch
+    destroyHlsPreload();
+    preloadRequestIdRef.current++;
+    const myId = preloadRequestIdRef.current;
+
+    fetchPlaybackTarget(camera, preloadTargetTs)
+      .then(target => {
+        // Discard if superseded by a newer preload request
+        if (myId !== preloadRequestIdRef.current) return;
+        if (!target?.hls_url) return;
+
+        const hls = new Hls({
+          ...HLS_CONFIG,
+          autoStartLoad: true,
+          startFragPrefetch: true,
+          maxBufferLength: 10,
+          maxMaxBufferLength: 15,
+        });
+        hls.loadSource(target.hls_url);
+        hls.attachMedia(preloadRef.current);
+        hlsPreloadRef.current = hls;
+        preloadCameraRef.current = camera;
+        preloadTargetTsRef.current = preloadTargetTs;
+
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data.fatal) destroyHlsPreload();
+        });
+      })
+      .catch(() => {});
+
+    // Do NOT destroy preload on cleanup. Let it persist until the next
+    // preloadTargetTs change or until playback consumes it via swap below.
+    // destroyHlsPreload() is called lazily at the top of this effect on the
+    // next invocation.
+  }, [preloadTargetTs, camera, playbackTarget, destroyHlsPreload]);
+
   // ── Diagnostic: track playbackTarget changes ──────────────────────────────
   useEffect(() => {
     console.log('[VIDEO] playbackTarget changed:', playbackTarget);
@@ -145,7 +207,8 @@ export default function VideoPlayer({
     };
   }, []); // intentional: attach once to the stable DOM element
 
-  /** Destroy existing hls.js instance if any. Stable — no external deps. */
+  /** Destroy existing hls.js instance if any. Stable — no external deps.
+   *  Does NOT touch hlsPreloadRef — preload lifecycle is managed separately. */
   const destroyHls = useCallback(() => {
     if (hlsRef.current) {
       console.log('[HLS] destroy');
@@ -155,6 +218,16 @@ export default function VideoPlayer({
     isHlsActive.current = false;
     hlsWindowEndTs.current = null;
     _hlsExtendingRef.current = false;
+  }, []);
+
+  /** Destroy speculative HLS preload instance if any. Stable — no external deps. */
+  const destroyHlsPreload = useCallback(() => {
+    if (hlsPreloadRef.current) {
+      hlsPreloadRef.current.destroy();
+      hlsPreloadRef.current = null;
+    }
+    preloadCameraRef.current = null;
+    preloadTargetTsRef.current = null;
   }, []);
 
   /** Load (or reload) an HLS source into the video element via hls.js or native HLS. */
@@ -262,6 +335,67 @@ export default function VideoPlayer({
           mp4: playbackTarget.stream_url,
           seekOffset,
         });
+
+        // Fast path: swap preloaded Hls instance → near-instant playback.
+        // Conditions: same camera, requested ts within 5s of preloaded ts,
+        // manifest already fetched and buffering into preloadRef.
+        // TODO: add frontend test — swap fires when ts matches; loadHls not called.
+        if (
+          Hls.isSupported() &&
+          hlsPreloadRef.current &&
+          preloadCameraRef.current === camera &&
+          preloadTargetTsRef.current !== null &&
+          Math.abs(playbackTarget.requested_ts - preloadTargetTsRef.current) < 5
+        ) {
+          console.log('[HLS] preload swap — instant play');
+
+          // Capture the preload instance BEFORE nulling refs and before destroyHls.
+          // Order matters: null the preload refs first so destroyHls cannot
+          // accidentally reach the preload instance through any shared state.
+          const preloadHls = hlsPreloadRef.current;
+          hlsPreloadRef.current = null;
+          preloadCameraRef.current = null;
+          preloadTargetTsRef.current = null;
+
+          destroyHls(); // destroys OLD main player only — preloadHls is unaffected
+
+          // CRITICAL: preloadHls is currently bound to preloadRef.current (the
+          // hidden <video> element). It MUST be rebound to the main video element
+          // before use. Without detachMedia() + attachMedia(video), the Hls instance
+          // will play silently into the hidden element and the user sees a frozen
+          // screen with no error. This step is non-negotiable.
+          preloadHls.detachMedia();
+          preloadHls.attachMedia(video);
+
+          hlsRef.current = preloadHls;
+          isHlsActive.current = true;
+          hlsWindowEndTs.current = _parseHlsWindowEnd(playbackTarget.hls_url);
+
+          const doSeekAndPlay = () => {
+            video.currentTime = seekOffset;
+            hlsStartOffset.current = video.currentTime;
+            video.play()
+              .then(() => {
+                console.log('[VIDEO] preload swap play() success');
+              })
+              .catch(e => {
+                console.warn('[VIDEO] preload swap play() failed — falling through', e.message);
+                // Hard failure: fall through to normal HLS load so the user
+                // always gets playback even if the swap path fails.
+                loadHls(video, playbackTarget.hls_url, seekOffset);
+              });
+          };
+
+          if (video.readyState >= 1) {
+            doSeekAndPlay();
+          } else {
+            video.addEventListener('loadedmetadata', doSeekAndPlay, { once: true });
+          }
+
+          return () => { destroyHls(); };
+        }
+        // Normal path — no usable preload available, load fresh
+
         loadHls(video, playbackTarget.hls_url, seekOffset);
         return () => { destroyHls(); };
       }
@@ -335,8 +469,11 @@ export default function VideoPlayer({
 
   // Cleanup on unmount
   useEffect(() => {
-    return () => { destroyHls(); };
-  }, [destroyHls]);
+    return () => {
+      destroyHls();
+      destroyHlsPreload();
+    };
+  }, [destroyHls, destroyHlsPreload]);
 
   // Sync muted state to the video element whenever isMuted changes.
   // Also fires after HLS reloads since handleLoadedMetadata re-applies it there.

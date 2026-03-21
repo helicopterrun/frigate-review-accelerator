@@ -161,6 +161,7 @@ export default function App() {
   });
   const [rangeSec, setRangeSec] = useState(8 * 3600);
   const [playbackTarget, setPlaybackTarget] = useState(null);
+  const [preloadTargetTs, setPreloadTargetTs] = useState(null);
   const [health, setHealth] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -270,6 +271,11 @@ export default function App() {
   useEffect(() => { cursorTsRef.current = cursorTs; }, [cursorTs]);
   useEffect(() => { playbackTargetRef.current = playbackTarget; }, [playbackTarget]);
 
+  // TODO: add frontend test — rapid handleSeek calls: verify seekRequestIdRef
+  // increments and only the last-fired response calls setPlaybackTarget.
+  const seekRequestIdRef = useRef(0);
+  const seekTimerRef = useRef(null);
+
   // ── Autoplay refs — all reads/writes in RAF loop; no state to avoid 60fps re-renders ──
   // TODO: verify RAF cleanup cancels animationFrame on unmount (no leak).
   const lastInteractionRef = useRef(Date.now());
@@ -288,6 +294,8 @@ export default function App() {
   // Update near-event cache whenever filteredEvents changes.
   // filteredEvents is stable between fetches (~30s), so this runs infrequently.
   // (defined later — populated once filteredEvents is derived below)
+
+  useEffect(() => () => clearTimeout(seekTimerRef.current), []);
 
   // ─── Autoplay RAF loop ──────────────────────────────────────────────────────
   // Invariant: no state in deps — reads refs only, advances via functional setCursorTs.
@@ -496,23 +504,34 @@ export default function App() {
     setRangeSec(newRangeSec);
   }, []);
 
-  // ─── Seek handler: commits playback, clears hover + snapshot ───
+  // ─── Seek handler: debounced + stale-guarded, clears hover + snapshot ───
   const handleSeek = useCallback(
-    async (ts) => {
-      if (!selectedCamera) return;
+    (ts) => {
       lastInteractionRef.current = Date.now();
       autoplayActiveRef.current = false;
       setCursorTs(ts);
       setActiveEventSnapshot(null);
 
-      try {
-        const target = await fetchPlaybackTarget(selectedCamera, ts);
-        console.log('[APP] setPlaybackTarget from timeline click/seek', target);
-        setPlaybackTarget(target);
-        setError(null);
-      } catch (err) {
-        setError(`Playback failed: ${err.message}`);
-      }
+      clearTimeout(seekTimerRef.current);
+      seekRequestIdRef.current++;
+      const myId = seekRequestIdRef.current;
+      // Capture camera at call time — selectedCamera may change during the
+      // 150ms debounce window if the user switches cameras mid-scrub.
+      const camera = selectedCamera;
+
+      seekTimerRef.current = setTimeout(async () => {
+        if (!camera) return;
+        try {
+          const target = await fetchPlaybackTarget(camera, ts);
+          if (myId !== seekRequestIdRef.current) return; // discard stale
+          console.log('[APP] setPlaybackTarget from timeline click/seek', target);
+          setPlaybackTarget(target);
+          setError(null);
+        } catch (err) {
+          if (myId !== seekRequestIdRef.current) return;
+          setError(`Playback failed: ${err.message}`);
+        }
+      }, 150);
     },
     [selectedCamera]
   );
@@ -527,7 +546,10 @@ export default function App() {
       if (!selectedCamera || !nextSegmentId) return;
       try {
         const info = await fetchSegmentInfo(nextSegmentId);
+        seekRequestIdRef.current++;
+        const myId = seekRequestIdRef.current;
         const target = await fetchPlaybackTarget(selectedCamera, info.start_ts + 0.1);
+        if (myId !== seekRequestIdRef.current) return;
         console.log('[APP] setPlaybackTarget from auto-advance', target);
         setPlaybackTarget(target);
       } catch {
@@ -552,6 +574,11 @@ export default function App() {
   // ─── Playback start: dismiss event snapshot overlay ───
   const handlePlaybackStart = useCallback(() => {
     setActiveEventSnapshot(null);
+  }, []);
+
+  // ─── Preload hint: communicated from VerticalTimeline during slow scrub ───
+  const handlePreloadHint = useCallback((ts) => {
+    setPreloadTargetTs(ts);
   }, []);
 
   // ─── Camera switch ───
@@ -658,7 +685,10 @@ export default function App() {
     const targetTs = target.start_ts ?? target.start_time ?? target.timestamp;
     setCursorTs(targetTs);
     try {
+      seekRequestIdRef.current++;
+      const myId = seekRequestIdRef.current;
       const playTarget = await fetchPlaybackTarget(selectedCamera, targetTs);
+      if (myId !== seekRequestIdRef.current) return;
       console.log('[APP] setPlaybackTarget from event navigation', playTarget);
       setPlaybackTarget(playTarget);
     } catch {}
@@ -990,6 +1020,7 @@ export default function App() {
                 eventSnapshot={activeEventSnapshot}
                 onSeek={handleSeek}
                 onPlaybackStart={handlePlaybackStart}
+                preloadTargetTs={preloadTargetTs}
               />
             </div>
 
@@ -1041,6 +1072,7 @@ export default function App() {
                   const halfWindow = 5 * 60;
                   requestPreviews(selectedCamera, ts - halfWindow, ts + halfWindow).catch(() => {});
                 }}
+                onPreloadHint={handlePreloadHint}
               />
             </div>
 
