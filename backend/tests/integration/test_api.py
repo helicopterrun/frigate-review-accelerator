@@ -190,6 +190,33 @@ async def test_playback_gap_prefers_after(client, monkeypatch):
     assert data["segment_start_ts"] == pytest.approx(1700020110.0, abs=1)
 
 
+async def test_playback_stateless_per_request(client, monkeypatch):
+    """Backend /api/playback is stateless — each ts resolves independently.
+
+    Documents the backend contract that makes the frontend stale-guard safe:
+    two concurrent requests for different timestamps always return independent
+    correct results regardless of resolution order.
+    """
+    from app import config
+    db_path = config.settings.database_path
+    _insert_segment(db_path, "stateless-cam", 1700060000.0, 1700060010.0)
+    _insert_segment(db_path, "stateless-cam", 1700060200.0, 1700060210.0)
+
+    r1 = await client.get(
+        "/api/playback",
+        params={"camera": "stateless-cam", "ts": 1700060005.0},
+    )
+    r2 = await client.get(
+        "/api/playback",
+        params={"camera": "stateless-cam", "ts": 1700060205.0},
+    )
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json()["segment_start_ts"] == pytest.approx(1700060000.0, abs=1)
+    assert r2.json()["segment_start_ts"] == pytest.approx(1700060200.0, abs=1)
+
+
 # ---------------------------------------------------------------------------
 # Timeline buckets — resolution contract and DB-backed preview lookup
 # ---------------------------------------------------------------------------

@@ -144,6 +144,7 @@ export default function VerticalTimeline({
   onPreviewRequest = null,
   isMobile = false,
   timeFormat = '12h',
+  onPreloadHint = null,
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -159,6 +160,14 @@ export default function VerticalTimeline({
   const drawCanvasRef = useRef(null);           // always points to latest draw fn
   const drawReticleOnlyRef = useRef(null);      // always points to latest drawReticleOnly fn
   const canvasSnapshotRef = useRef(null);       // ImageData snapshot saved after layer 8, before reticle
+
+  // TODO: add frontend test — scrubVelocityRef < 0.5 for 120ms fires
+  // onPreloadHint only when isDragging.current is true (not on hover).
+  // lastPreloadTsRef prevents spam: hint only fires when |ts - last| > 2s.
+  const scrubLastYRef = useRef(null);    // { y: number, time: number }
+  const scrubVelocityRef = useRef(0);    // px/ms
+  const scrubIdleTimerRef = useRef(null);
+  const lastPreloadTsRef = useRef(null); // spam suppression
 
   const [dims, setDims] = useState({ w: 215, h: 600 });
 
@@ -715,6 +724,10 @@ export default function VerticalTimeline({
     };
   }, []);
 
+  useEffect(() => {
+    return () => { clearTimeout(scrubIdleTimerRef.current); };
+  }, []);
+
   // ── Scroll-to-pan: inertial physics with velocity + damping ─────────────────
   const decayScroll = useCallback(() => {
     const DAMPING  = 0.88;
@@ -808,13 +821,48 @@ export default function VerticalTimeline({
     []
   );
 
-  const handleMouseMove = useCallback(
-    (e) => {
-      const ts = getTs(e);
-      if (ts != null) debouncedPreviewRequest(ts);
-    },
-    [getTs, debouncedPreviewRequest]
-  );
+  const handleMouseMove = useCallback((e) => {
+    const ts = getTs(e);
+    if (ts != null) debouncedPreviewRequest(ts);
+
+    // Scrub velocity tracking — mouse interaction path only.
+    // This is NOT the scroll/pan velocity system (scrollVelocityRef).
+    // Do not merge these — they serve different purposes.
+    const now = performance.now();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (rect) {
+      const currentY = e.clientY - rect.top;
+      if (scrubLastYRef.current !== null) {
+        const dt = now - scrubLastYRef.current.time;
+        if (dt > 0) {
+          const dy = Math.abs(currentY - scrubLastYRef.current.y);
+          scrubVelocityRef.current = dy / dt;
+        }
+      }
+      scrubLastYRef.current = { y: currentY, time: now };
+    }
+
+    // Intent detection: low velocity + actively dragging → fire preload hint.
+    // Spam guard: only hint if ts has moved more than 2 seconds from the
+    // last hint position, preventing repeated churn on slow movement.
+    if (
+      isDragging.current &&
+      scrubVelocityRef.current < 0.5 &&
+      ts != null &&
+      onPreloadHint
+    ) {
+      clearTimeout(scrubIdleTimerRef.current);
+      scrubIdleTimerRef.current = setTimeout(() => {
+        if (
+          lastPreloadTsRef.current === null ||
+          Math.abs(lastPreloadTsRef.current - ts) > 2
+        ) {
+          lastPreloadTsRef.current = ts;
+          onPreloadHint(ts);
+        }
+      }, 120);
+    }
+  }, [getTs, debouncedPreviewRequest, onPreloadHint]);
 
   // Click = recenter with 250ms ease-out animation.
   // Animation uses refs + rAF — no setState per frame.
@@ -824,6 +872,9 @@ export default function VerticalTimeline({
     (e) => {
       if (!isDragging.current) return;
       isDragging.current = false;
+      scrubLastYRef.current = null;
+      scrubVelocityRef.current = 0;
+      clearTimeout(scrubIdleTimerRef.current);
 
       const ts = getTs(e);
       if (ts == null) return;
@@ -866,6 +917,9 @@ export default function VerticalTimeline({
       scrollRafRef.current = null;
     }
     isDragging.current = false;
+    scrubLastYRef.current = null;
+    scrubVelocityRef.current = 0;
+    clearTimeout(scrubIdleTimerRef.current);
   }, []);
 
   return (
