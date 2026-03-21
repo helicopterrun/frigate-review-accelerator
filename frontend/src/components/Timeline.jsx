@@ -41,13 +41,63 @@ const EVENT_HEIGHT = 14;
 const CURSOR_COLOR = '#ff4444';
 
 const EVENT_COLORS = {
-  person: '#4CAF50',
-  car: '#2196F3',
-  dog: '#FF9800',
-  cat: '#9C27B0',
-  bird: '#8BC34A',
-  default: '#607D8B',
+  person:     '#4CAF50',
+  car:        '#2196F3',
+  truck:      '#1565C0',
+  motorcycle: '#E91E63',
+  bicycle:    '#00BCD4',
+  dog:        '#FF9800',
+  cat:        '#9C27B0',
+  bird:       '#8BC34A',
+  horse:      '#795548',
+  bear:       '#607D8B',
+  deer:       '#A1887F',
+  package:    '#FFC107',
+  default:    '#607D8B',
 };
+
+// ─── Icon map: same set as VerticalTimeline (keep in sync) ──────────────────
+const ICON_PATHS = {
+  person:     `<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>`,
+  car:        `<path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/>`,
+  truck:      `<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>`,
+  motorcycle: `<path d="m18 14-1-3"/><path d="m3 9 6 2a2 2 0 0 1 2-2h2a2 2 0 0 1 1.99 1.81"/><path d="M8 17h3a1 1 0 0 0 1-1 6 6 0 0 1 6-6 1 1 0 0 0 1-1v-.75A5 5 0 0 0 17 5"/><circle cx="19" cy="17" r="3"/><circle cx="5" cy="17" r="3"/>`,
+  bicycle:    `<circle cx="18.5" cy="17.5" r="3.5"/><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="15" cy="5" r="1"/><path d="M12 17.5V14l-3-3 4-3 2 3h2"/>`,
+  dog:        `<circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/>`,
+  cat:        `<circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/>`,
+  bird:       `<path d="M16 7h.01"/><path d="M3.4 18H12a8 8 0 0 0 8-8V7a4 4 0 0 0-7.28-2.3L2 20"/><path d="m20 7 2 .5-2 .5"/><path d="M10 18v3"/><path d="M14 17.75V21"/><path d="M7 18a6 6 0 0 0 3.84-10.61"/>`,
+  horse:      `<circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/>`,
+  bear:       `<circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/>`,
+  deer:       `<circle cx="11" cy="4" r="2"/><circle cx="18" cy="8" r="2"/><circle cx="20" cy="16" r="2"/><path d="M9 10a5 5 0 0 1 5 5v3.5a3.5 3.5 0 0 1-6.84 1.045Q6.52 17.48 4.46 16.84A3.5 3.5 0 0 1 5.5 10Z"/>`,
+  package:    `<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/>`,
+};
+
+const _tlRedrawCallbacks = new Set();
+let _tlIconsLoaded = 0;
+const _TL_ICON_TARGET = Object.keys(ICON_PATHS).length;
+
+function buildIconCanvas(svgPathData, color, size = 12) {
+  const oc = document.createElement('canvas');
+  oc.width = size;
+  oc.height = size;
+  const ctx = oc.getContext('2d');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${svgPathData}</svg>`;
+  const img = new Image();
+  img.src = 'data:image/svg+xml,' + encodeURIComponent(svg);
+  img.onload = () => {
+    ctx.drawImage(img, 0, 0);
+    _tlIconsLoaded++;
+    if (_tlIconsLoaded >= _TL_ICON_TARGET) {
+      for (const cb of _tlRedrawCallbacks) cb();
+    }
+  };
+  return oc;
+}
+
+const ICON_CACHE = new Map();
+for (const [label, pathData] of Object.entries(ICON_PATHS)) {
+  ICON_CACHE.set(label, buildIconCanvas(pathData, EVENT_COLORS[label] ?? EVENT_COLORS.default, 12));
+}
 
 const DRAG_THRESHOLD_PX = 3;
 
@@ -129,7 +179,16 @@ export default function Timeline({
   const [scrubTs, setScrubTs] = useState(null);
   const [mouseDownX, setMouseDownX] = useState(null);
   const [containerWidth, setContainerWidth] = useState(800);
+  const [, _forceIconRedraw] = useState(0);
   const imageCacheRef = useImageCache(frames);
+
+  // Register for icon-load completion so event icons appear on first render
+  // (SVG→Image is async; without this, icons are blank until next redraw).
+  useEffect(() => {
+    const notify = () => _forceIconRedraw(v => v + 1);
+    _tlRedrawCallbacks.add(notify);
+    return () => { _tlRedrawCallbacks.delete(notify); };
+  }, []);
 
   const range = endTs - startTs;
 
@@ -261,15 +320,25 @@ export default function Timeline({
     }
     ctx.restore();
 
-    // 5. Event markers
+    // 5. Event markers — colored bar + 12px icon when bar is wide enough.
+    // Unlisted labels have no ICON_CACHE entry and get bar-only rendering.
     for (const evt of events) {
       const x1 = Math.max(0, tsToX(evt.start_ts));
       const x2 = Math.min(
         containerWidth,
         tsToX(evt.end_ts || evt.start_ts + 5)
       );
+      const barW = Math.max(x2 - x1, 3);
       ctx.fillStyle = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
-      ctx.fillRect(x1, EVENT_Y, Math.max(x2 - x1, 3), EVENT_HEIGHT);
+      ctx.fillRect(x1, EVENT_Y, barW, EVENT_HEIGHT);
+      if (barW >= 14) {
+        const iconCanvas = ICON_CACHE.get(evt.label);
+        if (iconCanvas) {
+          const iconX = x1 + Math.floor((barW - 12) / 2);
+          const iconY = EVENT_Y + Math.floor((EVENT_HEIGHT - 12) / 2);
+          ctx.drawImage(iconCanvas, iconX, iconY, 12, 12);
+        }
+      }
     }
 
     // 6. Time labels
