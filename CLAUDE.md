@@ -367,7 +367,8 @@ Use synchronous `sqlite3` directly in services (they run in thread pool via `run
 Three tiers, processed in order every `scan_interval_sec` (default 30s):
 
 ```
-Tier 0 — On-demand   : segments in _demand_queue (user just opened this window)
+Tier 0 — On-demand   : The on-demand system operates on timestamps, not segments.
+Segments are a storage detail, not a unit of work.
 Tier 1 — Recency     : segments newer than preview_recency_hours (default 48h)
 Tier 2 — Background  : all remaining pending, every BACKGROUND_INTERVAL=10 cycles
 ```
@@ -376,6 +377,49 @@ The `_demand_queue` is an in-process `deque`. **Do not run uvicorn with --worker
 or on-demand requests will silently go to the wrong worker process.
 
 -----
+### Preview data is a cache, not a source of truth
+
+Previews are an opportunistic cache of visual data over time.
+
+- Missing previews are not errors
+- The system must never block on preview availability
+- Playback is always the source of truth for verification
+
+The UI must gracefully handle sparse or partial preview coverage.
+
+### No retry amplification
+
+Preview generation must never escalate work on failure.
+
+A failed preview attempt must not trigger:
+- multiple fallback subprocesses
+- retries across multiple buckets
+- recursive or cascading generation
+
+Failure should degrade gracefully (missing preview), not amplify load.
+
+### Interaction-driven prefetch (future-facing invariant)
+
+Preview generation may be guided by user interaction direction.
+
+When the user is actively scrolling:
+- generation should prioritize timestamps ahead of the cursor direction
+- generation should avoid symmetric expansion around the cursor
+
+This is not required for correctness but is the intended optimization direction.
+
+### Scroll stability invariant
+
+Scroll interaction must never overshoot beyond user control.
+
+- Velocity must decay smoothly
+- Input must remain interruptible at all times
+- The user must always be able to "catch" and stop near a target timestamp
+
+If the user cannot reliably stop near an event, the implementation is incorrect.
+
+Preview generation is driven by time, not storage layout.
+Segments are an implementation detail and must not shape interaction behavior.
 
 ## Key config settings (.env)
 
@@ -393,15 +437,6 @@ CORS_ORIGINS=["http://localhost:5173"]
 ```
 
 -----
-
-## Current production state (March 2026)
-
-- ~1,489,685 segments across 9 cameras
-- 0 previews generated (worker running, recency pass active)
-- Backend stable, frontend stable
-- Admin panel (Ops button, bottom-right) operational
-- HLS VOD playback via Frigate's /api/vod/ API (hls.js in frontend)
-- MP4 segment fallback when Frigate VOD unreachable
 
 -----
 
