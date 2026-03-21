@@ -69,6 +69,23 @@ modify `cursorTs`.
 
 This supports cross-camera reasoning: "What happened at this moment across cameras?"
 
+### Preview generation is demand-driven, not batch-driven.
+
+Previews exist at multiple temporal resolutions:
+
+- coarse (background): 5–10s intervals, full corpus over time
+- interaction (viewport): 1–2s intervals, generated lazily
+- precision (reticle): sub-second, generated on demand
+
+The system must never attempt to generate dense previews for the full corpus.
+
+On-demand preview requests generate at most one frame per request.
+
+Batch extraction of multiple frames per segment is not required for correctness
+and must not be used as a fallback mechanism.
+
+Preview generation must follow user interaction patterns, not segment boundaries.
+
 ### Camera is a filter, not a context switch
 
 Switching cameras MUST NOT change `cursorTs`, `rangeStart`/`rangeEnd`, or zoom level.
