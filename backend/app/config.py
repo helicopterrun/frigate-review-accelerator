@@ -22,7 +22,12 @@ class Settings(BaseSettings):
     preview_interval_sec: int = 2
     preview_width: int = 320
     preview_quality: int = 5  # ffmpeg JPEG quality (1-31, lower = better)
-    preview_workers: int = 4
+    # Number of worker threads for concurrent preview generation.
+    # Keep at 2 on single-iGPU systems — VAAPI does not parallelize
+    # across concurrent ffmpeg processes. The _vaapi_semaphore in
+    # preview_generator.py provides additional protection regardless
+    # of this setting.
+    preview_workers: int = 2
 
     # Preview prioritization
     # Only eagerly generate previews for segments newer than this many hours.
