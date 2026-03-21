@@ -3,11 +3,10 @@
  *
  * v3 layout:
  *   - 100vh flex-column, no scroll
- *   - Single-camera: 2-column layout (VideoPlayer left, VerticalTimeline right)
+ *   - 2-column layout: VideoPlayer left, VerticalTimeline right
  *   - Reticle position (cursorTs) drives preview overlay on VideoPlayer (75ms debounce)
  *   - Click on VerticalTimeline commits playback (handleSeek)
- *   - "Go to" datetime input in controls bar (single-camera mode only)
- *   - SplitView path unchanged
+ *   - "Go to" datetime input in controls bar
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -23,11 +22,9 @@ function useIsMobile(breakpoint = 768) {
   return isMobile;
 }
 import CameraSelector from './components/CameraSelector.jsx';
-import Timeline from './components/Timeline.jsx';
 import VerticalTimeline from './components/VerticalTimeline.jsx';
 import VideoPlayer from './components/VideoPlayer.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
-import SplitView from './components/SplitView.jsx';
 import {
   fetchCameras,
   fetchDensity,
@@ -142,9 +139,6 @@ export default function App() {
   const [opsOpen, setOpsOpen] = useState(false);
   const [cameras, setCameras] = useState([]);
   const [selectedCamera, setSelectedCamera] = useState(null);
-  const [selectedCameras, setSelectedCameras] = useState([]);
-  const [multiMode, setMultiMode] = useState(false);
-
   const [timelineData, setTimelineData] = useState(null);
   const [densityData, setDensityData] = useState(null);
   const [currentEventIndex, setCurrentEventIndex] = useState(null);
@@ -250,11 +244,6 @@ export default function App() {
     try { localStorage.setItem('frigate-time-format', fmt); } catch {}
   }, []);
 
-  // Autoplay toggle — persisted to localStorage, default enabled
-  const [autoplayEnabled, setAutoplayEnabled] = useState(() => {
-    try { return localStorage.getItem('frigate-autoplay-enabled') !== 'false'; } catch { return true; }
-  });
-
   // Label filter state — persisted to localStorage, null means "all"
   const [activeLabels, setActiveLabels] = useState(() => {
     try {
@@ -292,7 +281,8 @@ export default function App() {
   const lastInteractionRef = useRef(Date.now());
   const autoplayActiveRef = useRef(false);
   const autoplayStartRef = useRef(Date.now());
-  const autoplayEnabledRef = useRef(true);   // synced with autoplayEnabled state below
+  // INVARIANT: autoplay is always enabled. The RAF loop always advances the cursor
+  // after AUTOPLAY_DELAY_MS of idle, and always preloads after PRELOAD_DELAY_MS.
   const autoplayRafRef = useRef(null);
   // videoPlayingRef: true when HLS video is actively playing — RAF skips cursor
   // advance so the video drives cursorTs via onTimeUpdate instead.
@@ -311,9 +301,6 @@ export default function App() {
   // TODO: verify pullFactor never drops below 0.2 and cache invalidates on filteredEvents change.
   const nearEventCacheRef = useRef({ sorted: [], event: null });
 
-  // Sync autoplayEnabledRef so the RAF loop (stable effect, no deps) can read it.
-  useEffect(() => { autoplayEnabledRef.current = autoplayEnabled; }, [autoplayEnabled]);
-
   // Update near-event cache whenever filteredEvents changes.
   // filteredEvents is stable between fetches (~30s), so this runs infrequently.
   // (defined later — populated once filteredEvents is derived below)
@@ -328,14 +315,14 @@ export default function App() {
     function tick() {
       const now = Date.now();
       const idleMs = now - lastInteractionRef.current;
-      const autoplayThreshold = autoplayEnabledRef.current ? AUTOPLAY_DELAY_MS : Infinity;
+      const autoplayThreshold = AUTOPLAY_DELAY_MS;
 
       // ── Threshold 1: start background preload ──────────────────────────────
       // Fires once per idle window. The request ID guards against stale responses
       // if the user interacts before the fetch completes.
       // TODO: test preload cancel — preloadRequestRef increment on interaction
       //   discards stale fetchPlaybackTarget response
-      if (idleMs >= PRELOAD_DELAY_MS && autoplayEnabledRef.current && !idlePreloadStartedRef.current) {
+      if (idleMs >= PRELOAD_DELAY_MS && !idlePreloadStartedRef.current) {
         idlePreloadStartedRef.current = true;
         preloadRequestRef.current++;
         const myId = preloadRequestRef.current;
@@ -457,7 +444,7 @@ export default function App() {
   // TODO: add frontend test verifying at most 1 in-flight timeline request
   // exists at any time — debounce + abort should make this hold true.
   useEffect(() => {
-    if (!selectedCamera || multiMode) return;
+    if (!selectedCamera) return;
     const controller = new AbortController();
 
     const timer = setTimeout(async () => {
@@ -480,7 +467,7 @@ export default function App() {
     }, 300);
 
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [selectedCamera, rangeStart, rangeEnd, multiMode]);
+  }, [selectedCamera, rangeStart, rangeEnd]);
 
   // ─── Debounced density fetch (pan-optimized) ───
   // Fires 100ms after range changes to coalesce rapid pan events.
@@ -488,7 +475,7 @@ export default function App() {
   // segments/gaps; this provides lightweight density updates during scrolling.
   // TODO: add frontend test verifying this fires at most once per 100ms burst.
   useEffect(() => {
-    if (!selectedCamera || multiMode) return;
+    if (!selectedCamera) return;
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       try {
@@ -500,7 +487,7 @@ export default function App() {
       }
     }, 100);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [selectedCamera, rangeStart, rangeEnd, rangeSec, multiMode]);
+  }, [selectedCamera, rangeStart, rangeEnd, rangeSec]);
 
   // ─── Derived label lists ───
   const availableLabels = useMemo(() => {
@@ -544,35 +531,13 @@ export default function App() {
     nearEventCacheRef.current = { sorted, event: next };
   }, [filteredEvents]);
 
-  // Step 4 diagnostic: log range vs event timestamps to debug "events not visible" warning.
-  // TODO: remove after confirming events render correctly.
-  useEffect(() => {
-    if (filteredEvents.length === 0) return;
-    const minTs = Math.min(...filteredEvents.map(e => e.start_ts ?? 0));
-    const maxTs = Math.max(...filteredEvents.map(e => e.start_ts ?? 0));
-    const inRange = filteredEvents.filter(e => {
-      const ts = e.start_ts;
-      return ts != null && ts >= rangeStart && ts <= rangeEnd;
-    }).length;
-    console.log('[APP] range/event diagnostic', {
-      rangeStart, rangeEnd, eventCount: filteredEvents.length,
-      minEventTs: minTs, maxEventTs: maxTs, inRangeCount: inRange,
-    });
-  }, [filteredEvents, rangeStart, rangeEnd]);
-
-  // ─── Range change — kept for SplitView backward compat ───
-  const handleRangeChange = useCallback((newStart, newEnd) => {
-    const newRange = newEnd - newStart;
-    if (newRange < MIN_RANGE_SEC || newRange > MAX_RANGE_SEC) return;
-    setRangeSec(newRange);
-    setCursorTs(newStart + newRange / 2);
-  }, []);
 
   // ─── Pan: shift cursorTs by deltaSec, clamping at nowTs() ───
   const handlePan = useCallback((deltaSec) => {
     lastInteractionRef.current = Date.now();
     autoplayActiveRef.current = false;
     preloadRequestRef.current++; // cancel in-flight idle preload
+    idlePreloadStartedRef.current = false; // allow fresh preload on next idle window
     setPreloadTarget(null);
     setCursorTs(prev => Math.min(prev + deltaSec, nowTs()));
   }, []);
@@ -582,6 +547,7 @@ export default function App() {
     lastInteractionRef.current = Date.now();
     autoplayActiveRef.current = false;
     preloadRequestRef.current++; // cancel in-flight idle preload
+    idlePreloadStartedRef.current = false; // allow fresh preload on next idle window
     setPreloadTarget(null);
     if (newRangeSec < MIN_RANGE_SEC || newRangeSec > MAX_RANGE_SEC) return;
     setRangeSec(newRangeSec);
@@ -659,7 +625,7 @@ export default function App() {
   // Happy path: preload was fetched during the 400–1500ms idle window, so the
   // HLS manifest is already buffered. Swap it to the main player for near-instant
   // playback start via VideoPlayer's existing hlsPreloadRef swap path.
-  // Fallback: if preload isn't ready (e.g. autoplayEnabled was off during idle),
+  // Fallback: if preload isn't ready (e.g. cancelled by user interaction),
   // fetch directly. This is the same path as before idle preload was added.
   // TODO: test swap path — preloadTarget promoted to playbackTarget at
   //   autoplayRunning=true triggers existing hlsPreloadRef swap in VideoPlayer
@@ -715,29 +681,6 @@ export default function App() {
     setActiveEventSnapshot(null);
     setCurrentEventIndex(null);
   }, [cameras]);
-
-  // ─── Multi-camera selection ───
-  const handleSelectMany = useCallback((names) => {
-    setSelectedCameras(names);
-    if (names.length >= 2) {
-      setMultiMode(true);
-    } else if (names.length === 0) {
-      setMultiMode(false);
-    }
-  }, []);
-
-  const handleToggleMultiMode = useCallback(() => {
-    setMultiMode((v) => !v);
-    if (multiMode) {
-      setSelectedCameras([]);
-    }
-  }, [multiMode]);
-
-  // ─── Range presets: snap cursorTs to now so reticle shows current time ───
-  const setRange = useCallback((hours) => {
-    setRangeSec(hours * 3600);
-    setCursorTs(nowTs());
-  }, []);
 
   // ─── Deep-link: copy current ts + camera as URL to clipboard ───
   const handleCopyLink = useCallback(() => {
@@ -932,26 +875,18 @@ export default function App() {
 
       {error && <div style={styles.error}>{error}</div>}
 
-      {/* Controls — final layout: Camera → Filters → Events → Auto → Zoom → Goto → Split */}
+      {/* Controls — Camera → Filters → [spacer] → Events → Zoom → Goto */}
       {isMobile ? (
         <div style={{ flexShrink: 0, marginBottom: 8 }}>
           {/* Row 1: Camera (full width) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              {!multiMode ? (
-                <CameraSelector cameras={cameras} selected={selectedCamera} onSelect={handleCameraChange} isMobile={true} />
-              ) : (
-                <CameraSelector cameras={cameras} selectedMany={selectedCameras} onSelectMany={handleSelectMany} multiMode={true} maxSelect={4} isMobile={true} />
-              )}
+              <CameraSelector cameras={cameras} selected={selectedCamera} onSelect={handleCameraChange} isMobile={true} />
             </div>
-            <button
-              onClick={handleToggleMultiMode}
-              style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa', padding: '10px 16px', fontSize: '15px', minHeight: 44, flexShrink: 0 }}
-            >{multiMode ? '◈ Single' : '◈ Split'}</button>
           </div>
 
           {/* Row 2: Filter pills (horizontal scroll) */}
-          {!multiMode && availableLabels.length > 0 && (
+          {availableLabels.length > 0 && (
             <div style={{ overflowX: 'auto', marginBottom: 6, paddingBottom: 2 }}>
               <LabelFilterPills
                 availableLabels={availableLabels}
@@ -964,7 +899,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Row 3: Event nav + autoplay + zoom presets (horizontal scroll, no goto) */}
+          {/* Row 3: Event nav + time format (horizontal scroll) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', overflowX: 'auto' }}>
             {navEvents.length > 0 && (
               <>
@@ -975,12 +910,6 @@ export default function App() {
                 </div>
                 <button onClick={() => { setImportantOnly(v => !v); setCurrentEventIndex(null); }} style={{ ...styles.iconBtn, borderColor: importantOnly ? '#4dd0e1' : '#333', color: importantOnly ? '#4dd0e1' : '#666', background: importantOnly ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', flexShrink: 0 }} title="Important only">⚡</button>
               </>
-            )}
-            {!multiMode && (
-              <button
-                onClick={() => { setAutoplayEnabled(v => { const next = !v; try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {} if (!next) autoplayActiveRef.current = false; return next; }); }}
-                style={{ ...styles.iconBtn, borderColor: autoplayEnabled ? '#4dd0e1' : '#333', color: autoplayEnabled ? '#4dd0e1' : '#666', background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', fontSize: 11, flexShrink: 0 }}
-              >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
             )}
             <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden', flexShrink: 0, minHeight: 32 }}>
               {['12h', '24h'].map((fmt) => (
@@ -1000,23 +929,16 @@ export default function App() {
                 >{fmt}</button>
               ))}
             </div>
-            {[1, 4, 8, 24].map((h) => (
-              <button key={h} onClick={() => setRange(h)} style={{ ...styles.rangeBtn, padding: '10px 16px', fontSize: '15px', minHeight: 44, flexShrink: 0 }}>{h === 24 ? '1d' : `${h}h`}</button>
-            ))}
           </div>
         </div>
       ) : (
-        /* Desktop: single row — Camera → Filters → [spacer] → Events → Auto → Zoom → Goto → Split */
+        /* Desktop: single row — Camera → Filters → [spacer] → Events → Zoom → Goto */
         <div style={styles.controls}>
           {/* 1. Camera */}
-          {!multiMode ? (
-            <CameraSelector cameras={cameras} selected={selectedCamera} onSelect={handleCameraChange} />
-          ) : (
-            <CameraSelector cameras={cameras} selectedMany={selectedCameras} onSelectMany={handleSelectMany} multiMode={true} maxSelect={4} />
-          )}
+          <CameraSelector cameras={cameras} selected={selectedCamera} onSelect={handleCameraChange} />
 
           {/* 2. Filter pills — inline, no "Filter:" label */}
-          {!multiMode && availableLabels.length > 0 && (
+          {availableLabels.length > 0 && (
             <LabelFilterPills
               availableLabels={availableLabels}
               activeLabels={activeLabels}
@@ -1043,15 +965,6 @@ export default function App() {
           {/* Settings group: separator from navigation group */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, borderLeft: '1px solid #2a2d37', marginLeft: 8, paddingLeft: 8 }}>
 
-            {/* 4. Autoplay toggle */}
-            {!multiMode && (
-              <button
-                onClick={() => { setAutoplayEnabled(v => { const next = !v; try { localStorage.setItem('frigate-autoplay-enabled', String(next)); } catch {} if (!next) autoplayActiveRef.current = false; return next; }); }}
-                title={autoplayEnabled ? 'Autoplay on — click to pause' : 'Autoplay off — click to enable'}
-                style={{ ...styles.iconBtn, borderColor: autoplayEnabled ? '#4dd0e1' : '#333', color: autoplayEnabled ? '#4dd0e1' : '#666', background: autoplayEnabled ? 'rgba(77,208,225,0.1)' : 'rgba(255,255,255,0.04)', fontSize: 12 }}
-              >{autoplayEnabled ? '▶ Auto' : '⏸ Auto'}</button>
-            )}
-
             {/* 5. Time format toggle */}
             <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
               {['12h', '24h'].map((fmt) => (
@@ -1071,56 +984,48 @@ export default function App() {
               ))}
             </div>
 
-            {/* 6. Zoom presets */}
-            <div style={styles.rangeButtons}>
-              {[1, 4, 8, 24].map((h) => (
-                <button key={h} onClick={() => setRange(h)} style={styles.rangeBtn}>{h === 24 ? '1d' : `${h}h`}</button>
+            {/* 4. Time format toggle */}
+            <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
+              {['12h', '24h'].map((fmt) => (
+                <button
+                  key={fmt}
+                  onClick={() => handleTimeFormatToggle(fmt)}
+                  style={{
+                    background: timeFormat === fmt ? '#2a3a5c' : '#1a1d27',
+                    border: 'none',
+                    color: timeFormat === fmt ? '#90c8f0' : '#666',
+                    padding: '4px 10px',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                  }}
+                >{fmt}</button>
               ))}
             </div>
 
-            {/* 7. Goto — single-camera only */}
-            {!multiMode && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ color: '#666', fontSize: 13 }}>Go to:</span>
-                <input
-                  type="datetime-local"
-                  value={gotoValue}
-                  onChange={(e) => setGotoValue(e.target.value)}
-                  style={{ colorScheme: 'dark', background: '#1a1d27', border: '1px solid #333', color: '#aaa', padding: '3px 6px', borderRadius: 4, fontSize: 13 }}
-                />
-                <button onClick={handleGoto} style={styles.rangeBtn}>Go</button>
-              </div>
-            )}
+            {/* 5. Goto */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ color: '#666', fontSize: 13 }}>Go to:</span>
+              <input
+                type="datetime-local"
+                value={gotoValue}
+                onChange={(e) => setGotoValue(e.target.value)}
+                style={{ colorScheme: 'dark', background: '#1a1d27', border: '1px solid #333', color: '#aaa', padding: '3px 6px', borderRadius: 4, fontSize: 13 }}
+              />
+              <button onClick={handleGoto} style={styles.rangeBtn}>Go</button>
+            </div>
 
-            {/* 8. Copy Link — single-camera, desktop only */}
-            {!multiMode && (
-              <button onClick={handleCopyLink} style={styles.rangeBtn} title="Copy link to current position">
-                🔗 Link
-              </button>
-            )}
-
-            {/* 9. Split */}
-            <button
-              onClick={handleToggleMultiMode}
-              style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa' }}
-            >{multiMode ? '◈ Single' : '◈ Split'}</button>
+            {/* 6. Copy Link */}
+            <button onClick={handleCopyLink} style={styles.rangeBtn} title="Copy link to current position">
+              🔗 Link
+            </button>
 
           </div>
         </div>
       )}
 
-      {/* Main content */}
-      {multiMode && selectedCameras.length >= 2 ? (
-        /* ── Split view (unchanged) ── */
-        <SplitView
-          cameras={selectedCameras}
-          rangeStart={rangeStart}
-          rangeEnd={rangeEnd}
-          onRangeChange={handleRangeChange}
-        />
-      ) : !multiMode ? (
-        /* ── Single-camera: 2-column layout ── */
-        <div style={{
+      {/* Main content — single-camera layout */}
+      <div style={{
           ...styles.singleLayout,
           flexDirection: isMobile ? 'column' : 'row',
           overflow: 'hidden',
@@ -1203,12 +1108,6 @@ export default function App() {
             </div>
           </div>
         </div>
-      ) : (
-        /* ── Split mode: not enough cameras selected ── */
-        <div style={styles.splitHint}>
-          Select 2–4 cameras above to enable split view.
-        </div>
-      )}
 
       <AdminPanel open={opsOpen} onClose={() => setOpsOpen(false)} />
     </div>
@@ -1253,7 +1152,6 @@ const styles = {
     flexWrap: 'wrap',
     flexShrink: 0,
   },
-  rangeButtons: { display: 'flex', gap: 4 },
   rangeBtn: {
     background: '#1a1d27',
     border: '1px solid #333',
@@ -1324,13 +1222,4 @@ const styles = {
     fontFamily: 'monospace',
   },
   loading: { color: '#888', textAlign: 'center', paddingTop: 100, fontSize: 16 },
-  splitHint: {
-    textAlign: 'center',
-    color: '#555',
-    fontSize: 13,
-    padding: '40px 0',
-    border: '1px dashed #2a2d37',
-    borderRadius: 6,
-    marginTop: 12,
-  },
 };
