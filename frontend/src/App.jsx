@@ -150,7 +150,15 @@ export default function App() {
   // the list from a /api/config endpoint in Phase 2 instead of hardcoding.
   const [importantOnly, setImportantOnly] = useState(false);
   const [previewFrames, setPreviewFrames] = useState([]);
-  const [cursorTs, setCursorTs] = useState(() => nowTs());
+  // TODO: test URL param ?ts=N sets initial cursorTs to N
+  // TODO: test ?ts=invalid falls back to nowTs()
+  // TODO: test ?camera=X sets selectedCamera when camera exists in list
+  // TODO: test ?camera=nonexistent falls back to cams[0]
+  const [cursorTs, setCursorTs] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ts = parseFloat(params.get('ts'));
+    return Number.isFinite(ts) && ts > 0 ? ts : nowTs();
+  });
   const [rangeSec, setRangeSec] = useState(8 * 3600);
   const [playbackTarget, setPlaybackTarget] = useState(null);
   const [health, setHealth] = useState(null);
@@ -353,7 +361,11 @@ export default function App() {
         // verifies the 30s health poll does NOT reset selectedCamera when one
         // is already active. See CLAUDE.md "Example prompt" for context.
         if (cams.length > 0) {
-          setSelectedCamera(prev => prev ?? cams[0].name);
+          const urlCamera = new URLSearchParams(window.location.search).get('camera');
+          const initial = urlCamera && cams.find(c => c.name === urlCamera)
+            ? urlCamera
+            : null;
+          setSelectedCamera(prev => prev ?? initial ?? cams[0].name);
         }
         setError(null);
       } catch (err) {
@@ -581,6 +593,16 @@ export default function App() {
     setRangeSec(hours * 3600);
     setCursorTs(nowTs());
   }, []);
+
+  // ─── Deep-link: copy current ts + camera as URL to clipboard ───
+  const handleCopyLink = useCallback(() => {
+    const params = new URLSearchParams({
+      ts: Math.round(cursorTs).toString(),
+      camera: selectedCamera,
+    });
+    const url = `${window.location.origin}${window.location.pathname}?${params}`;
+    navigator.clipboard.writeText(url).catch(() => {});
+  }, [cursorTs, selectedCamera]);
 
   // ─── "Go to" handler: recenter view on ts, rangeSec unchanged ───
   const handleGoto = useCallback(() => {
@@ -921,7 +943,14 @@ export default function App() {
               </div>
             )}
 
-            {/* 8. Split */}
+            {/* 8. Copy Link — single-camera, desktop only */}
+            {!multiMode && (
+              <button onClick={handleCopyLink} style={styles.rangeBtn} title="Copy link to current position">
+                🔗 Link
+              </button>
+            )}
+
+            {/* 9. Split */}
             <button
               onClick={handleToggleMultiMode}
               style={{ ...styles.rangeBtn, borderColor: multiMode ? '#2196F3' : '#333', color: multiMode ? '#2196F3' : '#aaa' }}

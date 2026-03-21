@@ -114,7 +114,7 @@ async def _process_scheduler_jobs(jobs: list) -> int:
 
             for job in cam_jobs:
                 segment = next(
-                    (r for r in rows if r[2] <= job.bucket_ts <= r[3]),
+                    (r for r in rows if r["start_ts"] <= job.bucket_ts <= r["end_ts"]),
                     None,
                 )
                 if segment is None:
@@ -125,12 +125,12 @@ async def _process_scheduler_jobs(jobs: list) -> int:
                 frames = await loop.run_in_executor(
                     None,
                     lambda s=segment, j=job: generate_previews_for_segment(
-                        segment_path=s[5],
-                        camera=s[1],
-                        start_ts=s[2],
-                        end_ts=s[3],
-                        duration=s[4],
-                        segment_id=s[0],
+                        segment_path=s["path"],
+                        camera=s["camera"],
+                        start_ts=s["start_ts"],
+                        end_ts=s["end_ts"],
+                        duration=s["duration"],
+                        segment_id=s["id"],
                         target_bucket_ts=j.bucket_ts,
                     ),
                 )
@@ -145,7 +145,7 @@ async def _process_scheduler_jobs(jobs: list) -> int:
                     )
                 await db.execute(
                     "UPDATE segments SET previews_generated = 1 WHERE id = ?",
-                    (segment[0],),
+                    (segment["id"],),
                 )
                 await db.commit()
                 processed += 1
