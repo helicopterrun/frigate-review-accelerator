@@ -113,6 +113,27 @@ reticle_time = displayCursorRef.current
 Do not give the reticle its own state or allow it to get out of sync with
 `cursorTs`.
 
+### Scroll interaction model (VerticalTimeline.jsx)
+
+Scroll input is interpreted as velocity, not position. The implementation in
+`VerticalTimeline.jsx` uses `scrollVelocityRef` + `decayScroll` with a RAF loop.
+
+Key constants:
+- `DAMPING = 0.88` per frame
+- `K = 0.22` zoom-aware sensitivity multiplier (seconds-per-pixel scaled)
+- delta normalized to 40 max before accumulation
+- velocity capped at `range * 0.15` for decay stability
+
+Required behavior — do not regress:
+- Small input -> precise movement
+- Large input -> momentum + glide
+- Release -> smooth deceleration
+- New input -> cancels existing decay (`cancelAnimationFrame` before accumulating)
+- Sensitivity scales with `secondsPerPixel` — zoomed in is slower and more precise
+
+`Timeline.jsx` (horizontal, used in SplitView) uses scroll-to-zoom, not
+scroll-to-pan. That is correct behavior — do not change it.
+
 ### No backend coupling in interaction loops
 
 Frontend interaction must NOT trigger database queries, ffmpeg, or filesystem reads.
@@ -163,28 +184,12 @@ Must be visible whenever events exist. Must not be hidden or deprioritized.
 Must jump to the event timestamp, stop autoplay immediately, and cancel any
 active scroll motion.
 
-### Scroll interaction — current state and vNEXT intent
-
-**Current implementation:** Timeline.jsx maps scroll delta directly to time
-position. This works but produces non-physical feel, particularly across zoom
-levels where sensitivity should differ.
-
-**vNEXT design intent (not yet implemented, not yet scheduled):**
-The scroll model should be physics-based — velocity accumulation, damping, and
-RAF-based integration — so that the timeline feels like a physical object being
-moved rather than a control being adjusted. Small input should produce precise
-movement; large input should produce momentum and glide; release should decelerate
-smoothly; new input should cancel existing motion cleanly.
-
-This is a design direction, not a current invariant. Do not implement it
-speculatively. When this work is scheduled it will be broken out as a named
-feature with its own PR scope.
-
 ### Sensitivity scales with zoom
 
-All motion must scale with `secondsPerPixel`.
-Zoomed in -> slower, more precise. Zoomed out -> faster.
-If zoom levels feel identical in motion speed, the scaling is broken.
+All motion scales with `secondsPerPixel`. This is enforced in `VerticalTimeline.jsx`
+via the `K * secondsPerPixel` sensitivity calculation. Zoomed in -> slower, more
+precise. Zoomed out -> faster. If zoom levels feel identical in motion speed, the
+scaling is broken.
 
 ### Precision requirement
 
@@ -205,7 +210,7 @@ Event markers must always be visually dominant. If events are difficult to see,
 the visualization is incorrect.
 
 No per-event DOM nodes. Timeline rendering is canvas-based (already enforced
-in Timeline.jsx — do not regress this).
+in both Timeline.jsx and VerticalTimeline.jsx — do not regress this).
 
 ### No silent rendering failures
 
@@ -216,7 +221,7 @@ If data exists but nothing renders, log a warning. Examples:
 ### Time format is display-only
 
 12h / 24h toggle affects display only. Never affects timestamps or internal logic.
-Default = 12h. No persistence required — resets to 12h on page load.
+Default = 12h. No persistence — resets to 12h on page load.
 
 -----
 
@@ -260,13 +265,15 @@ frigate-review-accelerator/
     src/
       App.jsx                 # All state lives here. Single source of truth.
       components/
-        Timeline.jsx          # Canvas-only rendering. HOVER/DRAG/RELEASE state machine.
+        Timeline.jsx          # Canvas-only rendering. Scroll = zoom. HOVER/DRAG/RELEASE state machine.
+        VerticalTimeline.jsx  # Canvas-only rendering. Scroll = pan (velocity model). Fixed reticle.
         VideoPlayer.jsx       # Receives PlaybackTarget prop, never does segment math
         CameraSelector.jsx
         AdminPanel.jsx        # SSE log viewer + restart/update/pull buttons
       utils/
         api.js                # All fetch calls. One function per endpoint.
         time.js               # Timestamp formatting helpers
+        constants.js          # RETICLE_FRACTION and other shared constants
   scripts/
     update.sh                 # git pull + pip install + npm install
     restart.sh                # Stop/start uvicorn + vite, manages logs/ and .pids/
@@ -516,14 +523,6 @@ When examples are needed, use placeholders.
 4. **Deep-link / query-param time targeting** — Allow cursorTs to be set via URL
    parameter on load, overriding the default nowTs() initialization. Required for
    direct event linking and future notification integrations.
-
-## vNEXT design intent (unscheduled)
-
-**Physics-based scroll** — Replace direct delta->time mapping in Timeline.jsx with
-velocity accumulation + RAF-based integration. The goal is for the timeline to feel
-like a physical object in motion rather than a control being adjusted. This is a
-design direction that has not been broken into implementation tasks. Do not implement
-it speculatively; it will be scoped as a named feature when prioritized.
 
 -----
 
