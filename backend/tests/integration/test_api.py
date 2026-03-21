@@ -454,16 +454,20 @@ async def test_worker_scheduler_jobs_row_name_access(test_app, monkeypatch):
 
     called_with = {}
 
-    def fake_generate(segment_path, camera, start_ts, end_ts, duration, segment_id, target_bucket_ts):
+    def fake_extract(camera, ts, width, quality, segment=None):
         called_with.update(dict(
-            segment_path=segment_path, camera=camera,
-            start_ts=start_ts, end_ts=end_ts,
-            duration=duration, segment_id=segment_id,
+            camera=camera,
+            ts=ts,
+            segment_id=segment["id"] if segment else None,
+            segment_path=segment["path"] if segment else None,
+            start_ts=segment["start_ts"] if segment else None,
+            end_ts=segment["end_ts"] if segment else None,
+            duration=segment["duration"] if segment else None,
         ))
-        return []  # no frames — we just want to verify the call signature
+        return None  # no frame — we just want to verify the call signature
 
     monkeypatch.setattr("app.services.worker.get_db", mock_get_db)
-    monkeypatch.setattr("app.services.worker.generate_previews_for_segment", fake_generate)
+    monkeypatch.setattr("app.services.worker.extract_preview_frame", fake_extract)
 
     await _process_scheduler_jobs(jobs)
 

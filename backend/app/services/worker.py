@@ -3,18 +3,20 @@
 Priority model (three tiers):
 
   Tier 0 — On-demand
-    Segments explicitly requested by the frontend (user opened a camera or
-    changed the time range). Drained every worker cycle before anything else.
+    Individual bucket timestamps explicitly requested by the frontend (user
+    opened a camera or changed the time range). Drained every worker cycle
+    before anything else.
 
   Tier 1 — Recency window
-    Segments newer than preview_recency_hours (default 48h). Processed every
-    cycle at limit=100.
+    Segments newer than preview_recency_hours (default 48h). One midpoint
+    frame per segment, processed every cycle at limit=50.
 
   Tier 2 — Background crawl
-    All remaining pending segments. Runs every BACKGROUND_INTERVAL cycles at
-    a small batch size (default 20).
+    All remaining pending segments. One midpoint frame per segment. Runs
+    every BACKGROUND_INTERVAL cycles at a small batch size (default 20).
 
 Additional jobs:
+  - Scheduler jobs: drain PreviewScheduler priority queue (viewport-driven)
   - Event sync: poll Frigate API for new events, runs every cycle after indexing
   - Retention cleanup: delete old previews, runs once daily
 
@@ -29,9 +31,10 @@ from collections import deque
 from app.config import settings
 from app.models.database import get_db
 from app.services.indexer import index_segments_async
-from app.services.preview_generator import process_pending_async, delete_old_previews_async, generate_previews_for_segment
+from app.services.preview_generator import extract_preview_frame, delete_old_previews_async
 from app.services.event_sync import sync_frigate_events
 from app.services.preview_scheduler import get_scheduler
+from app.services.time_index import get_time_index
 
 log = logging.getLogger(__name__)
 
@@ -41,9 +44,9 @@ _worker_task: asyncio.Task | None = None
 # At scan_interval_sec=30 and BACKGROUND_INTERVAL=3, that's every ~90 seconds.
 BACKGROUND_INTERVAL = 3
 
-# On-demand queue: (camera, start_ts, end_ts) tuples pushed by the preview
-# router when the frontend signals which time window it needs right now.
-_demand_queue: deque[tuple[str, float, float]] = deque(maxlen=50)
+# On-demand queue: (camera, bucket_ts) pairs pushed by the preview router
+# when the frontend signals which timestamps it needs right now.
+_demand_queue: deque[tuple[str, float]] = deque(maxlen=50)
 
 # Last time retention cleanup ran (Unix timestamp)
 _last_cleanup_ts: float = 0.0
@@ -51,30 +54,161 @@ CLEANUP_INTERVAL_SEC = 86400  # once daily
 
 
 def enqueue_preview_request(camera: str, start_ts: float, end_ts: float) -> None:
-    """Queue an on-demand preview request for a specific time window."""
-    _demand_queue.append((camera, start_ts, end_ts))
+    """Queue on-demand preview requests for a specific time window.
+
+    Expands the window into individual bucket timestamps at enqueue time.
+    The deque maxlen=50 provides natural backpressure.
+    """
+    idx = get_time_index()
+    for b in idx.buckets_in_range(start_ts, end_ts):
+        _demand_queue.append((camera, b))
     log.debug("On-demand preview queued: %s %.0f–%.0f", camera, start_ts, end_ts)
 
 
 async def _process_demand_queue() -> int:
-    """Tier 0: drain the on-demand queue."""
+    """Tier 0: drain the on-demand queue — one frame per bucket timestamp."""
     if not _demand_queue:
         return 0
 
     total = 0
+    loop = asyncio.get_running_loop()
+
     while _demand_queue:
-        camera, start_ts, end_ts = _demand_queue.popleft()
-        count = await process_pending_async(
-            limit=30,
-            min_start_ts=start_ts,
-        )
-        total += count
-        log.debug(
-            "On-demand processed %d segments for %s %.0f–%.0f",
-            count, camera, start_ts, end_ts,
+        camera, bucket_ts = _demand_queue.popleft()
+
+        frame = await loop.run_in_executor(
+            None,
+            lambda c=camera, b=bucket_ts: extract_preview_frame(
+                camera=c,
+                ts=b,
+                width=settings.preview_width,
+                quality=settings.preview_quality,
+            ),
         )
 
+        if frame:
+            async with get_db() as db:
+                await db.execute(
+                    """INSERT OR IGNORE INTO previews
+                       (camera, ts, segment_id, image_path, width, height)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (frame["camera"], frame["ts"], frame["segment_id"],
+                     frame["image_path"], frame["width"], frame["height"]),
+                )
+                await db.commit()
+            total += 1
+
     return total
+
+
+async def _run_recency_pass(limit: int = 50) -> int:
+    """Tier 1: generate one midpoint preview per recently-added segment."""
+    recency_cutoff = time.time() - settings.preview_recency_hours * 3600
+    async with get_db() as db:
+        rows = await db.execute_fetchall(
+            """SELECT id, camera, start_ts, end_ts, duration, path
+               FROM segments
+               WHERE previews_generated = 0
+                 AND start_ts >= ?
+               ORDER BY start_ts DESC
+               LIMIT ?""",
+            (recency_cutoff, limit),
+        )
+
+    processed = 0
+    loop = asyncio.get_running_loop()
+    idx = get_time_index()
+
+    for row in rows:
+        segment = {
+            "id": row[0], "camera": row[1], "start_ts": row[2],
+            "end_ts": row[3], "duration": row[4], "path": row[5],
+        }
+        midpoint = segment["start_ts"] + segment["duration"] / 2
+        bucket_ts = idx.bucket_ts(midpoint)
+
+        frame = await loop.run_in_executor(
+            None,
+            lambda s=segment, b=bucket_ts: extract_preview_frame(
+                camera=s["camera"],
+                ts=b,
+                width=settings.preview_width,
+                quality=settings.preview_quality,
+                segment=s,
+            ),
+        )
+
+        async with get_db() as db:
+            if frame:
+                await db.execute(
+                    """INSERT OR IGNORE INTO previews
+                       (camera, ts, segment_id, image_path, width, height)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (frame["camera"], frame["ts"], frame["segment_id"],
+                     frame["image_path"], frame["width"], frame["height"]),
+                )
+            await db.execute(
+                "UPDATE segments SET previews_generated = 1 WHERE id = ?",
+                (segment["id"],),
+            )
+            await db.commit()
+        processed += 1
+
+    return processed
+
+
+async def _run_background_pass(limit: int = 20) -> int:
+    """Tier 2: generate one midpoint preview per any pending segment."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall(
+            """SELECT id, camera, start_ts, end_ts, duration, path
+               FROM segments
+               WHERE previews_generated = 0
+               ORDER BY start_ts DESC
+               LIMIT ?""",
+            (limit,),
+        )
+
+    processed = 0
+    loop = asyncio.get_running_loop()
+    idx = get_time_index()
+
+    for row in rows:
+        segment = {
+            "id": row[0], "camera": row[1], "start_ts": row[2],
+            "end_ts": row[3], "duration": row[4], "path": row[5],
+        }
+        midpoint = segment["start_ts"] + segment["duration"] / 2
+        bucket_ts = idx.bucket_ts(midpoint)
+
+        frame = await loop.run_in_executor(
+            None,
+            lambda s=segment, b=bucket_ts: extract_preview_frame(
+                camera=s["camera"],
+                ts=b,
+                width=settings.preview_width,
+                quality=settings.preview_quality,
+                segment=s,
+            ),
+        )
+
+        async with get_db() as db:
+            if frame:
+                await db.execute(
+                    """INSERT OR IGNORE INTO previews
+                       (camera, ts, segment_id, image_path, width, height)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (frame["camera"], frame["ts"], frame["segment_id"],
+                     frame["image_path"], frame["width"], frame["height"]),
+                )
+            await db.execute(
+                "UPDATE segments SET previews_generated = 1 WHERE id = ?",
+                (segment["id"],),
+            )
+            await db.commit()
+        processed += 1
+
+    return processed
 
 
 async def _process_scheduler_jobs(jobs: list) -> int:
@@ -82,7 +216,7 @@ async def _process_scheduler_jobs(jobs: list) -> int:
 
     Groups jobs by camera, issues a single bounded DB query per camera group,
     then resolves each job to its segment in memory.  Calls
-    generate_previews_for_segment with target_bucket_ts so at most one ffmpeg
+    extract_preview_frame with the pre-resolved segment so at most one ffmpeg
     invocation fires per job.
     """
     if not jobs:
@@ -113,35 +247,37 @@ async def _process_scheduler_jobs(jobs: list) -> int:
             )
 
             for job in cam_jobs:
-                segment = next(
+                seg_row = next(
                     (r for r in rows if r["start_ts"] <= job.bucket_ts <= r["end_ts"]),
                     None,
                 )
-                if segment is None:
+                if seg_row is None:
                     continue
 
+                segment = {
+                    "id": seg_row["id"], "camera": seg_row["camera"],
+                    "start_ts": seg_row["start_ts"], "end_ts": seg_row["end_ts"],
+                    "duration": seg_row["duration"], "path": seg_row["path"],
+                }
+
                 # ffmpeg runs in executor — do not block the event loop
-                # target_bucket_ts ensures exactly one ffmpeg call per job
-                frames = await loop.run_in_executor(
+                frame = await loop.run_in_executor(
                     None,
-                    lambda s=segment, j=job: generate_previews_for_segment(
-                        segment_path=s["path"],
+                    lambda s=segment, j=job: extract_preview_frame(
                         camera=s["camera"],
-                        start_ts=s["start_ts"],
-                        end_ts=s["end_ts"],
-                        duration=s["duration"],
-                        segment_id=s["id"],
-                        target_bucket_ts=j.bucket_ts,
+                        ts=j.bucket_ts,
+                        width=settings.preview_width,
+                        quality=settings.preview_quality,
+                        segment=s,
                     ),
                 )
-                if frames:
-                    await db.executemany(
+                if frame:
+                    await db.execute(
                         """INSERT OR IGNORE INTO previews
                            (camera, ts, segment_id, image_path, width, height)
                            VALUES (?, ?, ?, ?, ?, ?)""",
-                        [(f["camera"], f["ts"], f["segment_id"],
-                          f["image_path"], f["width"], f["height"])
-                         for f in frames],
+                        (frame["camera"], frame["ts"], frame["segment_id"],
+                         frame["image_path"], frame["width"], frame["height"]),
                     )
                 await db.execute(
                     "UPDATE segments SET previews_generated = 1 WHERE id = ?",
@@ -166,7 +302,7 @@ def get_worker_status() -> dict:
 
 
 async def _worker_loop():
-    """Main worker loop — index → event sync → on-demand → recency → background → cleanup."""
+    """Main worker loop — index → event sync → scheduler → on-demand → recency → background → cleanup."""
     global _last_cleanup_ts
 
     log.info(
@@ -210,32 +346,25 @@ async def _worker_loop():
             demand_count = await _process_demand_queue()
             if demand_count:
                 log.info(
-                    "On-demand pass: generated previews for %d segments",
+                    "On-demand pass: generated %d previews",
                     demand_count,
                 )
 
             # ── Tier 1: recency window ──────────────────────────────────────
-            recency_cutoff = time.time() - settings.preview_recency_hours * 3600
-            recent_count = await process_pending_async(
-                limit=50,
-                min_start_ts=recency_cutoff,
-            )
+            recent_count = await _run_recency_pass(limit=50)
             if recent_count:
                 log.info(
-                    "Recency pass: generated previews for %d segments (last %dh)",
+                    "Recency pass: processed %d segments (last %dh)",
                     recent_count,
                     settings.preview_recency_hours,
                 )
 
             # ── Tier 2: background crawl (every BACKGROUND_INTERVAL cycles) ─
             if settings.preview_background_enabled and cycle % BACKGROUND_INTERVAL == 0:
-                bg_count = await process_pending_async(
-                    limit=settings.preview_background_batch,
-                    min_start_ts=None,
-                )
+                bg_count = await _run_background_pass(limit=settings.preview_background_batch)
                 if bg_count:
                     log.info(
-                        "Background pass: generated previews for %d segments",
+                        "Background pass: processed %d segments",
                         bg_count,
                     )
 
