@@ -97,7 +97,7 @@ const EVENT_COLORS = {
   car: '#2196F3',
   dog: '#FF9800',
   cat: '#9C27B0',
-  default: '#607D8B',
+  default: '#ffcc00',
 };
 
 /** Return the ZOOM_STOPS index whose value is nearest to the given range. */
@@ -407,12 +407,12 @@ export default function VerticalTimeline({
     // or wiring bug — do not suppress them here.
     //
     // TODO: extract _labelCollisionFilter(events, reticleY, tsToY) for unit testing.
-    const tickBarStart = barStart + barW * 0.2;
-    const tickBarEnd = barStart + barW * 0.8;
+    const tickBarStart = barStart + barW * 0.1;
+    const tickBarEnd   = barStart + barW * 0.9;
     const readingZoneEvents = [];
 
     let renderedEventCount = 0;
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 2;
     ctx.setLineDash([]);
     for (const evt of events) {
       // Timestamp field guard: Frigate events use start_ts in the local
@@ -423,7 +423,7 @@ export default function VerticalTimeline({
       if (ts == null) continue;
 
       const y = tsToY(ts);
-      if (y < -2 || y > h + 2) continue;
+      if (y < -10 || y > h + 10) continue;
 
       renderedEventCount++;
       const distFromReticle = Math.abs(y - reticleY);
@@ -436,7 +436,7 @@ export default function VerticalTimeline({
         console.warn('[VerticalTimeline] Unknown event label:', evt.label);
       }
 
-      ctx.globalAlpha = distFromReticle <= 40 ? 0.9 : 0.6;
+      ctx.globalAlpha = distFromReticle <= 60 ? 1.0 : 0.75;
       ctx.strokeStyle = color;
       ctx.beginPath();
       ctx.moveTo(tickBarStart, y);
@@ -450,13 +450,12 @@ export default function VerticalTimeline({
     ctx.globalAlpha = 1.0;
 
     if (events.length > 0 && renderedEventCount === 0) {
-      console.warn('[VerticalTimeline] Events present but no markers rendered', {
+      console.warn('[VerticalTimeline] Events present but not visible', {
         eventCount: events.length,
         startTs,
         endTs,
         minEventTs: Math.min(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
         maxEventTs: Math.max(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
-        sampleEvent: events[0],
       });
     }
 

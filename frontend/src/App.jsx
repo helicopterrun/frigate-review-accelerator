@@ -655,9 +655,10 @@ export default function App() {
 
     if (!target) return;
 
-    setCursorTs(target.start_ts);
+    const targetTs = target.start_ts ?? target.start_time ?? target.timestamp;
+    setCursorTs(targetTs);
     try {
-      const playTarget = await fetchPlaybackTarget(selectedCamera, target.start_ts);
+      const playTarget = await fetchPlaybackTarget(selectedCamera, targetTs);
       console.log('[APP] setPlaybackTarget from event navigation', playTarget);
       setPlaybackTarget(playTarget);
     } catch {}
@@ -817,9 +818,9 @@ export default function App() {
 
           {/* Row 3: Event nav + autoplay + zoom presets (horizontal scroll, no goto) */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'nowrap', overflowX: 'auto' }}>
-            {!multiMode && navEvents.length > 0 && (
+            {navEvents.length > 0 && (
               <>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 6, padding: '6px 10px', fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#e0e0e0', flexShrink: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 6, padding: '6px 10px', fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#e0e0e0', flexShrink: 0, whiteSpace: 'nowrap' }}>
                   <button onClick={() => navigateEvent('prev')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}>◀</button>
                   <span>EVENT {currentEventIndex != null ? currentEventIndex + 1 : '—'} / {navEvents.length}{importantOnly && ' ⚡'}</span>
                   <button onClick={() => navigateEvent('next')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }}>▶</button>
@@ -880,7 +881,7 @@ export default function App() {
           <div style={{ flex: 1 }} />
 
           {/* 3. Event nav + ⚡ */}
-          {!multiMode && navEvents.length > 0 && (
+          {navEvents.length > 0 && (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'rgba(255,255,255,0.04)', border: '1px solid #333', borderRadius: 6, padding: '4px 12px', fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#e0e0e0', flexShrink: 0, whiteSpace: 'nowrap' }}>
                 <button onClick={() => navigateEvent('prev')} style={{ background: 'none', border: 'none', color: '#aaa', cursor: 'pointer', fontSize: 14, padding: 0, fontFamily: 'monospace' }} onMouseEnter={e => e.target.style.color = '#4dd0e1'} onMouseLeave={e => e.target.style.color = '#aaa'} title="Previous event">◀</button>

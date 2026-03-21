@@ -668,6 +668,95 @@ Do not flatten any of these to plain functions or remove `camera` from
 
 -----
 
+## Event rendering invariants
+
+These rules encode hard-won decisions about event visibility. Do not
+relax them without a documented reason.
+
+### navEvents must preserve full event objects
+
+navEvents is always a sorted array of full event objects. It must never
+be mapped to timestamps or any other partial representation. The full
+object is required by:
+- navigateEvent (has_snapshot, label, score, start_ts)
+- fetchPlaybackTarget (start_ts)
+- activeEventSnapshot (url, label, score, ts)
+
+The timestamp fallback chain (start_ts ?? start_time ?? timestamp)
+belongs only in code that reads individual event fields, never in
+navEvents construction.
+
+### Event timestamp fallback is mandatory in all consumers
+
+Any code that reads an event timestamp must use:
+  evt.start_ts ?? evt.start_time ?? evt.timestamp
+
+This applies to:
+- rendering (tsToY calls)
+- navigation (navigateEvent targetTs derivation)
+- preview targeting
+
+Do not assume start_ts exists. Missing fallback handling will cause
+silent failures where events render correctly but cannot be navigated
+to — the worst class of bug: invisible and intermittent.
+
+### EVENT_COLORS.default must be statically defined
+
+EVENT_COLORS must always include a default key in the object literal
+itself. It must not be added conditionally or at call sites. Any event
+label not in EVENT_COLORS falls back to this color. If default is
+missing, unknown labels produce invisible (undefined color) markers
+with no console error.
+
+### Event markers are visually dominant
+
+Event markers must always outrank ticks, hairlines, and background
+structure in visual weight. Current enforcement:
+- lineWidth = 2 (not 1)
+- opacity: 1.0 within 60px of reticle, 0.75 beyond
+- draw order: events drawn after ticks (Step 7 after Step 6)
+- marker span: 10%–90% of bar zone width
+
+If you find yourself reducing event opacity or lineWidth for aesthetic
+reasons, reconsider — events are the primary signal, not decoration.
+
+### Events render independently of other system state
+
+Event marker rendering must never be gated on:
+- densityData availability
+- preview generation state
+- autoplay state
+- any other derived data layer
+
+If events exist and fall within the visible range, they render. Period.
+
+### Silent rendering failures are always logged
+
+If events.length > 0 but renderedEventCount === 0 after the Step 7
+loop, a console.warn must fire. This guard is permanent infrastructure,
+not a temporary debug log. It catches coordinate system bugs, wiring
+errors, and filter regressions before they reach users.
+
+### Prev/Next navigation is first-class UI
+
+The Prev/Next block renders whenever navEvents.length > 0. It must
+never be hidden by multiMode, screen size, or layout constraints.
+flexShrink: 0 and whiteSpace: nowrap must be applied to prevent it
+from being squeezed out of the controls bar.
+
+### Navigation stops autoplay before moving the cursor
+
+In navigateEvent, the order is always:
+1. lastInteractionRef.current = Date.now()
+2. autoplayActiveRef.current = false
+3. setCursorTs(targetTs)  ← derived via fallback chain
+
+Autoplay must be cancelled before the cursor moves. Any reordering
+of these three lines will cause the autoplay RAF loop to fight the
+navigation jump.
+
+-----
+
 ## Workflow: Claude Chat -> Claude Code
 
 This project uses a two-mode AI workflow to keep changes fast, safe, and reviewable.
