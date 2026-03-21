@@ -45,6 +45,7 @@ const EVENT_COLORS = {
   car: '#2196F3',
   dog: '#FF9800',
   cat: '#9C27B0',
+  bird: '#8BC34A',
   default: '#607D8B',
 };
 

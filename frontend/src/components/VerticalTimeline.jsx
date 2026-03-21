@@ -97,6 +97,7 @@ const EVENT_COLORS = {
   car: '#2196F3',
   dog: '#FF9800',
   cat: '#9C27B0',
+  bird: '#8BC34A',
   default: '#ffcc00',
 };
 
@@ -425,6 +426,9 @@ export default function VerticalTimeline({
     const readingZoneEvents = [];
 
     let renderedEventCount = 0;
+    // TODO: test warnedLabels dedup — unknown label warns exactly once per
+    // drawCanvas call regardless of how many events share that label
+    const warnedLabels = new Set();
     ctx.lineWidth = 2;
     ctx.setLineDash([]);
     for (const evt of events) {
@@ -442,11 +446,12 @@ export default function VerticalTimeline({
       const distFromReticle = Math.abs(y - reticleY);
       const color = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
 
-      if (!EVENT_COLORS[evt.label]) {
+      if (!EVENT_COLORS[evt.label] && !warnedLabels.has(evt.label)) {
         // Log unknown labels — helps catch label casing mismatches
-        // (e.g. "person:face" or "Person"). If this fires on every render,
-        // add the label to EVENT_COLORS instead of silencing the warn.
+        // (e.g. "person:face" or "Person"). Fires once per unknown label
+        // per drawCanvas call to avoid console spam at 60fps.
         console.warn('[VerticalTimeline] Unknown event label:', evt.label);
+        warnedLabels.add(evt.label);
       }
 
       ctx.globalAlpha = distFromReticle <= 60 ? 1.0 : 0.75;
