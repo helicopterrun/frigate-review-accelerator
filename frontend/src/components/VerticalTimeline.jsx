@@ -149,7 +149,8 @@ export default function VerticalTimeline({
   const containerRef = useRef(null);
   const isDragging = useRef(false);
   const touchStartRef = useRef(null);
-  const scrollTimestamps = useRef([]);
+  const scrollVelocityRef = useRef(0);
+  const scrollRafRef      = useRef(null);
 
   // Animation refs — no state to avoid per-frame re-renders
   // TODO: verify animation ref doesn't leak — must cancel on unmount and on new click during active animation
@@ -623,35 +624,71 @@ export default function VerticalTimeline({
     };
   }, []);
 
-  // ── Scroll-to-pan: zoom-aware sensitivity + velocity acceleration ────────────
+  // ── Scroll-to-pan: inertial physics with velocity + damping ─────────────────
+  const decayScroll = useCallback(() => {
+    const DAMPING  = 0.88;
+    // 0.008 ≈ 0.5/60: frame-time normalized deadzone.
+    // Sub-pixel at all zoom levels — no jitter, no premature stop.
+    const DEADZONE = secondsPerPixel * 0.008;
+
+    scrollVelocityRef.current *= DAMPING;
+
+    if (Math.abs(scrollVelocityRef.current) < DEADZONE) {
+      scrollVelocityRef.current = 0;
+      scrollRafRef.current = null;
+      return;
+    }
+
+    onPan(scrollVelocityRef.current);
+    scrollRafRef.current = requestAnimationFrame(decayScroll);
+  }, [onPan, secondsPerPixel]);
+
   const handleWheel = useCallback(
     (e) => {
       if (!onPan) return;
       e.preventDefault();
 
-      const now = Date.now();
-      // Keep only timestamps within the 200ms velocity window
-      scrollTimestamps.current = scrollTimestamps.current.filter(t => now - t < 200);
-      scrollTimestamps.current.push(now);
-
-      const count = scrollTimestamps.current.length;
-      let delta = panAmountSec(range);
-      // Velocity acceleration: >2 events in window → multiply, capped at 4×
-      if (count > 2) {
-        delta *= Math.min(count / 2, 4);
+      // Cancel in-flight decay so new input never stacks onto a glide.
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
       }
 
-      // deltaY < 0 = scroll up = go backward in time (earlier timestamps)
-      onPan(e.deltaY < 0 ? -delta : delta);
+      // Clamp to 40: normalizes trackpad micro-events and mouse wheel.
+      const normalizedDelta =
+        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 40);
+
+      // K=0.22: zoom-aware sensitivity. Same gesture = same screen
+      // fraction regardless of zoom level. Tune ±0.05 if needed.
+      const K = 0.22;
+      const sensitivity = secondsPerPixel * K;
+
+      scrollVelocityRef.current += normalizedDelta * sensitivity;
+
+      // Impulse BEFORE clamp: first frame reflects raw intent.
+      onPan(scrollVelocityRef.current);
+
+      // Clamp for decay stability only — not felt on frame 1.
+      // range*0.15: consistent cap across zoom levels, no teleport.
+      const maxV = (endTs - startTs) * 0.15;
+      scrollVelocityRef.current = Math.max(
+        -maxV,
+        Math.min(maxV, scrollVelocityRef.current)
+      );
+
+      scrollRafRef.current = requestAnimationFrame(decayScroll);
     },
-    [range, onPan]
+    [onPan, secondsPerPixel, endTs, startTs, decayScroll]
   );
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     canvas.addEventListener('wheel', handleWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', handleWheel);
+    return () => {
+      canvas.removeEventListener('wheel', handleWheel);
+      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+    };
   }, [handleWheel]);
 
   // ── Zoom: apply a stop index; App.jsx keeps cursorTs fixed while range changes ─
@@ -732,6 +769,11 @@ export default function VerticalTimeline({
   );
 
   const handleMouseLeave = useCallback(() => {
+    scrollVelocityRef.current = 0;
+    if (scrollRafRef.current) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = null;
+    }
     isDragging.current = false;
   }, []);
 
@@ -756,6 +798,11 @@ export default function VerticalTimeline({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
         onTouchStart={(e) => {
+          scrollVelocityRef.current = 0;
+          if (scrollRafRef.current) {
+            cancelAnimationFrame(scrollRafRef.current);
+            scrollRafRef.current = null;
+          }
           e.preventDefault();
           const touch = e.touches[0];
           touchStartRef.current = { x: touch.clientX, y: touch.clientY };
