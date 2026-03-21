@@ -226,7 +226,11 @@ export default function VerticalTimeline({
     canvas.width = w * dpr;
     canvas.height = h * dpr;
 
-    const ctx = canvas.getContext('2d');
+    // willReadFrequently: true — required because drawReticleOnly uses
+    // getImageData/putImageData on every cursorTs change (~60fps during autoplay).
+    // Without this flag the browser emits a performance warning and may
+    // GPU-round-trip on every readback.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.scale(dpr, dpr);
 
     const barStart = LABEL_WIDTH + 1;
@@ -644,7 +648,11 @@ export default function VerticalTimeline({
       return;
     }
 
-    const ctx = canvas.getContext('2d');
+    // willReadFrequently: true — required because drawReticleOnly uses
+    // getImageData/putImageData on every cursorTs change (~60fps during autoplay).
+    // Without this flag the browser emits a performance warning and may
+    // GPU-round-trip on every readback.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
     // putImageData writes at physical pixel coords — reset transform first.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
