@@ -125,87 +125,10 @@ export default function VideoPlayer({
     };
   }, [scrubPreviewUrl]);
 
-  // ── Speculative HLS preload — initiated by VerticalTimeline slow-scrub hint ──
-  useEffect(() => {
-    if (!preloadTargetTs || !camera || !Hls.isSupported()) return;
-
-    // Skip if main player is already playing near this timestamp
-    if (
-      playbackTarget &&
-      Math.abs(playbackTarget.requested_ts - preloadTargetTs) < 5
-    ) return;
-
-    // Skip if already preloaded for this exact camera + ts window
-    if (
-      hlsPreloadRef.current &&
-      preloadCameraRef.current === camera &&
-      preloadTargetTsRef.current !== null &&
-      Math.abs(preloadTargetTsRef.current - preloadTargetTs) < 5
-    ) return;
-
-    // Cancel any previous in-flight preload fetch
-    destroyHlsPreload();
-    preloadRequestIdRef.current++;
-    const myId = preloadRequestIdRef.current;
-
-    fetchPlaybackTarget(camera, preloadTargetTs)
-      .then(target => {
-        // Discard if superseded by a newer preload request
-        if (myId !== preloadRequestIdRef.current) return;
-        if (!target?.hls_url) return;
-
-        const hls = new Hls({
-          ...HLS_CONFIG,
-          autoStartLoad: true,
-          startFragPrefetch: true,
-          maxBufferLength: 10,
-          maxMaxBufferLength: 15,
-        });
-        hls.loadSource(target.hls_url);
-        hls.attachMedia(preloadRef.current);
-        hlsPreloadRef.current = hls;
-        preloadCameraRef.current = camera;
-        preloadTargetTsRef.current = preloadTargetTs;
-
-        hls.on(Hls.Events.ERROR, (_evt, data) => {
-          if (data.fatal) destroyHlsPreload();
-        });
-      })
-      .catch(() => {});
-
-    // Do NOT destroy preload on cleanup. Let it persist until the next
-    // preloadTargetTs change or until playback consumes it via swap below.
-    // destroyHlsPreload() is called lazily at the top of this effect on the
-    // next invocation.
-  }, [preloadTargetTs, camera, playbackTarget, destroyHlsPreload]);
-
-  // ── Diagnostic: track playbackTarget changes ──────────────────────────────
-  useEffect(() => {
-    console.log('[VIDEO] playbackTarget changed:', playbackTarget);
-  }, [playbackTarget]);
-
-  // ── Diagnostic: attach one-time video element event listeners ─────────────
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const onPause   = () => console.log('[VIDEO] pause event');
-    const onWaiting = () => console.log('[VIDEO] waiting');
-    const onStalled = () => console.log('[VIDEO] stalled');
-    const onEnded   = () => console.log('[VIDEO] ended');
-    const onError   = (e) => console.log('[VIDEO] error', e);
-    video.addEventListener('pause',   onPause);
-    video.addEventListener('waiting', onWaiting);
-    video.addEventListener('stalled', onStalled);
-    video.addEventListener('ended',   onEnded);
-    video.addEventListener('error',   onError);
-    return () => {
-      video.removeEventListener('pause',   onPause);
-      video.removeEventListener('waiting', onWaiting);
-      video.removeEventListener('stalled', onStalled);
-      video.removeEventListener('ended',   onEnded);
-      video.removeEventListener('error',   onError);
-    };
-  }, []); // intentional: attach once to the stable DOM element
+  // HOOKS ORDER INVARIANT: all useCallback definitions must appear before
+  // any useEffect that lists them as dependencies. Reordering these will
+  // cause a ReferenceError (temporal dead zone) on component mount.
+  // See: fix(frontend): hooks ordering crash — destroyHlsPreload before init
 
   /** Destroy existing hls.js instance if any. Stable — no external deps.
    *  Does NOT touch hlsPreloadRef — preload lifecycle is managed separately. */
@@ -309,6 +232,88 @@ export default function VideoPlayer({
       _hlsExtendingRef.current = false;
     }
   }, [camera, loadHls]);
+
+  // ── Speculative HLS preload — initiated by VerticalTimeline slow-scrub hint ──
+  useEffect(() => {
+    if (!preloadTargetTs || !camera || !Hls.isSupported()) return;
+
+    // Skip if main player is already playing near this timestamp
+    if (
+      playbackTarget &&
+      Math.abs(playbackTarget.requested_ts - preloadTargetTs) < 5
+    ) return;
+
+    // Skip if already preloaded for this exact camera + ts window
+    if (
+      hlsPreloadRef.current &&
+      preloadCameraRef.current === camera &&
+      preloadTargetTsRef.current !== null &&
+      Math.abs(preloadTargetTsRef.current - preloadTargetTs) < 5
+    ) return;
+
+    // Cancel any previous in-flight preload fetch
+    destroyHlsPreload();
+    preloadRequestIdRef.current++;
+    const myId = preloadRequestIdRef.current;
+
+    fetchPlaybackTarget(camera, preloadTargetTs)
+      .then(target => {
+        // Discard if superseded by a newer preload request
+        if (myId !== preloadRequestIdRef.current) return;
+        if (!target?.hls_url) return;
+
+        const hls = new Hls({
+          ...HLS_CONFIG,
+          autoStartLoad: true,
+          startFragPrefetch: true,
+          maxBufferLength: 10,
+          maxMaxBufferLength: 15,
+        });
+        hls.loadSource(target.hls_url);
+        hls.attachMedia(preloadRef.current);
+        hlsPreloadRef.current = hls;
+        preloadCameraRef.current = camera;
+        preloadTargetTsRef.current = preloadTargetTs;
+
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data.fatal) destroyHlsPreload();
+        });
+      })
+      .catch(() => {});
+
+    // Do NOT destroy preload on cleanup. Let it persist until the next
+    // preloadTargetTs change or until playback consumes it via swap below.
+    // destroyHlsPreload() is called lazily at the top of this effect on the
+    // next invocation.
+  }, [preloadTargetTs, camera, playbackTarget, destroyHlsPreload]);
+
+  // ── Diagnostic: track playbackTarget changes ──────────────────────────────
+  useEffect(() => {
+    console.log('[VIDEO] playbackTarget changed:', playbackTarget);
+  }, [playbackTarget]);
+
+  // ── Diagnostic: attach one-time video element event listeners ─────────────
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onPause   = () => console.log('[VIDEO] pause event');
+    const onWaiting = () => console.log('[VIDEO] waiting');
+    const onStalled = () => console.log('[VIDEO] stalled');
+    const onEnded   = () => console.log('[VIDEO] ended');
+    const onError   = (e) => console.log('[VIDEO] error', e);
+    video.addEventListener('pause',   onPause);
+    video.addEventListener('waiting', onWaiting);
+    video.addEventListener('stalled', onStalled);
+    video.addEventListener('ended',   onEnded);
+    video.addEventListener('error',   onError);
+    return () => {
+      video.removeEventListener('pause',   onPause);
+      video.removeEventListener('waiting', onWaiting);
+      video.removeEventListener('stalled', onStalled);
+      video.removeEventListener('ended',   onEnded);
+      video.removeEventListener('error',   onError);
+    };
+  }, []); // intentional: attach once to the stable DOM element
 
   /**
    * Load a new playback target into the video element.
