@@ -377,6 +377,16 @@ The `_demand_queue` is an in-process `deque`. **Do not run uvicorn with --worker
 or on-demand requests will silently go to the wrong worker process.
 
 -----
+### Preview lookup must be non-blocking
+
+GET /api/preview/{camera}/{ts} must never block on generation.
+
+If a preview does not exist:
+- return immediately (404 or placeholder)
+- optionally enqueue generation asynchronously
+
+The request path must remain constant-time (O(1)).
+
 ### Preview data is a cache, not a source of truth
 
 Previews are an opportunistic cache of visual data over time.
