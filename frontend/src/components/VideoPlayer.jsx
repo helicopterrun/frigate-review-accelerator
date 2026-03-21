@@ -58,6 +58,8 @@ export default function VideoPlayer({
   onSeek = null,
   onPlaybackStart = null,
   preloadTargetTs = null,
+  autoplayActive = false,
+  onPlaybackStateChange = null,
 }) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null);
@@ -488,6 +490,16 @@ export default function VideoPlayer({
     video.muted = isMuted;
   }, [isMuted]);
 
+  // Pause video when autoplay deactivates (user interacted).
+  // On initial mount autoplayActive is false and video is paused — no-op.
+  useEffect(() => {
+    if (autoplayActive) return;
+    const video = videoRef.current;
+    if (video && !video.paused) {
+      video.pause();
+    }
+  }, [autoplayActive]);
+
   const handleToggleMute = useCallback(() => {
     setIsMuted(prev => {
       const next = !prev;
@@ -637,8 +649,12 @@ export default function VideoPlayer({
           onPlay={() => {
             setIsPlaying(true);
             if (onPlaybackStart) onPlaybackStart();
+            if (onPlaybackStateChange) onPlaybackStateChange(true);
           }}
-          onPause={() => setIsPlaying(false)}
+          onPause={() => {
+            setIsPlaying(false);
+            if (onPlaybackStateChange) onPlaybackStateChange(false);
+          }}
           playsInline
         />
 

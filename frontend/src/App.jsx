@@ -263,6 +263,10 @@ export default function App() {
   // Event snapshot state (from prev/next navigation)
   const [activeEventSnapshot, setActiveEventSnapshot] = useState(null);
 
+  // autoplayRunning mirrors autoplayActiveRef for React-land consumers (VideoPlayer).
+  // Set inside the RAF tick on the false→true and true→false transitions only.
+  const [autoplayRunning, setAutoplayRunning] = useState(false);
+
   // Refs that track the latest cursorTs / playbackTarget without being deps
   // of handleSegmentAdvance — avoids recreating the callback (and therefore
   // VideoPlayer's onSegmentAdvance prop) on every timeupdate event.
@@ -283,6 +287,9 @@ export default function App() {
   const autoplayStartRef = useRef(Date.now());
   const autoplayEnabledRef = useRef(true);   // synced with autoplayEnabled state below
   const autoplayRafRef = useRef(null);
+  // videoPlayingRef: true when HLS video is actively playing — RAF skips cursor
+  // advance so the video drives cursorTs via onTimeUpdate instead.
+  const videoPlayingRef = useRef(false);
   // nearEventCacheRef: sorted filteredEvents + next upcoming event ahead of cursor.
   // Updated by useEffect on filteredEvents (infrequent); re-searched inside setCursorTs.
   // TODO: verify pullFactor never drops below 0.2 and cache invalidates on filteredEvents change.
@@ -310,6 +317,7 @@ export default function App() {
         if (!autoplayActiveRef.current) {
           autoplayActiveRef.current = true;
           autoplayStartRef.current = now;
+          setAutoplayRunning(true); // notify React — triggers video start via useEffect
         }
 
         // Ease-in over 300ms: advance rate ramps 0→1x
@@ -317,31 +325,36 @@ export default function App() {
         const easeFactor = easeMs / 300;
         const baseAdvanceSec = (1 / 60) * easeFactor;
 
-        setCursorTs(prev => {
-          let advanceSec = baseAdvanceSec;
+        // Skip cursor advance while video is playing — video drives cursorTs
+        // via onTimeUpdate → handlePlaybackTimeUpdate → setCursorTs.
+        if (!videoPlayingRef.current) {
+          setCursorTs(prev => {
+            let advanceSec = baseAdvanceSec;
 
-          // Magnetization: decelerate near upcoming events (never below 20% rate).
-          // Cache miss: if cursor passed the cached event, find the next one.
-          // TODO: verify pullFactor clamp — distSec→0 gives pullFactor=0.2, distSec≥10 gives 1.0.
-          let nextEvent = nearEventCacheRef.current.event;
-          if (nextEvent && nextEvent.start_ts <= prev) {
-            // Cursor has passed the cached event — search forward in sorted list.
-            nextEvent = nearEventCacheRef.current.sorted.find(e => e.start_ts > prev) ?? null;
-            nearEventCacheRef.current = { ...nearEventCacheRef.current, event: nextEvent };
-          }
-          if (nextEvent) {
-            const distSec = nextEvent.start_ts - prev;
-            if (distSec > 0 && distSec < 10) {
-              const pullFactor = 0.2 + 0.8 * (distSec / 10);
-              advanceSec *= pullFactor;
+            // Magnetization: decelerate near upcoming events (never below 20% rate).
+            // Cache miss: if cursor passed the cached event, find the next one.
+            // TODO: verify pullFactor clamp — distSec→0 gives pullFactor=0.2, distSec≥10 gives 1.0.
+            let nextEvent = nearEventCacheRef.current.event;
+            if (nextEvent && nextEvent.start_ts <= prev) {
+              // Cursor has passed the cached event — search forward in sorted list.
+              nextEvent = nearEventCacheRef.current.sorted.find(e => e.start_ts > prev) ?? null;
+              nearEventCacheRef.current = { ...nearEventCacheRef.current, event: nextEvent };
             }
-          }
+            if (nextEvent) {
+              const distSec = nextEvent.start_ts - prev;
+              if (distSec > 0 && distSec < 10) {
+                const pullFactor = 0.2 + 0.8 * (distSec / 10);
+                advanceSec *= pullFactor;
+              }
+            }
 
-          return Math.min(prev + advanceSec, nowTs());
-        });
+            return Math.min(prev + advanceSec, nowTs());
+          });
+        }
       } else {
         if (autoplayActiveRef.current) {
           autoplayActiveRef.current = false;
+          setAutoplayRunning(false); // notify React — triggers video pause via prop
         }
       }
 
@@ -575,6 +588,46 @@ export default function App() {
   const handlePlaybackStart = useCallback(() => {
     setActiveEventSnapshot(null);
   }, []);
+
+  // ─── Auto-dismiss event snapshot when cursor moves >30s away from it ───
+  // Prevents the snapshot overlay from pinning while autoplay or scrolling
+  // advances the cursor beyond the event that triggered the snapshot.
+  // TODO: test snapshot dismiss: activeEventSnapshot clears when cursorTs moves
+  // >30s from snapshot.ts
+  useEffect(() => {
+    if (!activeEventSnapshot) return;
+    if (Math.abs(cursorTs - activeEventSnapshot.ts) > 30) {
+      setActiveEventSnapshot(null);
+    }
+  }, [cursorTs, activeEventSnapshot]);
+
+  // ─── Start video playback when autoplay activates ───
+  // Uses a separate fetch path (not handleSeek) so interaction refs are not
+  // reset — resetting lastInteractionRef inside handleSeek would immediately
+  // deactivate autoplay, creating an activation loop.
+  // TODO: test autoplay→video start: after AUTOPLAY_DELAY_MS idle, a
+  // fetchPlaybackTarget call is made with cursorTsRef.current
+  const startAutoplayVideo = useCallback(async () => {
+    if (!selectedCamera) return;
+    seekRequestIdRef.current++;
+    const myId = seekRequestIdRef.current;
+    const camera = selectedCamera;
+    try {
+      const target = await fetchPlaybackTarget(camera, cursorTsRef.current);
+      if (myId !== seekRequestIdRef.current) return; // stale — another seek superseded
+      console.log('[APP] setPlaybackTarget from autoplay start', target);
+      setPlaybackTarget(target);
+      setError(null);
+    } catch (err) {
+      if (myId !== seekRequestIdRef.current) return;
+      setError(`Autoplay failed: ${err.message}`);
+    }
+  }, [selectedCamera]);
+
+  useEffect(() => {
+    if (!autoplayRunning) return;
+    startAutoplayVideo();
+  }, [autoplayRunning, startAutoplayVideo]);
 
   // ─── Preload hint: communicated from VerticalTimeline during slow scrub ───
   const handlePreloadHint = useCallback((ts) => {
@@ -1021,6 +1074,8 @@ export default function App() {
                 onSeek={handleSeek}
                 onPlaybackStart={handlePlaybackStart}
                 preloadTargetTs={preloadTargetTs}
+                autoplayActive={autoplayRunning}
+                onPlaybackStateChange={(playing) => { videoPlayingRef.current = playing; }}
               />
             </div>
 
