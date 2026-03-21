@@ -108,6 +108,8 @@ const EVENT_COLORS = {
   default:    '#ffcc00',
 };
 
+const FONT_STACK = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+
 // ─── Icon map: Lucide SVG elements keyed by Frigate label ───────────────────
 // Unlisted labels ("face", "fire", "license_plate", etc.) silently produce no
 // icon — no text fallback, no placeholder, no console warning.
@@ -159,6 +161,11 @@ for (const [label, pathData] of Object.entries(ICON_PATHS)) {
   ICON_CACHE.set(label, buildIconCanvas(pathData, EVENT_COLORS[label] ?? EVENT_COLORS.default, 12));
 }
 
+/** Build a CSS font shorthand string for canvas ctx.font. */
+function buildFont({ style = 'normal', weight = 400, size, family }) {
+  return `${style} ${weight} ${size}px ${family}`;
+}
+
 /** Return the ZOOM_STOPS index whose value is nearest to the given range. */
 function nearestZoomIdx(rangeSec) {
   let best = 0;
@@ -204,6 +211,16 @@ export default function VerticalTimeline({
   isMobile = false,
   timeFormat = '12h',
   onPreloadHint = null,
+  // Font props — optional, defaults match existing hardcoded values exactly.
+  // App.jsx requires no changes. Override in Storybook Controls to experiment.
+  fontFamily     = FONT_STACK,
+  tickFontSize   = 11,
+  tickFontWeight = 400,
+  tickFontStyle  = 'normal',
+  tickColor      = 'rgba(74, 79, 101, 1.0)',
+  labelFontSize   = 12,
+  labelFontWeight = 600,
+  labelFontStyle  = 'normal',
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -456,8 +473,8 @@ export default function VerticalTimeline({
 
       // Uniform font and color for all ticks — the reticle handles emphasis.
       // A font-weight or color shift here would compete with the reticle signal.
-      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.fillStyle = 'rgba(74, 79, 101, 1.0)';
+      ctx.font = buildFont({ style: tickFontStyle, weight: tickFontWeight, size: tickFontSize, family: fontFamily });
+      ctx.fillStyle = tickColor;
 
       ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
       ctx.textAlign = 'right';
@@ -664,7 +681,7 @@ export default function VerticalTimeline({
       // show. When tsToY(cursor_time) === reticleY, both values are the same
       // timestamp — any divergence indicates a coordinate system bug.
       const label = formatTime(displayTs, timeFormat);
-      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.font = buildFont({ style: labelFontStyle, weight: labelFontWeight, size: labelFontSize, family: fontFamily });
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
@@ -683,7 +700,9 @@ export default function VerticalTimeline({
       ctx.fillStyle = `rgba(190, 225, 250, ${reticleAlpha})`;
       ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
     }
-  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat]);
+  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
+      fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
+      labelFontSize, labelFontWeight, labelFontStyle]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
@@ -773,7 +792,7 @@ export default function VerticalTimeline({
       ctx.stroke();
 
       const label = formatTime(displayTs, timeFormat);
-      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.font = buildFont({ style: labelFontStyle, weight: labelFontWeight, size: labelFontSize, family: fontFamily });
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
@@ -784,7 +803,8 @@ export default function VerticalTimeline({
       ctx.fillStyle = `rgba(190, 225, 250, ${reticleAlpha})`;
       ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
     }
-  }, [dims, startTs, endTs, autoplayState, timeFormat]);
+  }, [dims, startTs, endTs, autoplayState, timeFormat,
+      fontFamily, labelFontSize, labelFontWeight, labelFontStyle]);
 
   useEffect(() => { drawReticleOnlyRef.current = drawReticleOnly; }, [drawReticleOnly]);
 
