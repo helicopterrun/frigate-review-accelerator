@@ -272,8 +272,8 @@ frigate-review-accelerator/
         admin.py              # GET/POST /api/admin/* (SSE log stream, script runner)
       services/
         indexer.py            # Filesystem walker -> segments table
-        preview_generator.py  # ffmpeg thumbnail extractor
-        worker.py             # Background task: index -> on-demand -> recency -> background
+        preview_generator.py  # ffmpeg frame extractor (timestamp-based, not segment-based)
+        worker.py             # Background task: index -> on-demand (timestamp-driven) -> recency -> background
         event_sync.py         # Frigate event poller -> events table
         hls.py                # Frigate VOD URL construction + reachability cache
     requirements.txt
