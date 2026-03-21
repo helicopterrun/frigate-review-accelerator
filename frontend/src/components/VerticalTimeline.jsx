@@ -166,6 +166,21 @@ function buildFont({ style = 'normal', weight = 400, size, family }) {
   return `${style} ${weight} ${size}px ${family}`;
 }
 
+/** Parse a Unix timestamp into display parts for the DOM reticle badge. */
+function parseTs(ts, timeFormat) {
+  if (ts == null) return null;
+  const d = new Date(ts * 1000);
+  const h24 = d.getHours();
+  const isPM = h24 >= 12;
+  const h12 = h24 % 12 || 12;
+  const hours = timeFormat === '12h'
+    ? String(h12).padStart(2, '0')
+    : String(h24).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  return { hours, minutes, seconds, isPM, is12h: timeFormat === '12h' };
+}
+
 /** Return the ZOOM_STOPS index whose value is nearest to the given range. */
 function nearestZoomIdx(rangeSec) {
   let best = 0;
@@ -221,6 +236,7 @@ export default function VerticalTimeline({
   labelFontSize   = 12,
   labelFontWeight = 600,
   labelFontStyle  = 'normal',
+  secondsAccentColor = 'rgba(232, 69, 10, 0.95)',
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -246,6 +262,11 @@ export default function VerticalTimeline({
   const lastPreloadTsRef = useRef(null); // spam suppression
 
   const [dims, setDims] = useState({ w: 215, h: 600 });
+  const [reticleParts, setReticleParts] = useState(() => parseTs(cursorTs, timeFormat));
+
+  useEffect(() => {
+    setReticleParts(parseTs(cursorTs, timeFormat));
+  }, [cursorTs, timeFormat]);
 
   const debouncedPreviewRequest = useDebounce(
     (ts) => { if (onPreviewRequest) onPreviewRequest(ts); },
@@ -656,49 +677,6 @@ export default function VerticalTimeline({
       ctx.lineTo(barEnd, reticleY + 10);
       ctx.stroke();
 
-      // COORDINATE SYSTEM INVARIANT
-      // reticle_time = displayCursorRef.current = cursorTs from App.jsx
-      // reticle_y    = h * RETICLE_FRACTION (never moves)
-      //
-      // Strong form: when a tick timestamp t equals cursor_time,
-      //   tsToY(t) === reticleY  (within floating point tolerance)
-      //   tick label and reticle label represent the same instant
-      //
-      // Violation of this means tsToY and the reticle Y are out of sync —
-      // fix the coordinate system, do not patch the rendering.
-      //
-      // Future enhancement (NOT in this PR): consider slightly increasing
-      // label brightness or weight within ~40px of reticle for a "focus
-      // zone" effect. Must be purely visual — no position changes.
-
-      // Reticle reads the passing scale — no box, no border, no background.
-      // Font weight 600 (more controlled than bold) + system monospace stack
-      // for clean rendering across platforms.
-      // Math.round(reticleY) + 0.5: pixel-aligns the baseline regardless of
-      // devicePixelRatio, preventing sub-pixel blur on non-retina displays.
-      //
-      // Invariant: this label MUST equal what a tick at cursor_time would
-      // show. When tsToY(cursor_time) === reticleY, both values are the same
-      // timestamp — any divergence indicates a coordinate system bug.
-      const label = formatTime(displayTs, timeFormat);
-      ctx.font = buildFont({ style: labelFontStyle, weight: labelFontWeight, size: labelFontSize, family: fontFamily });
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      // Distance from cursor to nearest tick, computed in screen space
-      // using tick phase — no timestamp rounding, no coordinate divergence.
-      // tickPhase is 0 at a tick and 0.5 halfway between ticks.
-      // distPx is the pixel distance to the nearest tick line.
-      const tickPhase = (displayTs % tickSec) / tickSec;        // 0..1
-      const distToTickPx = Math.min(tickPhase, 1 - tickPhase)   // 0..0.5
-                           * (tickSec / spp);                    // → pixels
-
-      // Raise alpha slightly (<8px) for a "locked on tick" feel.
-      // Fully continuous — no snapping, no jump at tick midpoint.
-      const reticleAlpha = distToTickPx < 8 ? 0.97 : 0.88;
-
-      ctx.fillStyle = `rgba(190, 225, 250, ${reticleAlpha})`;
-      ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
     }
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
       fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
@@ -760,12 +738,6 @@ export default function VerticalTimeline({
     const reticleY = h * RETICLE_FRACTION;
     const spp = h > 0 ? (endTs - startTs) / h : 1;
 
-    const TICK_INTERVALS_LOCAL = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600, 43200, 86400];
-    const MIN_TICK_SPACING_PX = 32;
-    const _maxTicks = Math.floor(h / MIN_TICK_SPACING_PX);
-    const _minIntervalSec = h > 0 ? (endTs - startTs) / _maxTicks : 1;
-    const tickSec = TICK_INTERVALS_LOCAL.find((t) => t >= _minIntervalSec) ?? 86400;
-
     const displayTs = displayCursorRef.current;
     if (displayTs != null) {
       let glowStyle;
@@ -790,21 +762,8 @@ export default function VerticalTimeline({
       ctx.moveTo(barStart, reticleY + 10);
       ctx.lineTo(barEnd, reticleY + 10);
       ctx.stroke();
-
-      const label = formatTime(displayTs, timeFormat);
-      ctx.font = buildFont({ style: labelFontStyle, weight: labelFontWeight, size: labelFontSize, family: fontFamily });
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      const tickPhase = (displayTs % tickSec) / tickSec;
-      const distToTickPx = Math.min(tickPhase, 1 - tickPhase) * (tickSec / spp);
-      const reticleAlpha = distToTickPx < 8 ? 0.97 : 0.88;
-
-      ctx.fillStyle = `rgba(190, 225, 250, ${reticleAlpha})`;
-      ctx.fillText(label, barStart + barW / 2, Math.round(reticleY) + 0.5);
     }
-  }, [dims, startTs, endTs, autoplayState, timeFormat,
-      fontFamily, labelFontSize, labelFontWeight, labelFontStyle]);
+  }, [dims, startTs, endTs, autoplayState]);
 
   useEffect(() => { drawReticleOnlyRef.current = drawReticleOnly; }, [drawReticleOnly]);
 
@@ -1079,6 +1038,96 @@ export default function VerticalTimeline({
           handleMouseUp({ clientX: touch.clientX, clientY: touch.clientY });
         }}
       />
+
+      {/* Reticle timestamp badge — DOM overlay, pointer-events:none */}
+      {reticleParts && (
+        <div
+          style={{
+            position: 'absolute',
+            top: `calc(${RETICLE_FRACTION * 100}% - 24px)`,
+            left: LABEL_WIDTH + 2,
+            right: EVENT_WIDTH + 2,
+            height: 48,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+        >
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            background: 'rgba(0, 0, 0, 0.55)',
+            borderRadius: 6,
+            padding: '4px 10px',
+            backdropFilter: 'blur(4px)',
+          }}>
+            {/* AM/PM stack — 12h mode only */}
+            {reticleParts.is12h && (
+              <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 0,
+                lineHeight: 1,
+                fontFamily: fontFamily,
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: '0.05em',
+              }}>
+                <span style={{
+                  color: reticleParts.isPM ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.95)',
+                }}>AM</span>
+                <span style={{
+                  color: reticleParts.isPM ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.25)',
+                }}>PM</span>
+              </div>
+            )}
+
+            {/* HH:MM */}
+            <span style={{
+              fontFamily: fontFamily,
+              fontSize: labelFontSize * 2.2,
+              fontWeight: labelFontWeight,
+              color: 'rgba(255, 255, 255, 0.95)',
+              letterSpacing: '-0.02em',
+              lineHeight: 1,
+            }}>
+              {reticleParts.hours}:{reticleParts.minutes}
+            </span>
+
+            {/* SS + SEC label */}
+            <div style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'flex-start',
+              lineHeight: 1,
+            }}>
+              <span style={{
+                fontFamily: fontFamily,
+                fontSize: labelFontSize * 1.4,
+                fontWeight: labelFontWeight,
+                color: secondsAccentColor,
+                letterSpacing: '-0.01em',
+              }}>
+                {reticleParts.seconds}
+              </span>
+              <span style={{
+                fontFamily: fontFamily,
+                fontSize: 8,
+                fontWeight: 700,
+                color: secondsAccentColor,
+                opacity: 0.7,
+                letterSpacing: '0.08em',
+              }}>
+                SEC
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Zoom control strip */}
       <div
