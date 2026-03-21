@@ -421,14 +421,17 @@ export default function VerticalTimeline({
     // or wiring bug — do not suppress them here.
     //
     // TODO: extract _labelCollisionFilter(events, reticleY, tsToY) for unit testing.
+    // TODO: add frontend test — labels render for all visible events, not just ±60px of reticle.
     const tickBarStart = barStart + barW * 0.1;
     const tickBarEnd   = barStart + barW * 0.9;
-    const readingZoneEvents = [];
 
+    // Pass 1: collect all visible events with their canvas y position.
+    // Two-tier opacity: full brightness within 60px of reticle, dim beyond.
     let renderedEventCount = 0;
     // TODO: test warnedLabels dedup — unknown label warns exactly once per
     // drawCanvas call regardless of how many events share that label
     const warnedLabels = new Set();
+    const visibleEvents = [];
     ctx.lineWidth = 2;
     ctx.setLineDash([]);
     for (const evt of events) {
@@ -461,9 +464,7 @@ export default function VerticalTimeline({
       ctx.lineTo(tickBarEnd, y);
       ctx.stroke();
 
-      if (distFromReticle <= 60) {
-        readingZoneEvents.push({ evt, y, distFromReticle });
-      }
+      visibleEvents.push({ evt, y, distFromReticle });
     }
     ctx.globalAlpha = 1.0;
 
@@ -477,20 +478,23 @@ export default function VerticalTimeline({
       });
     }
 
-    // Labels: closest to reticle first; skip if within 14px of an already-labeled event
-    // TODO: unit test — given N events within ±60px, only the closest group with
-    // ≥14px spacing should receive labels; all others should be unlabeled ticks.
-    readingZoneEvents.sort((a, b) => a.distFromReticle - b.distFromReticle);
+    // Pass 2: labels across full canvas — closest to reticle wins each slot.
+    // Two-tier opacity: ≤60px → 1.0 (prominent), >60px → 0.45 (dim but readable).
+    // Collision avoidance: 14px minimum y-spacing; closest event wins on conflict.
+    // Draw order: labels after ticks (this pass runs after the tick loop above).
+    visibleEvents.sort((a, b) => a.distFromReticle - b.distFromReticle);
     const labeledYs = [];
-    for (const { evt, y } of readingZoneEvents) {
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (const { evt, y, distFromReticle } of visibleEvents) {
       if (labeledYs.some((ly) => Math.abs(y - ly) < 14)) continue;
       labeledYs.push(y);
+      ctx.globalAlpha = distFromReticle <= 60 ? 1.0 : 0.45;
       ctx.fillStyle = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
-      ctx.font = '11px monospace';
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
       ctx.fillText(evt.label, LABEL_WIDTH - 4, y);
     }
+    ctx.globalAlpha = 1.0;
 
     // 8. Layer 3: Important event markers (amber-red, 2px line + diamond)
     // Cross-references density buckets (important=true) with individual events.
