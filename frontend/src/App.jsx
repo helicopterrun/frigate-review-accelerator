@@ -347,7 +347,7 @@ export default function App() {
               if (myId !== preloadRequestRef.current) return; // cancelled by interaction
               if (target) setPreloadTarget(target);
             })
-            .catch(() => {});
+            .catch((e) => { console.warn('[RAF] idle preload fetch failed:', e.message); });
         }
       }
 
@@ -356,6 +356,7 @@ export default function App() {
         if (!autoplayActiveRef.current) {
           autoplayActiveRef.current = true;
           autoplayStartRef.current = now;
+          console.log('[RAF] autoplay threshold reached — setAutoplayRunning(true)', { idleMs, preloadReady: !!preloadTargetRef.current, cam: selectedCameraRef.current, ts: cursorTsRef.current });
           setAutoplayRunning(true); // triggers preload→playback promotion in useEffect
         }
 
@@ -364,34 +365,36 @@ export default function App() {
         const easeFactor = easeMs / 300;
         const baseAdvanceSec = (1 / 60) * easeFactor;
 
-        // Skip cursor advance while video is playing — video drives cursorTs
-        // via onTimeUpdate → handlePlaybackTimeUpdate → setCursorTs.
-        // TODO: test RAF guard — videoPlayingRef=true causes tick to skip
-        //   setCursorTs advance
-        if (!videoPlayingRef.current) {
-          setCursorTs(prev => {
-            let advanceSec = baseAdvanceSec;
+        // INVARIANT: videoPlayingRef guard must be INSIDE setCursorTs updater.
+        // Outside = autoplay threshold fires but cursor advance is skipped entirely.
+        // Inside = cursor advance skipped but autoplay threshold still checked each frame.
+        // The guard only skips the advance — video drives cursorTs via handlePlaybackTimeUpdate.
+        setCursorTs(prev => {
+          // Skip cursor advance while video is playing — video drives cursorTs
+          // via onTimeUpdate → handlePlaybackTimeUpdate → setCursorTs.
+          if (videoPlayingRef.current) return prev;
 
-            // Magnetization: decelerate near upcoming events (never below 20% rate).
-            // Cache miss: if cursor passed the cached event, find the next one.
-            // TODO: verify pullFactor clamp — distSec→0 gives pullFactor=0.2, distSec≥10 gives 1.0.
-            let nextEvent = nearEventCacheRef.current.event;
-            if (nextEvent && nextEvent.start_ts <= prev) {
-              // Cursor has passed the cached event — search forward in sorted list.
-              nextEvent = nearEventCacheRef.current.sorted.find(e => e.start_ts > prev) ?? null;
-              nearEventCacheRef.current = { ...nearEventCacheRef.current, event: nextEvent };
-            }
-            if (nextEvent) {
-              const distSec = nextEvent.start_ts - prev;
-              if (distSec > 0 && distSec < 10) {
-                const pullFactor = 0.2 + 0.8 * (distSec / 10);
-                advanceSec *= pullFactor;
-              }
-            }
+          let advanceSec = baseAdvanceSec;
 
-            return Math.min(prev + advanceSec, nowTs());
-          });
-        }
+          // Magnetization: decelerate near upcoming events (never below 20% rate).
+          // Cache miss: if cursor passed the cached event, find the next one.
+          // TODO: verify pullFactor clamp — distSec→0 gives pullFactor=0.2, distSec≥10 gives 1.0.
+          let nextEvent = nearEventCacheRef.current.event;
+          if (nextEvent && nextEvent.start_ts <= prev) {
+            // Cursor has passed the cached event — search forward in sorted list.
+            nextEvent = nearEventCacheRef.current.sorted.find(e => e.start_ts > prev) ?? null;
+            nearEventCacheRef.current = { ...nearEventCacheRef.current, event: nextEvent };
+          }
+          if (nextEvent) {
+            const distSec = nextEvent.start_ts - prev;
+            if (distSec > 0 && distSec < 10) {
+              const pullFactor = 0.2 + 0.8 * (distSec / 10);
+              advanceSec *= pullFactor;
+            }
+          }
+
+          return Math.min(prev + advanceSec, nowTs());
+        });
       } else {
         if (autoplayActiveRef.current) {
           autoplayActiveRef.current = false;
@@ -541,6 +544,22 @@ export default function App() {
     nearEventCacheRef.current = { sorted, event: next };
   }, [filteredEvents]);
 
+  // Step 4 diagnostic: log range vs event timestamps to debug "events not visible" warning.
+  // TODO: remove after confirming events render correctly.
+  useEffect(() => {
+    if (filteredEvents.length === 0) return;
+    const minTs = Math.min(...filteredEvents.map(e => e.start_ts ?? 0));
+    const maxTs = Math.max(...filteredEvents.map(e => e.start_ts ?? 0));
+    const inRange = filteredEvents.filter(e => {
+      const ts = e.start_ts;
+      return ts != null && ts >= rangeStart && ts <= rangeEnd;
+    }).length;
+    console.log('[APP] range/event diagnostic', {
+      rangeStart, rangeEnd, eventCount: filteredEvents.length,
+      minEventTs: minTs, maxEventTs: maxTs, inRangeCount: inRange,
+    });
+  }, [filteredEvents, rangeStart, rangeEnd]);
+
   // ─── Range change — kept for SplitView backward compat ───
   const handleRangeChange = useCallback((newStart, newEnd) => {
     const newRange = newEnd - newStart;
@@ -663,9 +682,11 @@ export default function App() {
           if (autoplayActiveRef.current && target) {
             console.log('[APP] autoplay: fallback fetch', target);
             setPlaybackTarget(target);
+          } else if (!target) {
+            console.warn('[APP] autoplay: fallback fetch returned null — no segment at ts', cursorTsRef.current);
           }
         })
-        .catch(() => {});
+        .catch((e) => { console.warn('[APP] autoplay: fallback fetch failed:', e.message); });
     }
   }, [autoplayRunning]);
 
