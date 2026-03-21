@@ -69,7 +69,7 @@ modify `cursorTs`.
 
 This supports cross-camera reasoning: "What happened at this moment across cameras?"
 
-### Preview generation is demand-driven, not batch-driven.
+### Preview generation is demand-driven, not batch-driven
 
 Previews exist at multiple temporal resolutions:
 
@@ -113,6 +113,9 @@ y(t) = (t - startTs) / secondsPerPixel
 This applies to: ticks, labels, event markers, reticle position.
 No alternate mappings. No snapping. No rounding-based positioning.
 If two elements represent the same timestamp, they must align pixel-perfectly.
+
+Do not snap event positions to integer pixels. Subpixel rendering is required
+to maintain alignment between ticks, events, and reticle across zoom levels.
 
 ### Reticle model (UX framing and invariant)
 
@@ -190,6 +193,108 @@ Events render as ticks on the canvas, independent of density data, preview state
 and autoplay state. Event rendering must never be gated on these other layers.
 
 If events exist but do not render, the system must log a warning — never fail silently.
+
+### Event filtering must not hide all signal silently
+
+If a filter results in zero visible events while events exist in the underlying
+dataset, the UI should make this clear (e.g. by showing the filter state), not
+appear empty without explanation. A completely empty timeline when filters are
+active is a UX failure — the user must always know why they see nothing.
+
+This does not need to be enforced with a hard error, but any future filter UI
+work must account for this failure mode.
+
+-----
+
+## Event rendering invariants
+
+This section extends and enforces the rules defined in "Event system".
+If there is a conflict, this section takes precedence for rendering behavior.
+
+These rules encode hard-won decisions about event visibility. Do not
+relax them without a documented reason.
+
+### navEvents must preserve full event objects
+
+navEvents is always a sorted array of full event objects. It must never
+be mapped to timestamps or any other partial representation. The full
+object is required by:
+- navigateEvent (has_snapshot, label, score, start_ts)
+- fetchPlaybackTarget (start_ts)
+- activeEventSnapshot (url, label, score, ts)
+
+The timestamp fallback chain (start_ts ?? start_time ?? timestamp)
+belongs only in code that reads individual event fields, never in
+navEvents construction.
+
+### Event timestamp fallback is mandatory in all consumers
+
+Any code that reads an event timestamp must use:
+  evt.start_ts ?? evt.start_time ?? evt.timestamp
+
+This applies to:
+- rendering (tsToY calls)
+- navigation (navigateEvent targetTs derivation)
+- preview targeting
+
+Do not assume start_ts exists. Missing fallback handling will cause
+silent failures where events render correctly but cannot be navigated
+to — the worst class of bug: invisible and intermittent.
+
+### EVENT_COLORS.default must be statically defined
+
+EVENT_COLORS must always include a default key in the object literal
+itself. It must not be added conditionally or at call sites. Any event
+label not in EVENT_COLORS falls back to this color. If default is
+missing, unknown labels produce invisible (undefined color) markers
+with no console error.
+
+### Event markers are visually dominant
+
+Event markers must always outrank ticks, hairlines, and background
+structure in visual weight. Current enforcement:
+- lineWidth = 2 (not 1)
+- opacity: 1.0 within 60px of reticle, 0.75 beyond
+- draw order: events drawn after ticks (Step 7 after Step 6)
+- marker span: 10%–90% of bar zone width
+
+If you find yourself reducing event opacity or lineWidth for aesthetic
+reasons, reconsider — events are the primary signal, not decoration.
+
+### Events render independently of other system state
+
+Event marker rendering must never be gated on:
+- densityData availability
+- preview generation state
+- autoplay state
+- any other derived data layer
+
+If events exist and fall within the visible range, they render. Period.
+
+### Silent rendering failures are always logged
+
+If events.length > 0 but renderedEventCount === 0 after the Step 7
+loop, a console.warn must fire. This guard is permanent infrastructure,
+not a temporary debug log. It catches coordinate system bugs, wiring
+errors, and filter regressions before they reach users.
+
+### Prev/Next navigation is first-class UI
+
+The Prev/Next block renders whenever navEvents.length > 0. It must
+never be hidden by multiMode, screen size, or layout constraints.
+flexShrink: 0 and whiteSpace: nowrap must be applied to prevent it
+from being squeezed out of the controls bar.
+
+### Navigation stops autoplay before moving the cursor
+
+In navigateEvent, the order is always:
+1. lastInteractionRef.current = Date.now()
+2. autoplayActiveRef.current = false
+3. setCursorTs(targetTs)  ← derived via fallback chain
+
+Autoplay must be cancelled before the cursor moves. Any reordering
+of these three lines will cause the autoplay RAF loop to fight the
+navigation jump.
 
 -----
 
@@ -345,13 +450,14 @@ This means `api.js` uses relative `/api` paths in dev — no CORS issue during l
 ```sql
 segments     — one row per Frigate MP4 segment
   id, camera, start_ts, end_ts, duration, path, file_size, indexed_at
-  previews_generated  INTEGER  0=pending  1=done
+  previews_generated  INTEGER  0=not yet processed  1=processed once (success or failure)
 
 previews     — one row per extracted JPEG thumbnail
   id, camera, ts, segment_id, image_path, width, height
 
 events       — cached Frigate detections (person/car/dog etc)
   id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at
+  zones  TEXT NOT NULL DEFAULT '[]'   -- JSON list of zone names entered
 
 scan_state   — last scan position per camera (used for incremental indexing)
   camera, last_scanned_ts, last_file_path
@@ -367,16 +473,34 @@ Use synchronous `sqlite3` directly in services (they run in thread pool via `run
 Three tiers, processed in order every `scan_interval_sec` (default 30s):
 
 ```
-Tier 0 — On-demand   : The on-demand system operates on timestamps, not segments.
-Segments are a storage detail, not a unit of work.
-Tier 1 — Recency     : segments newer than preview_recency_hours (default 48h)
-Tier 2 — Background  : all remaining pending, every BACKGROUND_INTERVAL=10 cycles
+Tier 0 — On-demand   : operates on timestamps (primary path).
+                        The demand queue holds (camera, bucket_ts) pairs.
+                        Segments are a storage detail, not a unit of work.
+
+Tier 1 — Recency     : operates on segments (one timestamp per segment).
+                        Selects segments with previews_generated = 0 and
+                        start_ts >= recency_cutoff, newest first.
+                        Generates one midpoint frame per segment.
+                        Sets previews_generated = 1 regardless of outcome.
+
+Tier 2 — Background  : operates on segments (one timestamp per segment).
+                        Same mechanics as Tier 1 without the time filter.
+                        Runs every BACKGROUND_INTERVAL=10 cycles.
 ```
 
-The `_demand_queue` is an in-process `deque`. **Do not run uvicorn with --workers > 1**
-or on-demand requests will silently go to the wrong worker process.
+Segments remain a scheduling primitive for background work, but preview
+generation itself is always timestamp-based. Do not remove segment-level
+scheduling from Tier 1 and Tier 2 — it is how the worker discovers what
+has not yet been attempted.
+
+The `_demand_queue` is an in-process `deque` of `(camera, bucket_ts)` pairs.
+**Do not run uvicorn with --workers > 1** or on-demand requests will silently
+go to the wrong worker process.
 
 -----
+
+## Preview generation invariants
+
 ### Preview lookup must be non-blocking
 
 GET /api/preview/{camera}/{ts} must never block on generation.
@@ -386,6 +510,10 @@ If a preview does not exist:
 - optionally enqueue generation asynchronously
 
 The request path must remain constant-time (O(1)).
+
+Do not add synchronous generation to the preview lookup path. A future engineer
+adding `if not exists: generate_preview()` to this route will stall every scrub
+event under load. This is explicitly forbidden.
 
 ### Preview data is a cache, not a source of truth
 
@@ -408,6 +536,22 @@ A failed preview attempt must not trigger:
 
 Failure should degrade gracefully (missing preview), not amplify load.
 
+### One frame per request
+
+Each preview generation request produces at most one ffmpeg subprocess call
+and at most one output frame. There is no batch mode and no fallback loop.
+On failure, the function returns None and the caller moves on.
+
+### previews_generated semantics
+
+The previews_generated flag on segments is monotonic:
+- 0 = this segment has not yet been processed by the preview worker
+- 1 = this segment has been processed once (success or failure)
+
+It is set to 1 after one attempt regardless of outcome. This ensures each
+segment is visited at most once per background pass and failures do not
+cause retry amplification.
+
 ### Interaction-driven prefetch (future-facing invariant)
 
 Preview generation may be guided by user interaction direction.
@@ -418,18 +562,7 @@ When the user is actively scrolling:
 
 This is not required for correctness but is the intended optimization direction.
 
-### Scroll stability invariant
-
-Scroll interaction must never overshoot beyond user control.
-
-- Velocity must decay smoothly
-- Input must remain interruptible at all times
-- The user must always be able to "catch" and stop near a target timestamp
-
-If the user cannot reliably stop near an event, the implementation is incorrect.
-
-Preview generation is driven by time, not storage layout.
-Segments are an implementation detail and must not shape interaction behavior.
+-----
 
 ## Key config settings (.env)
 
@@ -447,6 +580,15 @@ CORS_ORIGINS=["http://localhost:5173"]
 ```
 
 -----
+
+## Current production state (March 2026)
+
+- ~1,489,685 segments across 9 cameras
+- Backend stable, frontend stable
+- Admin panel (Ops button, bottom-right) operational
+- HLS VOD playback via Frigate's /api/vod/ API (hls.js in frontend)
+- MP4 segment fallback when Frigate VOD unreachable
+- Preview generation: timestamp-driven single-frame model (refactored from batch)
 
 -----
 
@@ -606,19 +748,23 @@ Test structure:
 ```
 backend/tests/
   unit/
-    test_indexer.py        # parse_segment_path, _global_bucket_timestamps
-    test_preview.py        # _quantize_ts, _bucket_path — the O(1) invariants
-    test_timeline.py       # _compute_gaps, _compute_activity, coverage_pct
-    test_scan_state.py     # incremental scan state per camera
+    test_indexer.py              # parse_segment_path, scan_recordings_dir, per-camera scan state
+    test_preview.py              # _quantize_ts, _bucket_path — the O(1) invariants
+    test_preview_generator_v2.py # extract_preview_frame — single-frame model invariants
+    test_timeline.py             # _compute_gaps, _compute_activity, coverage_pct
+    test_scan_state.py           # incremental scan state per camera
   integration/
-    test_api.py            # httpx AsyncClient against real in-memory SQLite
-    test_playback_hls.py   # HLS URL construction + reachability cache
-    conftest.py            # fixtures
+    test_api.py                  # httpx AsyncClient against real in-memory SQLite
+    test_playback_hls.py         # HLS URL construction + reachability cache
+    conftest.py                  # fixtures
 ```
 
 Use `pytest` + `pytest-asyncio` + `httpx.AsyncClient`.
 Use SQLite `:memory:` for integration tests.
 Mock `subprocess.run` at the boundary in unit tests — never call real ffmpeg.
+Use `monkeypatch.setattr("app.services.preview_generator.subprocess.run", ...)` not
+`monkeypatch.setattr("subprocess.run", ...)` — patch at the module level where it
+is used, not at the global level.
 Patch `app.services.hls.httpx.AsyncClient` when mocking Frigate reachability.
 
 -----
@@ -665,95 +811,6 @@ Do not flatten any of these to plain functions or remove `camera` from
 - State ownership: App.jsx owns everything. Child components get props + callbacks.
 - Log at INFO for worker progress, DEBUG for hot path (preview lookup, bucket math).
   Never log inside the scrub hot path.
-
------
-
-## Event rendering invariants
-
-These rules encode hard-won decisions about event visibility. Do not
-relax them without a documented reason.
-
-### navEvents must preserve full event objects
-
-navEvents is always a sorted array of full event objects. It must never
-be mapped to timestamps or any other partial representation. The full
-object is required by:
-- navigateEvent (has_snapshot, label, score, start_ts)
-- fetchPlaybackTarget (start_ts)
-- activeEventSnapshot (url, label, score, ts)
-
-The timestamp fallback chain (start_ts ?? start_time ?? timestamp)
-belongs only in code that reads individual event fields, never in
-navEvents construction.
-
-### Event timestamp fallback is mandatory in all consumers
-
-Any code that reads an event timestamp must use:
-  evt.start_ts ?? evt.start_time ?? evt.timestamp
-
-This applies to:
-- rendering (tsToY calls)
-- navigation (navigateEvent targetTs derivation)
-- preview targeting
-
-Do not assume start_ts exists. Missing fallback handling will cause
-silent failures where events render correctly but cannot be navigated
-to — the worst class of bug: invisible and intermittent.
-
-### EVENT_COLORS.default must be statically defined
-
-EVENT_COLORS must always include a default key in the object literal
-itself. It must not be added conditionally or at call sites. Any event
-label not in EVENT_COLORS falls back to this color. If default is
-missing, unknown labels produce invisible (undefined color) markers
-with no console error.
-
-### Event markers are visually dominant
-
-Event markers must always outrank ticks, hairlines, and background
-structure in visual weight. Current enforcement:
-- lineWidth = 2 (not 1)
-- opacity: 1.0 within 60px of reticle, 0.75 beyond
-- draw order: events drawn after ticks (Step 7 after Step 6)
-- marker span: 10%–90% of bar zone width
-
-If you find yourself reducing event opacity or lineWidth for aesthetic
-reasons, reconsider — events are the primary signal, not decoration.
-
-### Events render independently of other system state
-
-Event marker rendering must never be gated on:
-- densityData availability
-- preview generation state
-- autoplay state
-- any other derived data layer
-
-If events exist and fall within the visible range, they render. Period.
-
-### Silent rendering failures are always logged
-
-If events.length > 0 but renderedEventCount === 0 after the Step 7
-loop, a console.warn must fire. This guard is permanent infrastructure,
-not a temporary debug log. It catches coordinate system bugs, wiring
-errors, and filter regressions before they reach users.
-
-### Prev/Next navigation is first-class UI
-
-The Prev/Next block renders whenever navEvents.length > 0. It must
-never be hidden by multiMode, screen size, or layout constraints.
-flexShrink: 0 and whiteSpace: nowrap must be applied to prevent it
-from being squeezed out of the controls bar.
-
-### Navigation stops autoplay before moving the cursor
-
-In navigateEvent, the order is always:
-1. lastInteractionRef.current = Date.now()
-2. autoplayActiveRef.current = false
-3. setCursorTs(targetTs)  ← derived via fallback chain
-
-Autoplay must be cancelled before the cursor moves. Any reordering
-of these three lines will cause the autoplay RAF loop to fight the
-navigation jump.
 
 -----
 
