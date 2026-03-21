@@ -58,6 +58,7 @@ export default function VideoPlayer({
   onSeek = null,
   onPlaybackStart = null,
   preloadTargetTs = null,
+  preloadTarget = null,
   autoplayActive = false,
   onPlaybackStateChange = null,
 }) {
@@ -289,6 +290,35 @@ export default function VideoPlayer({
     // next invocation.
   }, [preloadTargetTs, camera, playbackTarget, destroyHlsPreload]);
 
+  // ── Idle preload — full PlaybackTarget delivered by App.jsx idle system ──────
+  // This preload runs during the 400–1500ms idle window before autoplay fires.
+  // Unlike the slow-scrub preload above (which fetches its own target), this
+  // receives a pre-fetched target and loads it directly into the preload element.
+  // When App.jsx promotes preloadTarget → playbackTarget at t=1500ms, the
+  // existing hlsPreloadRef swap path fires and playback starts near-instantly.
+  // TODO: test swap path — preloadTarget promoted to playbackTarget at
+  //   autoplayRunning=true triggers existing hlsPreloadRef swap in VideoPlayer
+  useEffect(() => {
+    if (!preloadTarget?.hls_url || !Hls.isSupported()) return;
+    // Supersedes any in-flight slow-scrub preload for the same element
+    destroyHlsPreload();
+    const hls = new Hls({
+      ...HLS_CONFIG,
+      autoStartLoad: true,
+      startFragPrefetch: true,
+      maxBufferLength: 10,
+      maxMaxBufferLength: 15,
+    });
+    hls.loadSource(preloadTarget.hls_url);
+    hls.attachMedia(preloadRef.current);
+    hlsPreloadRef.current = hls;
+    preloadCameraRef.current = preloadTarget.camera ?? camera;
+    preloadTargetTsRef.current = preloadTarget.requested_ts;
+    hls.on(Hls.Events.ERROR, (_evt, data) => {
+      if (data.fatal) destroyHlsPreload();
+    });
+  }, [preloadTarget, camera, destroyHlsPreload]);
+
   // ── Diagnostic: track playbackTarget changes ──────────────────────────────
   useEffect(() => {
     console.log('[VIDEO] playbackTarget changed:', playbackTarget);
@@ -490,15 +520,16 @@ export default function VideoPlayer({
     video.muted = isMuted;
   }, [isMuted]);
 
-  // Pause video when autoplay deactivates (user interacted).
+  // Pause video and cancel preload when autoplay deactivates (user interacted).
   // On initial mount autoplayActive is false and video is paused — no-op.
   useEffect(() => {
-    if (autoplayActive) return;
     const video = videoRef.current;
-    if (video && !video.paused) {
-      video.pause();
+    if (!video) return;
+    if (!autoplayActive) {
+      if (!video.paused) video.pause();
+      destroyHlsPreload(); // discard buffered preload — next idle window starts fresh
     }
-  }, [autoplayActive]);
+  }, [autoplayActive, destroyHlsPreload]);
 
   const handleToggleMute = useCallback(() => {
     setIsMuted(prev => {

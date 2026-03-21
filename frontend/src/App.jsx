@@ -44,6 +44,9 @@ import { RETICLE_FRACTION } from './utils/constants.js';
 
 // Autoplay: idle threshold before timeline starts advancing.
 const AUTOPLAY_DELAY_MS = 1500;
+// Preload: start background HLS fetch this many ms after last interaction.
+// Gives hls.js ~1100ms to fetch manifest + buffer before AUTOPLAY_DELAY_MS fires.
+const PRELOAD_DELAY_MS = 400;
 
 const MIN_RANGE_SEC = 15 * 60;
 const MAX_RANGE_SEC = 7 * 24 * 3600;
@@ -267,18 +270,22 @@ export default function App() {
   // Set inside the RAF tick on the false→true and true→false transitions only.
   const [autoplayRunning, setAutoplayRunning] = useState(false);
 
+  // Idle preload: PlaybackTarget fetched during idle window, promoted to
+  // playbackTarget when AUTOPLAY_DELAY_MS fires.
+  const [preloadTarget, setPreloadTarget] = useState(null);
+
   // Refs that track the latest cursorTs / playbackTarget without being deps
   // of handleSegmentAdvance — avoids recreating the callback (and therefore
   // VideoPlayer's onSegmentAdvance prop) on every timeupdate event.
   const cursorTsRef = useRef(null);
   const playbackTargetRef = useRef(null);
+  const preloadTargetRef = useRef(null); // mirror of preloadTarget for stable effects
   useEffect(() => { cursorTsRef.current = cursorTs; }, [cursorTs]);
   useEffect(() => { playbackTargetRef.current = playbackTarget; }, [playbackTarget]);
+  useEffect(() => { preloadTargetRef.current = preloadTarget; }, [preloadTarget]);
 
-  // TODO: add frontend test — rapid handleSeek calls: verify seekRequestIdRef
-  // increments and only the last-fired response calls setPlaybackTarget.
+  // seekRequestIdRef: stale-request guard for navigateEvent + handleSegmentAdvance.
   const seekRequestIdRef = useRef(0);
-  const seekTimerRef = useRef(null);
 
   // ── Autoplay refs — all reads/writes in RAF loop; no state to avoid 60fps re-renders ──
   // TODO: verify RAF cleanup cancels animationFrame on unmount (no leak).
@@ -290,6 +297,15 @@ export default function App() {
   // videoPlayingRef: true when HLS video is actively playing — RAF skips cursor
   // advance so the video drives cursorTs via onTimeUpdate instead.
   const videoPlayingRef = useRef(false);
+  // selectedCameraRef: read by the stable RAF tick without stale closure.
+  const selectedCameraRef = useRef(null);
+  useEffect(() => { selectedCameraRef.current = selectedCamera; }, [selectedCamera]);
+  // preloadRequestRef: incremented on interaction to cancel in-flight preload fetches.
+  // idlePreloadStartedRef: prevents re-firing preload within the same idle window.
+  // TODO: test preload cancel — preloadRequestRef increment on interaction discards
+  // stale fetchPlaybackTarget responses.
+  const preloadRequestRef = useRef(0);
+  const idlePreloadStartedRef = useRef(false);
   // nearEventCacheRef: sorted filteredEvents + next upcoming event ahead of cursor.
   // Updated by useEffect on filteredEvents (infrequent); re-searched inside setCursorTs.
   // TODO: verify pullFactor never drops below 0.2 and cache invalidates on filteredEvents change.
@@ -302,22 +318,45 @@ export default function App() {
   // filteredEvents is stable between fetches (~30s), so this runs infrequently.
   // (defined later — populated once filteredEvents is derived below)
 
-  useEffect(() => () => clearTimeout(seekTimerRef.current), []);
-
   // ─── Autoplay RAF loop ──────────────────────────────────────────────────────
   // Invariant: no state in deps — reads refs only, advances via functional setCursorTs.
+  // Two thresholds:
+  //   PRELOAD_DELAY_MS (400ms): start background HLS fetch into preload element
+  //   AUTOPLAY_DELAY_MS (1500ms): promote preload → main player and play
   // TODO: test that cancelAnimationFrame is called on unmount with no leaked frames.
   useEffect(() => {
     function tick() {
       const now = Date.now();
       const idleMs = now - lastInteractionRef.current;
-      const threshold = autoplayEnabledRef.current ? AUTOPLAY_DELAY_MS : Infinity;
+      const autoplayThreshold = autoplayEnabledRef.current ? AUTOPLAY_DELAY_MS : Infinity;
 
-      if (idleMs >= threshold) {
+      // ── Threshold 1: start background preload ──────────────────────────────
+      // Fires once per idle window. The request ID guards against stale responses
+      // if the user interacts before the fetch completes.
+      // TODO: test preload cancel — preloadRequestRef increment on interaction
+      //   discards stale fetchPlaybackTarget response
+      if (idleMs >= PRELOAD_DELAY_MS && autoplayEnabledRef.current && !idlePreloadStartedRef.current) {
+        idlePreloadStartedRef.current = true;
+        preloadRequestRef.current++;
+        const myId = preloadRequestRef.current;
+        const ts = cursorTsRef.current;
+        const cam = selectedCameraRef.current;
+        if (cam && ts != null) {
+          fetchPlaybackTarget(cam, ts)
+            .then(target => {
+              if (myId !== preloadRequestRef.current) return; // cancelled by interaction
+              if (target) setPreloadTarget(target);
+            })
+            .catch(() => {});
+        }
+      }
+
+      // ── Threshold 2: activate autoplay ────────────────────────────────────
+      if (idleMs >= autoplayThreshold) {
         if (!autoplayActiveRef.current) {
           autoplayActiveRef.current = true;
           autoplayStartRef.current = now;
-          setAutoplayRunning(true); // notify React — triggers video start via useEffect
+          setAutoplayRunning(true); // triggers preload→playback promotion in useEffect
         }
 
         // Ease-in over 300ms: advance rate ramps 0→1x
@@ -327,6 +366,8 @@ export default function App() {
 
         // Skip cursor advance while video is playing — video drives cursorTs
         // via onTimeUpdate → handlePlaybackTimeUpdate → setCursorTs.
+        // TODO: test RAF guard — videoPlayingRef=true causes tick to skip
+        //   setCursorTs advance
         if (!videoPlayingRef.current) {
           setCursorTs(prev => {
             let advanceSec = baseAdvanceSec;
@@ -354,7 +395,13 @@ export default function App() {
       } else {
         if (autoplayActiveRef.current) {
           autoplayActiveRef.current = false;
-          setAutoplayRunning(false); // notify React — triggers video pause via prop
+          setAutoplayRunning(false); // triggers video pause via VideoPlayer prop
+        }
+        // Reset preload flag only when truly idle (user recently interacted).
+        // Guard: don't reset during the 400–1500ms preload window or the flag
+        // would re-fire the fetch every frame.
+        if (idleMs < PRELOAD_DELAY_MS) {
+          idlePreloadStartedRef.current = false;
         }
       }
 
@@ -506,6 +553,8 @@ export default function App() {
   const handlePan = useCallback((deltaSec) => {
     lastInteractionRef.current = Date.now();
     autoplayActiveRef.current = false;
+    preloadRequestRef.current++; // cancel in-flight idle preload
+    setPreloadTarget(null);
     setCursorTs(prev => Math.min(prev + deltaSec, nowTs()));
   }, []);
 
@@ -513,41 +562,27 @@ export default function App() {
   const handleZoomChange = useCallback((newRangeSec) => {
     lastInteractionRef.current = Date.now();
     autoplayActiveRef.current = false;
+    preloadRequestRef.current++; // cancel in-flight idle preload
+    setPreloadTarget(null);
     if (newRangeSec < MIN_RANGE_SEC || newRangeSec > MAX_RANGE_SEC) return;
     setRangeSec(newRangeSec);
   }, []);
 
-  // ─── Seek handler: debounced + stale-guarded, clears hover + snapshot ───
-  const handleSeek = useCallback(
-    (ts) => {
-      lastInteractionRef.current = Date.now();
-      autoplayActiveRef.current = false;
-      setCursorTs(ts);
-      setActiveEventSnapshot(null);
-
-      clearTimeout(seekTimerRef.current);
-      seekRequestIdRef.current++;
-      const myId = seekRequestIdRef.current;
-      // Capture camera at call time — selectedCamera may change during the
-      // 150ms debounce window if the user switches cameras mid-scrub.
-      const camera = selectedCamera;
-
-      seekTimerRef.current = setTimeout(async () => {
-        if (!camera) return;
-        try {
-          const target = await fetchPlaybackTarget(camera, ts);
-          if (myId !== seekRequestIdRef.current) return; // discard stale
-          console.log('[APP] setPlaybackTarget from timeline click/seek', target);
-          setPlaybackTarget(target);
-          setError(null);
-        } catch (err) {
-          if (myId !== seekRequestIdRef.current) return;
-          setError(`Playback failed: ${err.message}`);
-        }
-      }, 150);
-    },
-    [selectedCamera]
-  );
+  // ─── Seek handler: cursor-only — does NOT start video immediately ───
+  // Timeline click sets the cursor and resets the idle timer. After
+  // AUTOPLAY_DELAY_MS of idle, the preload+autoplay cycle fires naturally.
+  // This avoids race conditions between click-triggered fetches and the
+  // idle preload system.
+  const handleSeek = useCallback((ts) => {
+    lastInteractionRef.current = Date.now();
+    autoplayActiveRef.current = false;
+    preloadRequestRef.current++; // cancel in-flight idle preload
+    idlePreloadStartedRef.current = false; // allow fresh preload after 400ms
+    setPreloadTarget(null);
+    setAutoplayRunning(false);
+    setCursorTs(ts);
+    setActiveEventSnapshot(null);
+  }, []);
 
   // ─── Segment advance: resolves nextSegmentId → start_ts via fetchSegmentInfo ───
   // Previously read playbackTargetRef directly, which could be null after a camera
@@ -601,33 +636,38 @@ export default function App() {
     }
   }, [cursorTs, activeEventSnapshot]);
 
-  // ─── Start video playback when autoplay activates ───
-  // Uses a separate fetch path (not handleSeek) so interaction refs are not
-  // reset — resetting lastInteractionRef inside handleSeek would immediately
-  // deactivate autoplay, creating an activation loop.
-  // TODO: test autoplay→video start: after AUTOPLAY_DELAY_MS idle, a
-  // fetchPlaybackTarget call is made with cursorTsRef.current
-  const startAutoplayVideo = useCallback(async () => {
-    if (!selectedCamera) return;
-    seekRequestIdRef.current++;
-    const myId = seekRequestIdRef.current;
-    const camera = selectedCamera;
-    try {
-      const target = await fetchPlaybackTarget(camera, cursorTsRef.current);
-      if (myId !== seekRequestIdRef.current) return; // stale — another seek superseded
-      console.log('[APP] setPlaybackTarget from autoplay start', target);
-      setPlaybackTarget(target);
-      setError(null);
-    } catch (err) {
-      if (myId !== seekRequestIdRef.current) return;
-      setError(`Autoplay failed: ${err.message}`);
-    }
-  }, [selectedCamera]);
-
+  // ─── Promote preload → playback when autoplay activates ───
+  // Happy path: preload was fetched during the 400–1500ms idle window, so the
+  // HLS manifest is already buffered. Swap it to the main player for near-instant
+  // playback start via VideoPlayer's existing hlsPreloadRef swap path.
+  // Fallback: if preload isn't ready (e.g. autoplayEnabled was off during idle),
+  // fetch directly. This is the same path as before idle preload was added.
+  // TODO: test swap path — preloadTarget promoted to playbackTarget at
+  //   autoplayRunning=true triggers existing hlsPreloadRef swap in VideoPlayer
   useEffect(() => {
     if (!autoplayRunning) return;
-    startAutoplayVideo();
-  }, [autoplayRunning, startAutoplayVideo]);
+    const existing = preloadTargetRef.current;
+    if (existing) {
+      console.log('[APP] autoplay: promoting preload target', existing);
+      setPlaybackTarget(existing);
+      setPreloadTarget(null);
+    } else {
+      // Fallback: fetch fresh (preload wasn't ready in time)
+      const cam = selectedCameraRef.current;
+      if (!cam) return;
+      preloadRequestRef.current++;
+      const myId = preloadRequestRef.current;
+      fetchPlaybackTarget(cam, cursorTsRef.current)
+        .then(target => {
+          if (myId !== preloadRequestRef.current) return;
+          if (autoplayActiveRef.current && target) {
+            console.log('[APP] autoplay: fallback fetch', target);
+            setPlaybackTarget(target);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [autoplayRunning]);
 
   // ─── Preload hint: communicated from VerticalTimeline during slow scrub ───
   const handlePreloadHint = useCallback((ts) => {
@@ -640,6 +680,10 @@ export default function App() {
   // Falls back to nowTs() — never sets cursorTs to null which would NaN-cascade
   // into rangeStart/rangeEnd, API fetches, and the autoplay RAF loop.
   const handleCameraChange = useCallback((name) => {
+    preloadRequestRef.current++; // cancel in-flight idle preload for old camera
+    idlePreloadStartedRef.current = false;
+    setPreloadTarget(null);
+    setAutoplayRunning(false);
     setSelectedCamera(name);
     const cam = cameras.find(c => c.name === name);
     setCursorTs(cam?.latest_ts ?? nowTs());
@@ -685,12 +729,12 @@ export default function App() {
   }, [cursorTs, selectedCamera]);
 
   // ─── "Go to" handler: recenter view on ts, rangeSec unchanged ───
+  // handleSeek resets the idle timer; after AUTOPLAY_DELAY_MS the idle preload
+  // cycle fires from the new position and starts video automatically.
   const handleGoto = useCallback(() => {
     if (!gotoValue) return;
     const ts = new Date(gotoValue).getTime() / 1000;
     if (isNaN(ts)) return;
-    setCursorTs(ts);
-    // Also load playback at the target ts
     handleSeek(ts);
   }, [gotoValue, handleSeek]);
 
@@ -1074,6 +1118,7 @@ export default function App() {
                 onSeek={handleSeek}
                 onPlaybackStart={handlePlaybackStart}
                 preloadTargetTs={preloadTargetTs}
+                preloadTarget={preloadTarget}
                 autoplayActive={autoplayRunning}
                 onPlaybackStateChange={(playing) => { videoPlayingRef.current = playing; }}
               />
