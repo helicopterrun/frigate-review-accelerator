@@ -512,6 +512,57 @@ export default function App() {
     return timelineData.events.filter(e => activeLabels.has(e.label));
   }, [timelineData, activeLabels]);
 
+  // ─── Timeline resize state ───────────────────────────────────────────────────
+  // TODO: test resize persists to localStorage and clamps to [15, 60]
+  const [timelinePct, setTimelinePct] = useState(() => {
+    try {
+      const stored = localStorage.getItem('frigate-timeline-pct');
+      const n = parseFloat(stored);
+      return Number.isFinite(n) ? Math.min(Math.max(n, 15), 60) : 30;
+    } catch { return 30; }
+  });
+  const [isDraggingResize, setIsDraggingResize] = useState(false);
+  const isDraggingResizeRef = useRef(false);
+  const resizeStartXRef = useRef(0);
+  const resizeStartPctRef = useRef(0);
+  const containerRef = useRef(null);
+
+  const handleResizeStart = useCallback((e) => {
+    isDraggingResizeRef.current = true;
+    setIsDraggingResize(true);
+    resizeStartXRef.current = e.clientX;
+    resizeStartPctRef.current = timelinePct;
+    e.preventDefault();
+  }, [timelinePct]);
+
+  useEffect(() => {
+    function onMove(e) {
+      if (!isDraggingResizeRef.current) return;
+      const container = containerRef.current;
+      if (!container) return;
+      const totalWidth = container.getBoundingClientRect().width;
+      const dx = resizeStartXRef.current - e.clientX; // dragging left = wider timeline
+      const deltaPct = (dx / totalWidth) * 100;
+      const next = Math.min(Math.max(resizeStartPctRef.current + deltaPct, 15), 60);
+      setTimelinePct(next);
+    }
+    function onUp() {
+      if (!isDraggingResizeRef.current) return;
+      isDraggingResizeRef.current = false;
+      setIsDraggingResize(false);
+      setTimelinePct(prev => {
+        try { localStorage.setItem('frigate-timeline-pct', String(prev)); } catch {}
+        return prev;
+      });
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
   // Phase 1 importance: label-based hardcoded set.
   // TODO: sync with settings.important_labels in backend/app/config.py.
   // Phase 2 will fetch this list from a shared config endpoint.
@@ -530,7 +581,6 @@ export default function App() {
     const next = sorted.find(e => e.start_ts > (cursorTsRef.current ?? 0)) ?? null;
     nearEventCacheRef.current = { sorted, event: next };
   }, [filteredEvents]);
-
 
   // ─── Pan: shift cursorTs by deltaSec, clamping at nowTs() ───
   const handlePan = useCallback((deltaSec) => {
@@ -1024,11 +1074,33 @@ export default function App() {
         </div>
       )}
 
-      {/* Main content — single-camera layout */}
-      <div style={{
+      {/* Label filter pills (single-camera mode only) */}
+      {!multiMode && (
+        <LabelFilterPills
+          availableLabels={availableLabels}
+          activeLabels={activeLabels}
+          onToggle={toggleLabel}
+          onToggleAll={toggleAllLabels}
+          isMobile={isMobile}
+        />
+      )}
+
+      {/* Main content */}
+      {multiMode && selectedCameras.length >= 2 ? (
+        /* ── Split view (unchanged) ── */
+        <SplitView
+          cameras={selectedCameras}
+          rangeStart={rangeStart}
+          rangeEnd={rangeEnd}
+          onRangeChange={handleRangeChange}
+        />
+      ) : !multiMode ? (
+        /* ── Single-camera: 2-column layout ── */
+        <div ref={containerRef} style={{
           ...styles.singleLayout,
           flexDirection: isMobile ? 'column' : 'row',
           overflow: 'hidden',
+          userSelect: isDraggingResize ? 'none' : undefined,
         }}>
           {/* Left/top: video viewer column */}
           <div style={{ ...styles.viewerCol, flex: isMobile ? 'none' : 1 }}>
@@ -1065,10 +1137,27 @@ export default function App() {
             </div>
           </div>
 
+          {/* Drag handle — desktop only */}
+          {!isMobile && (
+            <div
+              onMouseDown={handleResizeStart}
+              style={{
+                width: 6,
+                cursor: 'col-resize',
+                flexShrink: 0,
+                background: isDraggingResize ? '#4a90d9' : 'transparent',
+                borderLeft: '1px solid #2a2d37',
+                borderRight: '1px solid #2a2d37',
+                transition: 'background 0.15s',
+              }}
+              title="Drag to resize timeline"
+            />
+          )}
+
           {/* Right/bottom: vertical timeline column */}
           <div style={{
             ...styles.timelineCol,
-            width: isMobile ? '100%' : 280,
+            width: isMobile ? '100%' : `${timelinePct}%`,
             flex: isMobile ? 1 : undefined,
             minHeight: isMobile ? 320 : undefined,
             flexShrink: isMobile ? undefined : 0,
@@ -1204,7 +1293,6 @@ const styles = {
     fontSize: 16,
   },
   timelineCol: {
-    width: 280,
     flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
