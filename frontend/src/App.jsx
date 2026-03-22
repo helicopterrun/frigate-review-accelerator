@@ -1197,6 +1197,7 @@ export default function App() {
             </div>
           </div>
         </div>
+      ) : null}
 
       <AdminPanel open={opsOpen} onClose={() => setOpsOpen(false)} />
     </div>
