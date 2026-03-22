@@ -13,6 +13,11 @@
  *   labelFontWeight — reticle badge weight
  *   labelFontStyle  — reticle badge style
  *
+ * Visual layout props:
+ *   backgroundColor     — canvas background color (both zones)
+ *   tickLabelXPct       — 0-100: horizontal position of tick labels (% of label zone width)
+ *   reticleBadgeBgAlpha — 0-1: opacity of the reticle timestamp badge background
+ *
  * Invariants preserved (CLAUDE.md):
  *  - cursorTs is the single source of truth; updated only by explicit user action
  *  - No API calls, no segment math, no backend coupling
@@ -22,6 +27,7 @@
 
 import { useState, useCallback } from 'react';
 import VerticalTimeline from '../components/VerticalTimeline.jsx';
+import { RETICLE_FRACTION } from '../utils/constants.js';
 
 export default {
   title: 'Timeline/VerticalTimeline',
@@ -44,6 +50,19 @@ export default {
       control: { type: 'radio' },
       options: ['idle', 'advancing', 'approaching_event'],
       description: 'Autoplay state machine value',
+    },
+    // ── Visual layout controls ────────────────────────────────────────────
+    backgroundColor: {
+      control: { type: 'color' },
+      description: 'Canvas background color applied to both the label zone and bar zone',
+    },
+    tickLabelXPct: {
+      control: { type: 'range', min: 0, max: 100, step: 1 },
+      description: 'Horizontal position of tick time labels as a percentage of the label zone width (0 = left, 100 = right)',
+    },
+    reticleBadgeBgAlpha: {
+      control: { type: 'range', min: 0, max: 1, step: 0.01 },
+      description: 'Opacity of the reticle timestamp badge background (0 = transparent, 1 = opaque)',
     },
     // ── Font controls ─────────────────────────────────────────────────────
     fontFamily: {
@@ -163,17 +182,22 @@ function makeMockGaps(anchorTs, rangeSec) {
 /**
  * Wraps VerticalTimeline with local state so scroll / click / zoom all work.
  * cursorTs is the single source of truth — only mutated via onPan / onSeek.
+ *
+ * startTs/endTs mirror the App.jsx derivation using RETICLE_FRACTION:
+ *   startTs = cursorTs - rangeSec * (1 - RETICLE_FRACTION)  [past below reticle]
+ *   endTs   = cursorTs + rangeSec * RETICLE_FRACTION         [future above reticle]
  */
 function InteractiveTimeline({
   timeFormat, isMobile, autoplayState,
+  backgroundColor, tickLabelXPct, reticleBadgeBgAlpha,
   fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
   labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor,
 }) {
   const [cursorTs, setCursorTs]   = useState(ANCHOR_TS);
   const [rangeSec, setRangeSec]   = useState(DEFAULT_RANGE_SEC);
 
-  const startTs = cursorTs - rangeSec * (1 / 3);   // RETICLE_FRACTION above
-  const endTs   = cursorTs + rangeSec * (2 / 3);   // rest below
+  const startTs = cursorTs - rangeSec * (1 - RETICLE_FRACTION);
+  const endTs   = cursorTs + rangeSec * RETICLE_FRACTION;
 
   const events  = makeMockEvents(ANCHOR_TS, DEFAULT_RANGE_SEC);
   const gaps    = makeMockGaps(ANCHOR_TS, DEFAULT_RANGE_SEC);
@@ -204,6 +228,9 @@ function InteractiveTimeline({
           autoplayState={autoplayState}
           timeFormat={timeFormat}
           isMobile={isMobile}
+          backgroundColor={backgroundColor}
+          tickLabelXPct={tickLabelXPct}
+          reticleBadgeBgAlpha={reticleBadgeBgAlpha}
           fontFamily={fontFamily}
           tickFontSize={tickFontSize}
           tickFontWeight={tickFontWeight}
@@ -254,33 +281,40 @@ function InteractiveTimeline({
 // Shared font defaults — match VerticalTimeline.jsx exactly so Controls start
 // at the current production values.
 const FONT_DEFAULTS = {
-  fontFamily:         'ui-monospace, SFMono-Regular, Menlo, monospace',
-  tickFontSize:       11,
-  tickFontWeight:     400,
-  tickFontStyle:      'normal',
-  tickColor:          'rgba(74, 79, 101, 1.0)',
-  labelFontSize:      12,
-  labelFontWeight:    600,
-  labelFontStyle:     'normal',
-  secondsAccentColor: 'rgba(232, 69, 10, 0.95)',
+  fontFamily:          'ui-monospace, SFMono-Regular, Menlo, monospace',
+  tickFontSize:        11,
+  tickFontWeight:      400,
+  tickFontStyle:       'normal',
+  tickColor:           'rgba(74, 79, 101, 1.0)',
+  labelFontSize:       12,
+  labelFontWeight:     600,
+  labelFontStyle:      'normal',
+  secondsAccentColor:  'rgba(232, 69, 10, 0.95)',
+};
+
+// Shared visual layout defaults — match VerticalTimeline.jsx prop defaults.
+const LAYOUT_DEFAULTS = {
+  backgroundColor:     null,
+  tickLabelXPct:       93,
+  reticleBadgeBgAlpha: 0.55,
 };
 
 export const Default = {
-  args: { timeFormat: '12h', isMobile: false, autoplayState: 'idle', ...FONT_DEFAULTS },
+  args: { timeFormat: '12h', isMobile: false, autoplayState: 'idle', ...LAYOUT_DEFAULTS, ...FONT_DEFAULTS },
   render: (args) => <InteractiveTimeline {...args} />,
 };
 
 export const TwentyFourHour = {
-  args: { timeFormat: '24h', isMobile: false, autoplayState: 'idle', ...FONT_DEFAULTS },
+  args: { timeFormat: '24h', isMobile: false, autoplayState: 'idle', ...LAYOUT_DEFAULTS, ...FONT_DEFAULTS },
   render: (args) => <InteractiveTimeline {...args} />,
 };
 
 export const Approaching = {
-  args: { timeFormat: '12h', isMobile: false, autoplayState: 'approaching_event', ...FONT_DEFAULTS },
+  args: { timeFormat: '12h', isMobile: false, autoplayState: 'approaching_event', ...LAYOUT_DEFAULTS, ...FONT_DEFAULTS },
   render: (args) => <InteractiveTimeline {...args} />,
 };
 
 export const Mobile = {
-  args: { timeFormat: '12h', isMobile: true, autoplayState: 'idle', ...FONT_DEFAULTS },
+  args: { timeFormat: '12h', isMobile: true, autoplayState: 'idle', ...LAYOUT_DEFAULTS, ...FONT_DEFAULTS },
   render: (args) => <InteractiveTimeline {...args} />,
 };

@@ -246,6 +246,10 @@ export default function VerticalTimeline({
   labelFontWeight = 600,
   labelFontStyle  = 'normal',
   secondsAccentColor = 'rgba(232, 69, 10, 0.95)',
+  // Visual layout props — controllable from Storybook
+  backgroundColor    = null,           // overrides both label-zone and bar-zone backgrounds when set
+  tickLabelXPct      = 93,             // 0-100: horizontal position of tick labels as % of LABEL_WIDTH
+  reticleBadgeBgAlpha = 0.55,          // 0-1: opacity of the reticle timestamp badge background
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -356,67 +360,10 @@ export default function VerticalTimeline({
     const tickSec = TICK_INTERVALS.find((t) => t >= _minIntervalSec) ?? 86400;
 
     // 1. Background
-    ctx.fillStyle = '#090b10';
+    ctx.fillStyle = backgroundColor ?? '#090b10';
     ctx.fillRect(0, 0, LABEL_WIDTH, h);
-    ctx.fillStyle = '#0f1117';
+    ctx.fillStyle = backgroundColor ?? '#0f1117';
     ctx.fillRect(LABEL_WIDTH, 0, w - LABEL_WIDTH, h);
-
-    // 2. FUTURE / PAST directional labels + arrows
-    {
-      const barCenterX = barStart + barW / 2;
-      ctx.save();
-      ctx.font = buildFont({ style: 'normal', weight: 700, size: 9, family: fontFamily });
-      ctx.globalAlpha = 0.7;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-
-      // FUTURE label — top of bar zone (rotated vertical text)
-      ctx.fillStyle = secondsAccentColor;
-      ctx.save();
-      ctx.translate(barCenterX, 8);
-      ctx.rotate(-Math.PI / 2);
-      ctx.fillText('FUTURE', 0, 0);
-      ctx.restore();
-
-      // Arrow pointing up
-      ctx.strokeStyle = secondsAccentColor;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(barCenterX, 6);
-      ctx.lineTo(barCenterX, 20);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(barCenterX - 4, 12);
-      ctx.lineTo(barCenterX, 4);
-      ctx.lineTo(barCenterX + 4, 12);
-      ctx.stroke();
-
-      // PAST label — bottom of bar zone (rotated vertical text)
-      ctx.save();
-      ctx.translate(barCenterX, h - 8);
-      ctx.rotate(-Math.PI / 2);
-      ctx.textBaseline = 'bottom';
-      ctx.fillStyle = 'rgba(150,150,150,0.5)';
-      ctx.fillText('PAST', 0, 0);
-      ctx.restore();
-
-      // Arrow pointing down
-      ctx.strokeStyle = 'rgba(150,150,150,0.5)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(barCenterX, h - 6);
-      ctx.lineTo(barCenterX, h - 20);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(barCenterX - 4, h - 12);
-      ctx.lineTo(barCenterX, h - 4);
-      ctx.lineTo(barCenterX + 4, h - 12);
-      ctx.stroke();
-
-      ctx.globalAlpha = 1.0;
-      ctx.restore();
-    }
 
     // 3. Separator lines
     ctx.fillStyle = '#1e2130';
@@ -570,7 +517,7 @@ export default function VerticalTimeline({
       ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(formatHHMM(t, timeFormat), LABEL_WIDTH - 4, y);
+      ctx.fillText(formatHHMM(t, timeFormat), (tickLabelXPct / 100) * LABEL_WIDTH, y);
       ctx.globalAlpha = 1.0;          // ALWAYS reset immediately
     }
 
@@ -729,7 +676,8 @@ export default function VerticalTimeline({
     }
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
       fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
-      labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor]);
+      labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor,
+      backgroundColor, tickLabelXPct]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
@@ -1117,7 +1065,7 @@ export default function VerticalTimeline({
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            background: 'rgba(0, 0, 0, 0.55)',
+            background: `rgba(0, 0, 0, ${reticleBadgeBgAlpha})`,
             borderRadius: 6,
             padding: '4px 10px',
             backdropFilter: 'blur(4px)',
