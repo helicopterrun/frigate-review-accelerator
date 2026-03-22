@@ -1,7 +1,7 @@
 /**
  * VerticalTimeline — Full-height vertical canvas timeline.
  *
- * Time flows top (startTs) → bottom (endTs).
+ * Time flows bottom (startTs) → top (endTs). Future is UP, past is DOWN.
  *
  * Horizontal zones (left to right):
  *   [0 … 58px]      — time tick labels (right-aligned, monospace 11px)
@@ -161,6 +161,15 @@ for (const [label, pathData] of Object.entries(ICON_PATHS)) {
   ICON_CACHE.set(label, buildIconCanvas(pathData, EVENT_COLORS[label] ?? EVENT_COLORS.default, 12));
 }
 
+/** HH:MM format for tick labels — no AM/PM suffix, no seconds. */
+function formatHHMM(ts, timeFormat) {
+  const d = new Date(ts * 1000);
+  const h24 = d.getHours();
+  const h = timeFormat === '12h' ? (h24 % 12 || 12) : h24;
+  const m = d.getMinutes();
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
 /** Build a CSS font shorthand string for canvas ctx.font. */
 function buildFont({ style = 'normal', weight = 400, size, family }) {
   return `${style} ${weight} ${size}px ${family}`;
@@ -286,12 +295,12 @@ export default function VerticalTimeline({
   );
 
   const tsToY = useCallback(
-    (ts) => (ts - startTs) / secondsPerPixel,
-    [startTs, secondsPerPixel]
+    (ts) => (endTs - ts) / secondsPerPixel,
+    [endTs, secondsPerPixel]
   );
 
   const yToTs = useCallback(
-    (y) => clampTs(startTs + y * secondsPerPixel, startTs, endTs),
+    (y) => clampTs(endTs - y * secondsPerPixel, startTs, endTs),
     [startTs, endTs, secondsPerPixel]
   );
 
@@ -352,21 +361,81 @@ export default function VerticalTimeline({
     ctx.fillStyle = '#0f1117';
     ctx.fillRect(LABEL_WIDTH, 0, w - LABEL_WIDTH, h);
 
-    // 2. Separator lines
+    // 2. FUTURE / PAST directional labels + arrows
+    {
+      const barCenterX = barStart + barW / 2;
+      ctx.save();
+      ctx.font = buildFont({ style: 'normal', weight: 700, size: 9, family: fontFamily });
+      ctx.globalAlpha = 0.7;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      // FUTURE label — top of bar zone (rotated vertical text)
+      ctx.fillStyle = secondsAccentColor;
+      ctx.save();
+      ctx.translate(barCenterX, 8);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText('FUTURE', 0, 0);
+      ctx.restore();
+
+      // Arrow pointing up
+      ctx.strokeStyle = secondsAccentColor;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(barCenterX, 6);
+      ctx.lineTo(barCenterX, 20);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(barCenterX - 4, 12);
+      ctx.lineTo(barCenterX, 4);
+      ctx.lineTo(barCenterX + 4, 12);
+      ctx.stroke();
+
+      // PAST label — bottom of bar zone (rotated vertical text)
+      ctx.save();
+      ctx.translate(barCenterX, h - 8);
+      ctx.rotate(-Math.PI / 2);
+      ctx.textBaseline = 'bottom';
+      ctx.fillStyle = 'rgba(150,150,150,0.5)';
+      ctx.fillText('PAST', 0, 0);
+      ctx.restore();
+
+      // Arrow pointing down
+      ctx.strokeStyle = 'rgba(150,150,150,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(barCenterX, h - 6);
+      ctx.lineTo(barCenterX, h - 20);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(barCenterX - 4, h - 12);
+      ctx.lineTo(barCenterX, h - 4);
+      ctx.lineTo(barCenterX + 4, h - 12);
+      ctx.stroke();
+
+      ctx.globalAlpha = 1.0;
+      ctx.restore();
+    }
+
+    // 3. Separator lines
     ctx.fillStyle = '#1e2130';
     ctx.fillRect(LABEL_WIDTH, 0, 1, h);
     ctx.fillRect(barEnd, 0, 1, h);
 
-    // 3. Gap absence indication — subtle dark fill (no hatching)
+    // 4. Gap absence indication — subtle dark fill (no hatching)
+    // Note: with flipped coords, tsToY(start_ts) > tsToY(end_ts), so clamp min/max.
     for (const gap of gaps) {
-      const y1 = Math.max(0, tsToY(gap.start_ts));
-      const y2 = Math.min(h, tsToY(gap.end_ts));
+      const ya = tsToY(gap.start_ts);
+      const yb = tsToY(gap.end_ts);
+      const y1 = Math.max(0, Math.min(ya, yb));
+      const y2 = Math.min(h, Math.max(ya, yb));
       if (y2 - y1 < 1) continue;
       ctx.fillStyle = 'rgba(15, 5, 5, 0.3)';
       ctx.fillRect(barStart, y1, barW, y2 - y1);
     }
 
-    // 4. Layer 1: Density gradient
+    // 5. Layer 1: Density gradient
     // TODO: extract _buildDensityArray(buckets, h, startTs, spp) as a pure
     // function for unit testing — maps pixel rows to interpolated density.
     // TODO: unit test client-side filter — verify effectiveTotal excludes filtered labels
@@ -388,12 +457,13 @@ export default function VerticalTimeline({
       const maxTotal = Math.max(...buckets.map((b) => effectiveTotal(b)), 1);
 
       // Precompute Float32Array of normalized density per pixel row.
-      // O(h + n_buckets): monotonic pointer works because y→ts is increasing.
+      // O(h + n_buckets): monotonic pointer works because y→ts is decreasing
+      // (future is top: y=0 → endTs; past is bottom: y=h → startTs).
       const densityArr = new Float32Array(h);
-      let bi = 0;
+      let bi = buckets.length - 1;
       for (let y = 0; y < h; y++) {
-        const ts = startTs + y * spp;
-        while (bi < buckets.length - 1 && buckets[bi + 1].ts <= ts) bi++;
+        const ts = endTs - y * spp;
+        while (bi > 0 && buckets[bi].ts > ts) bi--;
         const lo = buckets[bi];
         const hi = bi + 1 < buckets.length ? buckets[bi + 1] : null;
         let norm;
@@ -438,7 +508,7 @@ export default function VerticalTimeline({
       }
     }
 
-    // 5. "Now" dashed line (green, if wall-clock is within range)
+    // 6. "Now" dashed line (green, if wall-clock is within range)
     const currentWallTs = nowTs();
     if (currentWallTs >= startTs && currentWallTs <= endTs) {
       const ny = tsToY(currentWallTs);
@@ -453,7 +523,7 @@ export default function VerticalTimeline({
       ctx.restore();
     }
 
-    // 6. Time tick labels + horizontal hairlines (proximity fade from reticle)
+    // 7. Time tick labels + horizontal hairlines (proximity fade from reticle)
     // Fine-grained intervals (5/10/15/30s) support tight zoom levels.
     // tickSec is hoisted above step 1 so step 9 (lock moment) can reference it.
 
@@ -500,69 +570,23 @@ export default function VerticalTimeline({
       ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(formatTimeShort(t, timeFormat), LABEL_WIDTH - 4, y);
+      ctx.fillText(formatHHMM(t, timeFormat), LABEL_WIDTH - 4, y);
       ctx.globalAlpha = 1.0;          // ALWAYS reset immediately
     }
 
-    // 7. Layer 2: Detection ticks with proximity-aware labels
-    // Ticks span 60% of bar zone width (centered). Opacity rises near reticle.
-    // Labels only near reticle (±60px), with 14px collision avoidance.
-    //
-    // Z-ORDER INVARIANT: must render AFTER grid/hairlines (step 6) and
-    // BEFORE density overlay (future step). Event markers are primary
-    // signal and must remain visible regardless of other layers.
-    //
-    // INDEPENDENCE INVARIANT: this layer must NEVER depend on densityData,
-    // preview state, or autoplay state. If events disappear, it is a data
-    // or wiring bug — do not suppress them here.
-    //
-    // TODO: extract _labelCollisionFilter(events, reticleY, tsToY) for unit testing.
-    // TODO: add frontend test — labels render for all visible events, not just ±60px of reticle.
-    const tickBarStart = barStart + barW * 0.1;
-    const tickBarEnd   = barStart + barW * 0.9;
-
-    // Pass 1: collect all visible events with their canvas y position.
-    // Two-tier opacity: full brightness within 60px of reticle, dim beyond.
+    // 8. Layer 2: Event confidence bars (icon + dot + bar)
+    // INDEPENDENCE INVARIANT: never gate on densityData, preview, or autoplay.
+    // VISUAL DOMINANCE: events are primary signal — lineWidth=2, full opacity near reticle.
     let renderedEventCount = 0;
-    // TODO: test warnedLabels dedup — unknown label warns exactly once per
-    // drawCanvas call regardless of how many events share that label
-    const warnedLabels = new Set();
     const visibleEvents = [];
-    ctx.lineWidth = 2;
-    ctx.setLineDash([]);
     for (const evt of events) {
-      // Timestamp field guard: Frigate events use start_ts in the local
-      // DB schema (event_sync.py maps start_time → start_ts). If a future
-      // schema change breaks this, the fallback chain prevents silent
-      // failures and the warning below will fire.
       const ts = evt.start_ts ?? evt.start_time ?? evt.timestamp;
       if (ts == null) continue;
-
       const y = tsToY(ts);
       if (y < -10 || y > h + 10) continue;
-
       renderedEventCount++;
-      const distFromReticle = Math.abs(y - reticleY);
-      const color = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
-
-      if (!EVENT_COLORS[evt.label] && !warnedLabels.has(evt.label)) {
-        // Log unknown labels — helps catch label casing mismatches
-        // (e.g. "person:face" or "Person"). Fires once per unknown label
-        // per drawCanvas call to avoid console spam at 60fps.
-        console.warn('[VerticalTimeline] Unknown event label:', evt.label);
-        warnedLabels.add(evt.label);
-      }
-
-      ctx.globalAlpha = distFromReticle <= 60 ? 1.0 : 0.75;
-      ctx.strokeStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(tickBarStart, y);
-      ctx.lineTo(tickBarEnd, y);
-      ctx.stroke();
-
-      visibleEvents.push({ evt, y, distFromReticle });
+      visibleEvents.push({ evt, y, distFromReticle: Math.abs(y - reticleY) });
     }
-    ctx.globalAlpha = 1.0;
 
     if (events.length > 0 && renderedEventCount === 0) {
       console.warn('[VerticalTimeline] Events present but not visible', {
@@ -574,25 +598,42 @@ export default function VerticalTimeline({
       });
     }
 
-    // Pass 2: icons across full canvas — closest to reticle wins each slot.
-    // Two-tier opacity: ≤60px → 1.0 (prominent), >60px → 0.45 (dim but readable).
-    // Collision avoidance: 14px minimum y-spacing; closest event wins on conflict.
-    // Unlisted labels (face, fire, license_plate, etc.) have no ICON_CACHE entry
-    // and are silently skipped — no icon, no slot reservation, no warning.
-    // Draw order: icons after ticks (this pass runs after the tick loop above).
+    // Sort by proximity to reticle so icon collision keeps closest events.
     visibleEvents.sort((a, b) => a.distFromReticle - b.distFromReticle);
     const labeledYs = [];
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
     for (const { evt, y, distFromReticle } of visibleEvents) {
+      const color = EVENT_COLORS[evt.label] || EVENT_COLORS.default;
+      const opacity = distFromReticle <= 60 ? 1.0 : 0.75;
+
+      // Dot at left edge of bar zone
+      ctx.globalAlpha = opacity;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(barStart, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Bar extending right proportional to score (omit bar when score absent)
+      if (evt.score != null) {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(barStart, y);
+        ctx.lineTo(barStart + evt.score * barW, y);
+        ctx.stroke();
+      }
+
+      // Icon in left label zone — right-aligned to LABEL_WIDTH-4, collision-aware
       const iconCanvas = ICON_CACHE.get(evt.label);
-      if (!iconCanvas) continue; // label not in ICON_PATHS — silent skip
-      if (labeledYs.some((ly) => Math.abs(y - ly) < 14)) continue;
-      labeledYs.push(y);
-      ctx.globalAlpha = distFromReticle <= 60 ? 1.0 : 0.45;
-      ctx.drawImage(iconCanvas, LABEL_WIDTH - 16, y - 6, 12, 12);
+      if (iconCanvas && !labeledYs.some((ly) => Math.abs(y - ly) < 14)) {
+        labeledYs.push(y);
+        ctx.globalAlpha = distFromReticle <= 60 ? 1.0 : 0.45;
+        ctx.drawImage(iconCanvas, LABEL_WIDTH - 18, y - 7, 14, 14);
+      }
     }
     ctx.globalAlpha = 1.0;
 
-    // 8. Layer 3: Important event markers (amber-red, 2px line + diamond)
+    // 9. Layer 3: Important event markers (amber-red, 2px line + diamond)
     // Cross-references density buckets (important=true) with individual events.
     // TODO: extract _importantEvents(events, densityBuckets, bucketSec) for testing.
     if (densityData?.buckets?.length > 0) {
@@ -644,7 +685,7 @@ export default function VerticalTimeline({
     // avoiding the full O(h) density gradient pass on every cursorTs change.
     canvasSnapshotRef.current = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
-    // 9. Reticle at fixed Y = h * RETICLE_FRACTION
+    // 10. Reticle at fixed Y = h * RETICLE_FRACTION
     // The reticle Y is a constant — it never moves. cursorTs always maps here
     // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
     const displayTs = displayCursorRef.current;
@@ -666,21 +707,29 @@ export default function VerticalTimeline({
       ctx.fillStyle = glowStyle;
       ctx.fillRect(barStart, reticleY - 20, barW, 40);
 
-      // Two thin horizontal lines with a 20px gap between them
+      // Ruler: center line + 11 evenly-spaced tick marks
       ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.moveTo(barStart, reticleY - 10);
-      ctx.lineTo(barEnd, reticleY - 10);
-      ctx.moveTo(barStart, reticleY + 10);
-      ctx.lineTo(barEnd, reticleY + 10);
+      ctx.moveTo(barStart, reticleY);
+      ctx.lineTo(barEnd, reticleY);
       ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(100, 180, 220, 0.5)';
+      for (let i = 0; i <= 10; i++) {
+        const x = barStart + (i / 10) * barW;
+        const tickH = (i === 0 || i === 10) ? 8 : (i === 5 ? 6 : 4);
+        ctx.beginPath();
+        ctx.moveTo(x, reticleY - tickH / 2);
+        ctx.lineTo(x, reticleY + tickH / 2);
+        ctx.stroke();
+      }
 
     }
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
       fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
-      labelFontSize, labelFontWeight, labelFontStyle]);
+      labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
@@ -753,15 +802,24 @@ export default function VerticalTimeline({
       ctx.fillStyle = glowStyle;
       ctx.fillRect(barStart, reticleY - 20, barW, 40);
 
+      // Ruler: center line + 11 evenly-spaced tick marks
       ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.moveTo(barStart, reticleY - 10);
-      ctx.lineTo(barEnd, reticleY - 10);
-      ctx.moveTo(barStart, reticleY + 10);
-      ctx.lineTo(barEnd, reticleY + 10);
+      ctx.moveTo(barStart, reticleY);
+      ctx.lineTo(barEnd, reticleY);
       ctx.stroke();
+
+      ctx.strokeStyle = 'rgba(100, 180, 220, 0.5)';
+      for (let i = 0; i <= 10; i++) {
+        const x = barStart + (i / 10) * barW;
+        const tickH = (i === 0 || i === 10) ? 8 : (i === 5 ? 6 : 4);
+        ctx.beginPath();
+        ctx.moveTo(x, reticleY - tickH / 2);
+        ctx.lineTo(x, reticleY + tickH / 2);
+        ctx.stroke();
+      }
     }
   }, [dims, startTs, endTs, autoplayState]);
 
@@ -991,15 +1049,15 @@ export default function VerticalTimeline({
         width: '100%',
         height: '100%',
         userSelect: 'none',
-        position: 'relative',
         display: 'flex',
         flexDirection: 'column',
       }}
     >
-      {/* Canvas fills all remaining vertical space as a direct flex child */}
+      {/* Canvas wrapper — relative-positioned so the badge is scoped to canvas height */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
       <canvas
         ref={canvasRef}
-        style={{ cursor: 'crosshair', display: 'block', flex: 1, minHeight: 0, touchAction: 'manipulation' }}
+        style={{ cursor: 'crosshair', display: 'block', width: '100%', height: '100%', touchAction: 'manipulation' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -1039,7 +1097,7 @@ export default function VerticalTimeline({
         }}
       />
 
-      {/* Reticle timestamp badge — DOM overlay, pointer-events:none */}
+      {/* Reticle timestamp badge — DOM overlay scoped to canvas wrapper, pointer-events:none */}
       {reticleParts && (
         <div
           style={{
@@ -1128,6 +1186,7 @@ export default function VerticalTimeline({
           </div>
         </div>
       )}
+      </div>{/* end canvas wrapper */}
 
       {/* Zoom control strip */}
       <div
