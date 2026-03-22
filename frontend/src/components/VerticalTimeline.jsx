@@ -251,6 +251,8 @@ export default function VerticalTimeline({
   paddingLeft   = 4,                   // px: left edge of bar zone (barStart)
   paddingRight  = 4,                   // px: right inset from canvas edge (barEnd = w - paddingRight)
   tickLabelLeft = 8,                   // px: x coordinate for tick time label fillText
+  // TODO: test showDensity prop — false skips density gradient, gap fill, and important event markers; true renders all three layers.
+  showDensity   = false,               // when false, skips gap fill, density gradient, and important event markers
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -367,14 +369,16 @@ export default function VerticalTimeline({
 
     // 3. Gap absence indication — subtle dark fill (no hatching)
     // Note: with flipped coords, tsToY(start_ts) > tsToY(end_ts), so clamp min/max.
-    for (const gap of gaps) {
-      const ya = tsToY(gap.start_ts);
-      const yb = tsToY(gap.end_ts);
-      const y1 = Math.max(0, Math.min(ya, yb));
-      const y2 = Math.min(h, Math.max(ya, yb));
-      if (y2 - y1 < 1) continue;
-      ctx.fillStyle = 'rgba(15, 5, 5, 0.3)';
-      ctx.fillRect(barStart, y1, barW, y2 - y1);
+    if (showDensity) {
+      for (const gap of gaps) {
+        const ya = tsToY(gap.start_ts);
+        const yb = tsToY(gap.end_ts);
+        const y1 = Math.max(0, Math.min(ya, yb));
+        const y2 = Math.min(h, Math.max(ya, yb));
+        if (y2 - y1 < 1) continue;
+        ctx.fillStyle = 'rgba(15, 5, 5, 0.3)';
+        ctx.fillRect(barStart, y1, barW, y2 - y1);
+      }
     }
 
     // 5. Layer 1: Density gradient
@@ -382,7 +386,7 @@ export default function VerticalTimeline({
     // function for unit testing — maps pixel rows to interpolated density.
     // TODO: unit test client-side filter — verify effectiveTotal excludes filtered labels
     // when activeLabels is set, e.g. turning off "car" reduces density in car-heavy buckets.
-    if (densityData?.buckets?.length > 0) {
+    if (showDensity && densityData?.buckets?.length > 0) {
       const buckets = densityData.buckets;
 
       // Client-side label filtering: density endpoint returns all labels per bucket.
@@ -579,7 +583,7 @@ export default function VerticalTimeline({
     // 9. Layer 3: Important event markers (amber-red, 2px line + diamond)
     // Cross-references density buckets (important=true) with individual events.
     // TODO: extract _importantEvents(events, densityBuckets, bucketSec) for testing.
-    if (densityData?.buckets?.length > 0) {
+    if (showDensity && densityData?.buckets?.length > 0) {
       const bSec = densityData.bucket_sec || 15;
       const importantStarts = new Set(
         densityData.buckets.filter((b) => b.important).map((b) => b.ts)
@@ -670,7 +674,7 @@ export default function VerticalTimeline({
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
       fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
       labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor,
-      backgroundColor, tickLabelXPct, paddingLeft, paddingRight, tickLabelLeft]);
+      backgroundColor, tickLabelXPct, paddingLeft, paddingRight, tickLabelLeft, showDensity]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
