@@ -16,7 +16,6 @@
  * Visual layout props:
  *   backgroundColor     — canvas background color (both zones)
  *   tickLabelXPct       — 0-100: horizontal position of tick labels (% of label zone width)
- *   reticleBadgeBgAlpha — 0-1: opacity of the reticle timestamp badge background
  *
  * Invariants preserved (CLAUDE.md):
  *  - cursorTs is the single source of truth; updated only by explicit user action
@@ -59,10 +58,6 @@ export default {
     tickLabelXPct: {
       control: { type: 'range', min: 0, max: 100, step: 1 },
       description: 'Horizontal position of tick time labels as a percentage of the label zone width (0 = left, 100 = right)',
-    },
-    reticleBadgeBgAlpha: {
-      control: { type: 'range', min: 0, max: 1, step: 0.01 },
-      description: 'Opacity of the reticle timestamp badge background (0 = transparent, 1 = opaque)',
     },
     // ── Font controls ─────────────────────────────────────────────────────
     fontFamily: {
@@ -189,7 +184,7 @@ function makeMockGaps(anchorTs, rangeSec) {
  */
 function InteractiveTimeline({
   timeFormat, isMobile, autoplayState,
-  backgroundColor, tickLabelXPct, reticleBadgeBgAlpha,
+  backgroundColor, tickLabelXPct,
   fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
   labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor,
 }) {
@@ -230,7 +225,6 @@ function InteractiveTimeline({
           isMobile={isMobile}
           backgroundColor={backgroundColor}
           tickLabelXPct={tickLabelXPct}
-          reticleBadgeBgAlpha={reticleBadgeBgAlpha}
           fontFamily={fontFamily}
           tickFontSize={tickFontSize}
           tickFontWeight={tickFontWeight}
@@ -296,7 +290,6 @@ const FONT_DEFAULTS = {
 const LAYOUT_DEFAULTS = {
   backgroundColor:     null,
   tickLabelXPct:       93,
-  reticleBadgeBgAlpha: 0.55,
 };
 
 export const Default = {

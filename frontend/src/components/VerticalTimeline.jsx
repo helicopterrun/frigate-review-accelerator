@@ -249,7 +249,6 @@ export default function VerticalTimeline({
   // Visual layout props — controllable from Storybook
   backgroundColor    = null,           // overrides both label-zone and bar-zone backgrounds when set
   tickLabelXPct      = 93,             // 0-100: horizontal position of tick labels as % of LABEL_WIDTH
-  reticleBadgeBgAlpha = 0.55,          // 0-1: opacity of the reticle timestamp badge background
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -638,22 +637,8 @@ export default function VerticalTimeline({
     // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
     const displayTs = displayCursorRef.current;
     if (displayTs != null) {
-      // Reticle glow — color and intensity respond to autoplayState:
-      //   'idle'             → base blue at 0.06 alpha
-      //   'advancing'        → blue pulsing 0.06→0.12 on 3s sine (drawn at current time)
-      //   'approaching_event'→ amber-red at 0.10 (distinct from density blue)
-      let glowStyle;
-      if (autoplayState === 'approaching_event') {
-        glowStyle = 'rgba(220, 80, 60, 0.10)';
-      } else if (autoplayState === 'advancing') {
-        const t = (performance.now() / 3000) * Math.PI * 2;
-        const alpha = (0.06 + 0.06 * (0.5 + 0.5 * Math.sin(t))).toFixed(3);
-        glowStyle = `rgba(60, 160, 220, ${alpha})`;
-      } else {
-        glowStyle = 'rgba(60, 160, 220, 0.06)';
-      }
-      ctx.fillStyle = glowStyle;
-      ctx.fillRect(barStart, reticleY - 20, barW, 40);
+      // TODO: test reticle rendering — single line + tick marks only,
+      // no glow band or filled rectangle behind reticle
 
       // Ruler: center line + 11 evenly-spaced tick marks
       ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
@@ -738,19 +723,6 @@ export default function VerticalTimeline({
 
     const displayTs = displayCursorRef.current;
     if (displayTs != null) {
-      let glowStyle;
-      if (autoplayState === 'approaching_event') {
-        glowStyle = 'rgba(220, 80, 60, 0.10)';
-      } else if (autoplayState === 'advancing') {
-        const t = (performance.now() / 3000) * Math.PI * 2;
-        const alpha = (0.06 + 0.06 * (0.5 + 0.5 * Math.sin(t))).toFixed(3);
-        glowStyle = `rgba(60, 160, 220, ${alpha})`;
-      } else {
-        glowStyle = 'rgba(60, 160, 220, 0.06)';
-      }
-      ctx.fillStyle = glowStyle;
-      ctx.fillRect(barStart, reticleY - 20, barW, 40);
-
       // Ruler: center line + 11 evenly-spaced tick marks
       ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
       ctx.lineWidth = 1;
@@ -770,7 +742,7 @@ export default function VerticalTimeline({
         ctx.stroke();
       }
     }
-  }, [dims, startTs, endTs, autoplayState]);
+  }, [dims, startTs, endTs]);
 
   useEffect(() => { drawReticleOnlyRef.current = drawReticleOnly; }, [drawReticleOnly]);
 
@@ -1103,10 +1075,9 @@ export default function VerticalTimeline({
             display: 'flex',
             alignItems: 'center',
             gap: 6,
-            background: `rgba(0, 0, 0, ${reticleBadgeBgAlpha})`,
+            background: 'transparent',
             borderRadius: 6,
             padding: '4px 10px',
-            backdropFilter: 'blur(4px)',
           }}>
             {/* AM/PM stack — 12h mode only */}
             {reticleParts.is12h && (
