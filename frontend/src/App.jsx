@@ -1120,6 +1120,7 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
+    overscrollBehavior: 'none',
     padding: '10px 14px 0',
     boxSizing: 'border-box',
   },
