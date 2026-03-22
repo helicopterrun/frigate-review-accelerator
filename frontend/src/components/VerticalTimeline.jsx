@@ -267,6 +267,7 @@ export default function VerticalTimeline({
   // lastPreloadTsRef prevents spam: hint only fires when |ts - last| > 2s.
   const scrubLastYRef = useRef(null);    // { y: number, time: number }
   const scrubVelocityRef = useRef(0);    // px/ms
+  const touchPannedRef = useRef(false);  // true if this touch gesture included a pan (dy > 5); gates tap-to-recenter
   const scrubIdleTimerRef = useRef(null);
   const lastPreloadTsRef = useRef(null); // spam suppression
 
@@ -1065,6 +1066,7 @@ export default function VerticalTimeline({
         onMouseLeave={handleMouseLeave}
         onTouchStart={(e) => {
           scrollVelocityRef.current = 0;
+          touchPannedRef.current = false;
           if (scrollRafRef.current) {
             cancelAnimationFrame(scrollRafRef.current);
             scrollRafRef.current = null;
@@ -1088,6 +1090,8 @@ export default function VerticalTimeline({
 
           if (Math.abs(dy) > 5 && onPan) {
             // Vertical swipe → pan (primary gesture for a vertical timeline).
+            // Mark this as a pan gesture so touchEnd skips click-to-recenter.
+            touchPannedRef.current = true;
             // Cancel any in-flight decay so new input never stacks onto a glide.
             if (scrollRafRef.current) {
               cancelAnimationFrame(scrollRafRef.current);
@@ -1108,17 +1112,26 @@ export default function VerticalTimeline({
           // vertical timeline where dx panning would be confusing.
           handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
         }}
+        // TODO: test tap vs pan discrimination — tap triggers click-to-recenter
+        // animation; pan with dy > threshold skips recenter and fires inertial decay
         onTouchEnd={(e) => {
           e.preventDefault();
           e.stopPropagation();
           const touch = e.changedTouches[0];
-          // Kick off inertial glide if the last touch move left non-trivial velocity.
-          const DEADZONE = secondsPerPixel * 0.008;
-          if (Math.abs(scrollVelocityRef.current) > DEADZONE) {
-            if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-            scrollRafRef.current = requestAnimationFrame(decayScroll);
+          if (touchPannedRef.current) {
+            // Pan gesture: kick off inertial glide and skip click-to-recenter.
+            const DEADZONE = secondsPerPixel * 0.008;
+            if (Math.abs(scrollVelocityRef.current) > DEADZONE) {
+              if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+              scrollRafRef.current = requestAnimationFrame(decayScroll);
+            }
+            isDragging.current = false;
+            scrubLastYRef.current = null;
+            scrubVelocityRef.current = 0;
+          } else {
+            // Tap gesture: delegate to handleMouseUp for click-to-recenter animation.
+            handleMouseUp({ clientX: touch.clientX, clientY: touch.clientY });
           }
-          handleMouseUp({ clientX: touch.clientX, clientY: touch.clientY });
         }}
       />
 
