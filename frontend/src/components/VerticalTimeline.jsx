@@ -792,15 +792,18 @@ export default function VerticalTimeline({
 
   // ── Scroll-to-pan: inertial physics with velocity + damping ─────────────────
   // Scroll physics — tuned for MacBook M3 trackpad + iPhone 15 Pro Max
-  // K: wheel sensitivity (trackpad deltaY is small, keep low)
-  // K_TOUCH: touch sensitivity (touch dy is larger, needs separate lower value)
-  // DAMPING: per-frame velocity decay (0.94 = ~25 frame glide at 60fps)
-  // maxV cap: 0.08 * range prevents teleport on fast flicks
+  // Scroll physics — flywheel model
+  // Squared velocity curve: small inputs barely move, large inputs
+  // build fast. High DAMPING = long glide. Tuned for MacBook M3
+  // trackpad + iPhone 15 Pro Max touch.
+  // K / K_TOUCH kept low — the curve provides the dynamic range.
+  const DAMPING   = 0.97;    // long slow decay — flywheel feel
+  const K         = 0.06;    // base wheel sensitivity (kept low)
+  const K_TOUCH   = 0.03;    // touch sensitivity (touch dy >> trackpad deltaY)
+
   const decayScroll = useCallback(() => {
-    const DAMPING  = 0.94;
-    // 0.008 ≈ 0.5/60: frame-time normalized deadzone.
-    // Sub-pixel at all zoom levels — no jitter, no premature stop.
-    const DEADZONE = secondsPerPixel * 0.008;
+    // 0.002: tight deadzone so very slow glides run to completion.
+    const DEADZONE = secondsPerPixel * 0.002;
 
     scrollVelocityRef.current *= DAMPING;
 
@@ -825,26 +828,24 @@ export default function VerticalTimeline({
         scrollRafRef.current = null;
       }
 
-      // Clamp to 20: normalizes trackpad micro-events and mouse wheel.
-      // Lowered from 40 — occasional large deltaY burst from a fast swipe
-      // no longer teleports at tight zoom levels.
+      // Normalize delta — clamp tighter for trackpad precision
       const normalizedDelta =
-        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 20);
+        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 15);
 
-      // K=0.08: zoom-aware sensitivity. Lowered from 0.22 — trackpad sends
-      // small deltaY (1-5px) and the old value accumulated too fast.
-      const K = 0.08;
+      // Squared curve: sign preserved, magnitude squared then rescaled.
+      // Small inputs stay small, large inputs grow fast.
+      const curved = Math.sign(normalizedDelta)
+        * (normalizedDelta / 15) ** 2
+        * 15;
+
       const sensitivity = secondsPerPixel * K;
-
-      scrollVelocityRef.current += normalizedDelta * sensitivity;
+      scrollVelocityRef.current += curved * sensitivity;
 
       // Impulse BEFORE clamp: first frame reflects raw intent.
       onPan(scrollVelocityRef.current);
 
-      // Clamp for decay stability only — not felt on frame 1.
-      // range*0.08: consistent cap across zoom levels, no teleport.
-      // Lowered from 0.15 to match reduced K sensitivity.
-      const maxV = (endTs - startTs) * 0.08;
+      // Raised cap: fast flicks can really travel at wide zoom.
+      const maxV = (endTs - startTs) * 0.25;
       scrollVelocityRef.current = Math.max(
         -maxV,
         Math.min(maxV, scrollVelocityRef.current)
@@ -1046,11 +1047,13 @@ export default function VerticalTimeline({
               cancelAnimationFrame(scrollRafRef.current);
               scrollRafRef.current = null;
             }
-            // Touch uses a separate lower multiplier than the wheel handler.
-            // Touch dy values are much larger (10-80px per move event) vs
-            // trackpad (1-5px), so K_TOUCH=0.04 prevents over-sensitivity.
-            const K_TOUCH = 0.04;
-            const deltaSec = dy * secondsPerPixel * K_TOUCH;
+            // Squared curve applied to touch dy — same model as wheel handler.
+            // Clamp at 60px (typical fast swipe); small taps stay precise.
+            const normalizedDy = Math.sign(dy) * Math.min(Math.abs(dy), 60);
+            const curvedDy = Math.sign(normalizedDy)
+              * (normalizedDy / 60) ** 2
+              * 60;
+            const deltaSec = curvedDy * secondsPerPixel * K_TOUCH;
             scrollVelocityRef.current = deltaSec;
             onPan(deltaSec);
             // Continuous tracking: update origin so each move delta is relative
@@ -1071,7 +1074,7 @@ export default function VerticalTimeline({
           const touch = e.changedTouches[0];
           if (touchPannedRef.current) {
             // Pan gesture: kick off inertial glide and skip click-to-recenter.
-            const DEADZONE = secondsPerPixel * 0.008;
+            const DEADZONE = secondsPerPixel * 0.002;
             if (Math.abs(scrollVelocityRef.current) > DEADZONE) {
               if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
               scrollRafRef.current = requestAnimationFrame(decayScroll);
