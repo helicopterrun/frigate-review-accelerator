@@ -1021,26 +1021,45 @@ export default function VerticalTimeline({
           touchStartRef.current = { x: touch.clientX, y: touch.clientY };
           handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY });
         }}
+        // TODO: test touch pan -- vertical swipe calls onPan with
+        // zoom-scaled delta; inertial decay fires on touchEnd
         onTouchMove={(e) => {
           e.preventDefault();
           const touch = e.touches[0];
           const dx = touch.clientX - (touchStartRef.current?.x ?? touch.clientX);
           const dy = touch.clientY - (touchStartRef.current?.y ?? touch.clientY);
-          const isHorizontalSwipe = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 10;
 
-          if (isHorizontalSwipe && onPan) {
-            // Horizontal swipe → pan: map swipe distance to time delta
-            const fraction = -dx / dims.w * 0.5;
-            onPan(range * fraction);
+          if (Math.abs(dy) > 5 && onPan) {
+            // Vertical swipe → pan (primary gesture for a vertical timeline).
+            // Cancel any in-flight decay so new input never stacks onto a glide.
+            if (scrollRafRef.current) {
+              cancelAnimationFrame(scrollRafRef.current);
+              scrollRafRef.current = null;
+            }
+            // Same zoom-aware sensitivity as the wheel handler (K=0.22).
+            const K = 0.22;
+            const deltaSec = dy * secondsPerPixel * K;
+            scrollVelocityRef.current = deltaSec;
+            onPan(deltaSec);
+            // Continuous tracking: update origin so each move delta is relative
+            // to the previous position, not the original touch-start.
             touchStartRef.current = { x: touch.clientX, y: touch.clientY };
             return;
           }
 
+          // Horizontal swipe is a secondary/fallthrough gesture — ignored on a
+          // vertical timeline where dx panning would be confusing.
           handleMouseMove({ clientX: touch.clientX, clientY: touch.clientY });
         }}
         onTouchEnd={(e) => {
           e.preventDefault();
           const touch = e.changedTouches[0];
+          // Kick off inertial glide if the last touch move left non-trivial velocity.
+          const DEADZONE = secondsPerPixel * 0.008;
+          if (Math.abs(scrollVelocityRef.current) > DEADZONE) {
+            if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
+            scrollRafRef.current = requestAnimationFrame(decayScroll);
+          }
           handleMouseUp({ clientX: touch.clientX, clientY: touch.clientY });
         }}
       />
