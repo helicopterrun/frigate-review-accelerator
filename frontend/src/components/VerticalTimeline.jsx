@@ -791,8 +791,13 @@ export default function VerticalTimeline({
   }, []);
 
   // ── Scroll-to-pan: inertial physics with velocity + damping ─────────────────
+  // Scroll physics — tuned for MacBook M3 trackpad + iPhone 15 Pro Max
+  // K: wheel sensitivity (trackpad deltaY is small, keep low)
+  // K_TOUCH: touch sensitivity (touch dy is larger, needs separate lower value)
+  // DAMPING: per-frame velocity decay (0.94 = ~25 frame glide at 60fps)
+  // maxV cap: 0.08 * range prevents teleport on fast flicks
   const decayScroll = useCallback(() => {
-    const DAMPING  = 0.88;
+    const DAMPING  = 0.94;
     // 0.008 ≈ 0.5/60: frame-time normalized deadzone.
     // Sub-pixel at all zoom levels — no jitter, no premature stop.
     const DEADZONE = secondsPerPixel * 0.008;
@@ -820,13 +825,15 @@ export default function VerticalTimeline({
         scrollRafRef.current = null;
       }
 
-      // Clamp to 40: normalizes trackpad micro-events and mouse wheel.
+      // Clamp to 20: normalizes trackpad micro-events and mouse wheel.
+      // Lowered from 40 — occasional large deltaY burst from a fast swipe
+      // no longer teleports at tight zoom levels.
       const normalizedDelta =
-        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 40);
+        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 20);
 
-      // K=0.22: zoom-aware sensitivity. Same gesture = same screen
-      // fraction regardless of zoom level. Tune ±0.05 if needed.
-      const K = 0.22;
+      // K=0.08: zoom-aware sensitivity. Lowered from 0.22 — trackpad sends
+      // small deltaY (1-5px) and the old value accumulated too fast.
+      const K = 0.08;
       const sensitivity = secondsPerPixel * K;
 
       scrollVelocityRef.current += normalizedDelta * sensitivity;
@@ -835,8 +842,9 @@ export default function VerticalTimeline({
       onPan(scrollVelocityRef.current);
 
       // Clamp for decay stability only — not felt on frame 1.
-      // range*0.15: consistent cap across zoom levels, no teleport.
-      const maxV = (endTs - startTs) * 0.15;
+      // range*0.08: consistent cap across zoom levels, no teleport.
+      // Lowered from 0.15 to match reduced K sensitivity.
+      const maxV = (endTs - startTs) * 0.08;
       scrollVelocityRef.current = Math.max(
         -maxV,
         Math.min(maxV, scrollVelocityRef.current)
@@ -1038,9 +1046,11 @@ export default function VerticalTimeline({
               cancelAnimationFrame(scrollRafRef.current);
               scrollRafRef.current = null;
             }
-            // Same zoom-aware sensitivity as the wheel handler (K=0.22).
-            const K = 0.22;
-            const deltaSec = dy * secondsPerPixel * K;
+            // Touch uses a separate lower multiplier than the wheel handler.
+            // Touch dy values are much larger (10-80px per move event) vs
+            // trackpad (1-5px), so K_TOUCH=0.04 prevents over-sensitivity.
+            const K_TOUCH = 0.04;
+            const deltaSec = dy * secondsPerPixel * K_TOUCH;
             scrollVelocityRef.current = deltaSec;
             onPan(deltaSec);
             // Continuous tracking: update origin so each move delta is relative
