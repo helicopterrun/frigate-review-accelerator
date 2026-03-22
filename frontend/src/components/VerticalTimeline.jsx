@@ -638,27 +638,38 @@ export default function VerticalTimeline({
     // by construction (rangeStart/rangeEnd are derived from cursorTs in App.jsx).
     const displayTs = displayCursorRef.current;
     if (displayTs != null) {
-      // TODO: test reticle rendering — single line + tick marks only,
-      // no glow band or filled rectangle behind reticle
+      // TODO: test reticle rendering — half-width line from bar center to
+      // right edge with datum 45 arrows at each endpoint, no ruler ticks
 
-      // Ruler: center line + 11 evenly-spaced tick marks
+      // Reticle: half-width line from center to right edge, with datum arrows
+      const barMid = barStart + barW / 2;
+
+      // Main line — center of bar zone to right edge
       ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.moveTo(barStart, reticleY);
+      ctx.moveTo(barMid, reticleY);
       ctx.lineTo(barEnd, reticleY);
       ctx.stroke();
 
-      ctx.strokeStyle = 'rgba(100, 180, 220, 0.5)';
-      for (let i = 0; i <= 10; i++) {
-        const x = barStart + (i / 10) * barW;
-        const tickH = (i === 0 || i === 10) ? 8 : (i === 5 ? 6 : 4);
-        ctx.beginPath();
-        ctx.moveTo(x, reticleY - tickH / 2);
-        ctx.lineTo(x, reticleY + tickH / 2);
-        ctx.stroke();
-      }
+      // Left datum arrow (at barMid) — filled triangle pointing right
+      const arrowSize = 5;
+      ctx.fillStyle = 'rgba(100, 180, 220, 0.6)';
+      ctx.beginPath();
+      ctx.moveTo(barMid, reticleY);
+      ctx.lineTo(barMid - arrowSize, reticleY - arrowSize);
+      ctx.lineTo(barMid - arrowSize, reticleY + arrowSize);
+      ctx.closePath();
+      ctx.fill();
+
+      // Right datum arrow (at barEnd) — filled triangle pointing left
+      ctx.beginPath();
+      ctx.moveTo(barEnd, reticleY);
+      ctx.lineTo(barEnd + arrowSize, reticleY - arrowSize);
+      ctx.lineTo(barEnd + arrowSize, reticleY + arrowSize);
+      ctx.closePath();
+      ctx.fill();
 
     }
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
@@ -724,24 +735,35 @@ export default function VerticalTimeline({
 
     const displayTs = displayCursorRef.current;
     if (displayTs != null) {
-      // Ruler: center line + 11 evenly-spaced tick marks
+      // Reticle: half-width line from center to right edge, with datum arrows
+      const barMid = barStart + barW / 2;
+
+      // Main line — center of bar zone to right edge
       ctx.strokeStyle = 'rgba(100, 180, 220, 0.6)';
       ctx.lineWidth = 1;
       ctx.setLineDash([]);
       ctx.beginPath();
-      ctx.moveTo(barStart, reticleY);
+      ctx.moveTo(barMid, reticleY);
       ctx.lineTo(barEnd, reticleY);
       ctx.stroke();
 
-      ctx.strokeStyle = 'rgba(100, 180, 220, 0.5)';
-      for (let i = 0; i <= 10; i++) {
-        const x = barStart + (i / 10) * barW;
-        const tickH = (i === 0 || i === 10) ? 8 : (i === 5 ? 6 : 4);
-        ctx.beginPath();
-        ctx.moveTo(x, reticleY - tickH / 2);
-        ctx.lineTo(x, reticleY + tickH / 2);
-        ctx.stroke();
-      }
+      // Left datum arrow (at barMid) — filled triangle pointing right
+      const arrowSize = 5;
+      ctx.fillStyle = 'rgba(100, 180, 220, 0.6)';
+      ctx.beginPath();
+      ctx.moveTo(barMid, reticleY);
+      ctx.lineTo(barMid - arrowSize, reticleY - arrowSize);
+      ctx.lineTo(barMid - arrowSize, reticleY + arrowSize);
+      ctx.closePath();
+      ctx.fill();
+
+      // Right datum arrow (at barEnd) — filled triangle pointing left
+      ctx.beginPath();
+      ctx.moveTo(barEnd, reticleY);
+      ctx.lineTo(barEnd + arrowSize, reticleY - arrowSize);
+      ctx.lineTo(barEnd + arrowSize, reticleY + arrowSize);
+      ctx.closePath();
+      ctx.fill();
     }
   }, [dims, startTs, endTs]);
 
