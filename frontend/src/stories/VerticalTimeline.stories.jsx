@@ -290,12 +290,13 @@ function InteractiveTimeline({
 
 // Shared font defaults — match VerticalTimeline.jsx exactly so Controls start
 // at the current production values.
+// Last tuned: 2026-03-22 (from Storybook Controls)
 const FONT_DEFAULTS = {
-  fontFamily:          'ui-monospace, SFMono-Regular, Menlo, monospace',
-  tickFontSize:        11,
+  fontFamily:          'IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace',
+  tickFontSize:        16,
   tickFontWeight:      400,
   tickFontStyle:       'normal',
-  tickColor:           'rgba(74, 79, 101, 1.0)',
+  tickColor:           'rgba(97, 137, 67)',
   labelFontSize:       12,
   labelFontWeight:     600,
   labelFontStyle:      'normal',
@@ -303,13 +304,23 @@ const FONT_DEFAULTS = {
 };
 
 // Shared visual layout defaults — match VerticalTimeline.jsx prop defaults.
+// Last tuned: 2026-03-22 (from Storybook Controls)
 const LAYOUT_DEFAULTS = {
-  backgroundColor:     null,
-  tickLabelXPct:       93,
+  backgroundColor:     '#0B0E14',
+  tickLabelXPct:       100,
+  paddingLeft:         0,
+  paddingRight:        0,
+  tickLabelLeft:       30,
 };
 
 export const Default = {
-  args: { timeFormat: '12h', isMobile: false, autoplayState: 'idle', ...LAYOUT_DEFAULTS, ...FONT_DEFAULTS },
+  args: {
+    timeFormat: '12h',
+    isMobile: false,
+    autoplayState: 'idle',
+    ...LAYOUT_DEFAULTS,
+    ...FONT_DEFAULTS,
+  },
   render: (args) => <InteractiveTimeline {...args} />,
 };
 
