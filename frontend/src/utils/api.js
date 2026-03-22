@@ -21,23 +21,23 @@ export async function fetchCameras() {
 }
 
 /** GET /api/timeline?camera=X&start=Y&end=Z */
-export async function fetchTimeline(camera, startTs, endTs) {
+export async function fetchTimeline(camera, startTs, endTs, options = {}) {
   const params = new URLSearchParams({
     camera,
     start: String(startTs),
     end: String(endTs),
   });
-  return apiFetch(`/timeline?${params}`);
+  return apiFetch(`/timeline?${params}`, options);
 }
 
 /** GET /api/preview-strip/{camera}?start=X&end=Y&max_frames=N */
-export async function fetchPreviewStrip(camera, startTs, endTs, maxFrames = 300) {
+export async function fetchPreviewStrip(camera, startTs, endTs, maxFrames = 300, options = {}) {
   const params = new URLSearchParams({
     start: String(startTs),
     end: String(endTs),
     max_frames: String(maxFrames),
   });
-  return apiFetch(`/preview-strip/${camera}?${params}`);
+  return apiFetch(`/preview-strip/${camera}?${params}`, options);
 }
 
 /**
@@ -108,6 +108,25 @@ export function segmentStreamUrl(segmentId, offsetSec) {
 /** Build the URL for a Frigate event snapshot (proxied through backend). */
 export function eventSnapshotUrl(eventId) {
   return `${API_BASE}/events/${eventId}/snapshot`;
+}
+
+/**
+ * GET /api/timeline/density?camera=X&start=Y&end=Z&bucket_sec=N
+ *
+ * Lightweight density data for canvas rendering. Use during panning
+ * instead of the full /api/timeline endpoint — returns only per-bucket
+ * tracked object counts (no segments, gaps, or preview info).
+ *
+ * TODO: add unit tests verifying bucket shape matches DensityResponse schema.
+ */
+export async function fetchDensity(camera, startTs, endTs, bucketSec, options = {}) {
+  const params = new URLSearchParams({
+    camera,
+    start: String(startTs),
+    end: String(endTs),
+  });
+  if (bucketSec != null) params.set('bucket_sec', String(bucketSec));
+  return apiFetch(`/timeline/density?${params}`, options);
 }
 
 /** GET /api/health */

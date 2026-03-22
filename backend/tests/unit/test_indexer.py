@@ -69,54 +69,52 @@ class TestParseSegmentPath:
 
 
 class TestGlobalBucketTimestamps:
+    """Bucket alignment invariants — now tested via TimeIndex.buckets_in_range."""
+
+    def _buckets(self, start_ts, end_ts, interval=2.0):
+        from app.services.time_index import TimeIndex
+        return TimeIndex(interval=interval).buckets_in_range(start_ts, end_ts)
+
     def test_alignment_not_segment_relative(self):
         """Buckets must be globally aligned, NOT relative to segment start."""
-        from app.services.preview_generator import _global_bucket_timestamps
         # Segment starting at non-round time
-        buckets = _global_bucket_timestamps(1700000003.7, 1700000013.7, 2.0)
+        buckets = self._buckets(1700000003.7, 1700000013.7)
         # All buckets must be divisible by 2.0
         for b in buckets:
             assert abs(b % 2.0) < 0.01, f"Bucket {b} is not globally aligned"
 
     def test_first_bucket_gte_start(self):
-        from app.services.preview_generator import _global_bucket_timestamps
-        buckets = _global_bucket_timestamps(1700000003.7, 1700000013.7, 2.0)
+        buckets = self._buckets(1700000003.7, 1700000013.7)
         assert all(b >= 1700000003.7 for b in buckets)
 
     def test_last_bucket_lte_end(self):
-        from app.services.preview_generator import _global_bucket_timestamps
-        buckets = _global_bucket_timestamps(1700000003.7, 1700000013.7, 2.0)
+        buckets = self._buckets(1700000003.7, 1700000013.7)
         assert all(b <= 1700000013.7 + 0.01 for b in buckets)
 
     def test_empty_range_returns_empty(self):
-        from app.services.preview_generator import _global_bucket_timestamps
         # Range of 0.5s starting mid-interval — no bucket fits (next bucket is at 1700000012.0)
-        buckets = _global_bucket_timestamps(1700000010.1, 1700000010.6, 2.0)
+        buckets = self._buckets(1700000010.1, 1700000010.6)
         assert buckets == []
 
     def test_exact_boundary_included(self):
         """A bucket exactly at end_ts should be included."""
-        from app.services.preview_generator import _global_bucket_timestamps
-        buckets = _global_bucket_timestamps(1700000000.0, 1700000010.0, 2.0)
+        buckets = self._buckets(1700000000.0, 1700000010.0)
         assert 1700000010.0 in buckets
 
     def test_interval_spacing(self):
-        from app.services.preview_generator import _global_bucket_timestamps
-        buckets = _global_bucket_timestamps(1700000000.0, 1700000020.0, 2.0)
+        buckets = self._buckets(1700000000.0, 1700000020.0)
         for i in range(1, len(buckets)):
             gap = round(buckets[i] - buckets[i - 1], 3)
             assert gap == pytest.approx(2.0, abs=0.01)
 
     def test_count_correct(self):
-        """interval=2, range=10 → 5 buckets at 0,2,4,6,8 (or 2,4,6,8,10)."""
-        from app.services.preview_generator import _global_bucket_timestamps
-        buckets = _global_bucket_timestamps(1700000000.0, 1700000010.0, 2.0)
+        """interval=2, range=10 → 6 buckets at 0,2,4,6,8,10."""
+        buckets = self._buckets(1700000000.0, 1700000010.0)
         assert len(buckets) == 6  # 0,2,4,6,8,10
 
     def test_non_integer_start(self):
-        from app.services.preview_generator import _global_bucket_timestamps
         # start at 1.5, interval 2 → first bucket at 2.0
-        buckets = _global_bucket_timestamps(1.5, 9.5, 2.0)
+        buckets = self._buckets(1.5, 9.5)
         assert buckets[0] == pytest.approx(2.0, abs=0.01)
 
 

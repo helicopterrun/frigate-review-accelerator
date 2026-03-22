@@ -22,7 +22,12 @@ class Settings(BaseSettings):
     preview_interval_sec: int = 2
     preview_width: int = 320
     preview_quality: int = 5  # ffmpeg JPEG quality (1-31, lower = better)
-    preview_workers: int = 4
+    # Number of worker threads for concurrent preview generation.
+    # Keep at 2 on single-iGPU systems — VAAPI does not parallelize
+    # across concurrent ffmpeg processes. The _vaapi_semaphore in
+    # preview_generator.py provides additional protection regardless
+    # of this setting.
+    preview_workers: int = 2
 
     # Preview prioritization
     # Only eagerly generate previews for segments newer than this many hours.
@@ -46,7 +51,12 @@ class Settings(BaseSettings):
 
     # Frigate VOD/HLS playback
     frigate_vod_enabled: bool = True
-    frigate_vod_window_sec: int = 7200  # width of HLS window to request from Frigate
+    frigate_vod_window_sec: int = 86400  # width of HLS window to request from Frigate (24 h)
+
+    # Labels that trigger "important" flag in density buckets.
+    # Phase 1: label-only rules. Phase 2 adds zone-based rules.
+    # Override via IMPORTANT_LABELS='["cat","bird","bear"]' in .env
+    important_labels: list[str] = ["cat", "bird", "bear", "horse"]
 
     def ensure_dirs(self):
         """Create required directories if they don't exist."""

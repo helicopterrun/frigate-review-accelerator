@@ -6,7 +6,7 @@ Frigate recording path structure:
 Each MP4 is a short segment (typically 10 seconds). The indexer:
   1. Walks the directory tree
   2. Parses timestamps from the path
-  3. Probes duration with ffprobe (batched)
+  3. Optionally probes duration with ffprobe (batched) — probe=True only
   4. Inserts new segments into SQLite
 
 Designed to run both as a one-shot CLI and as a periodic background task.
@@ -26,6 +26,12 @@ from pathlib import Path
 from app.config import settings
 
 log = logging.getLogger(__name__)
+
+# Assumed segment duration when probe=False (Frigate default segment length).
+# Using this avoids the per-file ffprobe subprocess during bulk indexing, which
+# would be prohibitively slow at 1M+ segments.  The actual duration matters only
+# for exact gap calculations; for timeline rendering the approximation is fine.
+ASSUMED_DURATION_SEC = 10.0
 
 # Regex to parse: {YYYY-MM-DD}/{HH}/{camera}/{MM}.{SS}.mp4
 SEGMENT_PATTERN = re.compile(
@@ -199,7 +205,7 @@ def scan_recordings_dir(recordings_path: Path, scan_state: dict | None = None) -
 def index_segments_sync(
     recordings_path: Path | None = None,
     db_path: Path | None = None,
-    probe: bool = True,
+    probe: bool = False,
     batch_size: int = 200,
 ) -> dict[str, int]:
     """Synchronous full index run. Returns {camera: new_segment_count}.
@@ -210,8 +216,11 @@ def index_segments_sync(
       3. Probe durations for new segments (if probe=True)
       4. Batch insert into SQLite
 
-    If probe=False, estimates duration as 10s (Frigate default segment length).
-    This is much faster for initial bulk indexing.
+    probe defaults to False because calling ffprobe on every new segment would
+    be prohibitively slow at scale (1M+ segments, 9 cameras).  Frigate segments
+    are almost always exactly ASSUMED_DURATION_SEC (10 s), so the approximation
+    is safe for timeline rendering and gap detection.  Pass probe=True only from
+    the CLI when you need exact durations for a small set of files.
     """
     from app.models.database import init_db_sync
 
@@ -266,7 +275,7 @@ def index_segments_sync(
 
         rows = []
         for seg in batch:
-            duration = durations.get(seg["abs_path"], 10.0)  # default 10s
+            duration = durations.get(seg["abs_path"], ASSUMED_DURATION_SEC)
             rows.append((
                 seg["camera"],
                 seg["start_ts"],
@@ -434,8 +443,8 @@ def index_segments_since(
             rows.append((
                 seg["camera"],
                 seg["start_ts"],
-                seg["start_ts"] + 10.0,  # default duration — Frigate segments are ~10s
-                10.0,
+                seg["start_ts"] + ASSUMED_DURATION_SEC,
+                ASSUMED_DURATION_SEC,
                 seg["path"],
                 seg["file_size"],
                 now_ts,

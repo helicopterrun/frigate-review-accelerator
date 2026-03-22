@@ -15,17 +15,19 @@ v3 changes:
     Frontend calls this when the user opens a camera or changes range.
     The worker drains the queue next cycle, prioritizing this viewport.
 
+Phase 3 changes:
+  - _fallback_db_lookup removed; miss now enqueues via PreviewScheduler +
+    checks for a Frigate event snapshot before returning 404
+  - _quantize_ts / _bucket_path now delegate to TimeIndex singleton
+
 The key insight: preview filenames ARE the timestamp (e.g. 1700000002.00.jpg).
 So lookup is just math + path construction. No index needed.
 """
 
-import asyncio
-import math
 import logging
 from collections import OrderedDict
-from datetime import datetime, timezone
-from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import FileResponse, Response
 
@@ -34,12 +36,10 @@ from app.models.database import get_db
 from app.models.schemas import CameraPreviewStatus, PreviewFrame, PreviewStrip
 from app.services.worker import enqueue_preview_request
 from app.services.hls import _build_hls_url, _resolve_hls_url
+from app.services.time_index import get_time_index
 
 router = APIRouter(prefix="/api", tags=["preview"])
 log = logging.getLogger(__name__)
-
-# Strong references to active on-demand tasks — prevents GC before completion
-_active_demand_tasks: set[asyncio.Task] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -90,26 +90,34 @@ _cache = ImageCache(max_size=500)
 
 
 # ---------------------------------------------------------------------------
-# Bucket math
+# Bucket math — delegates to TimeIndex singleton
 # ---------------------------------------------------------------------------
 def _quantize_ts(ts: float, interval: float) -> float:
     """Snap a timestamp to the nearest preview bucket.
 
+    Keeps the existing signature for callers; delegates to TimeIndex so there
+    is a single source of truth for bucket arithmetic.  When interval matches
+    settings.preview_interval_sec the module singleton is reused; otherwise a
+    lightweight TimeIndex is constructed for the given interval.
+
     >>> _quantize_ts(1700000003.7, 2.0)
     1700000004.0
     """
-    return round(ts / interval) * interval
+    idx = get_time_index()
+    if interval == idx._interval:
+        return idx.bucket_ts(ts)
+    # Different interval requested (e.g. unit tests) — use a temporary index
+    from app.services.time_index import TimeIndex
+    return TimeIndex(interval=interval).bucket_ts(ts)
 
 
-def _bucket_path(camera: str, bucket_ts: float) -> Path:
+def _bucket_path(camera: str, bucket_ts: float):
     """Build the filesystem path for a bucketed preview frame.
 
+    Keeps the existing signature for callers; delegates to TimeIndex singleton.
     Structure: {preview_root}/{camera}/{YYYY-MM-DD}/{bucket_ts:.2f}.jpg
     """
-    dt = datetime.fromtimestamp(bucket_ts, tz=timezone.utc)
-    date_dir = dt.strftime("%Y-%m-%d")
-    filename = f"{bucket_ts:.2f}.jpg"
-    return settings.preview_output_path / camera / date_dir / filename
+    return get_time_index().bucket_path(camera, bucket_ts)
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +132,7 @@ async def get_preview_frame(camera: str, timestamp: float):
       2. Check LRU memory cache → return bytes if hit
       3. Build filesystem path → read + cache + return
       4. If exact bucket missing, try ±1 bucket (jitter tolerance)
+      5. On miss: check Frigate event snapshot (Phase 7), enqueue for generation
 
     Returns JPEG bytes with aggressive cache headers.
     """
@@ -155,8 +164,26 @@ async def get_preview_frame(camera: str, timestamp: float):
                 bucket_ts = alt_ts
                 break
         else:
-            # No adjacent bucket either — fall back to DB nearest-neighbor
-            return await _fallback_db_lookup(camera, timestamp)
+            # No adjacent bucket found — Phase 7: try Frigate event snapshot
+            snapshot_data = await _try_frigate_event_snapshot(camera, timestamp)
+            if snapshot_data:
+                _cache.put(camera, bucket_ts, snapshot_data)
+                return Response(
+                    content=snapshot_data,
+                    media_type="image/jpeg",
+                    headers={
+                        "Cache-Control": "public, max-age=86400",
+                        "X-Preview-Timestamp": f"{bucket_ts:.2f}",
+                        "X-Cache": "FRIGATE-SNAPSHOT",
+                    },
+                )
+
+            # Enqueue this bucket for generation so the next request succeeds
+            enqueue_preview_request(camera, bucket_ts, bucket_ts + interval)
+            raise HTTPException(
+                status_code=404,
+                detail="Preview not yet generated — enqueued",
+            )
 
     # 3. Read, cache, return
     try:
@@ -177,46 +204,43 @@ async def get_preview_frame(camera: str, timestamp: float):
     )
 
 
-async def _fallback_db_lookup(camera: str, timestamp: float):
-    """Last resort: DB nearest-neighbor lookup.
+async def _try_frigate_event_snapshot(camera: str, timestamp: float) -> bytes | None:
+    """Serve the best Frigate event snapshot overlapping this timestamp.
 
-    Only used when bucket math fails (e.g. segments with non-standard
-    duration, or previews generated with a different interval).
-    If this fires often, something is wrong with preview generation.
+    Selection: highest confidence score; ties broken by temporal proximity.
+    If a snapshot is returned, the caller MUST NOT enqueue a generation job —
+    Frigate already has the best available frame.
     """
-    log.debug("Bucket miss for %s@%.2f — falling back to DB", camera, timestamp)
-
-    async with get_db() as db:
-        row = await db.execute_fetchall(
-            """SELECT image_path, ts
-               FROM previews
-               WHERE camera = ?
-               ORDER BY ABS(ts - ?)
-               LIMIT 1""",
-            (camera, timestamp),
-        )
-
-        if not row:
-            raise HTTPException(status_code=404, detail="No preview frames for camera")
-
-        image_path = settings.preview_output_path / row[0][0]
-        if not image_path.exists():
-            raise HTTPException(status_code=404, detail="Preview file missing")
-
-        # Cache this for future bucket hits
-        data = image_path.read_bytes()
-        actual_ts = row[0][1]
-        _cache.put(camera, actual_ts, data)
-
-        return Response(
-            content=data,
-            media_type="image/jpeg",
-            headers={
-                "Cache-Control": "public, max-age=86400",
-                "X-Preview-Timestamp": f"{actual_ts:.2f}",
-                "X-Cache": "FALLBACK",
-            },
-        )
+    try:
+        async with get_db() as db:
+            rows = await db.execute_fetchall(
+                """SELECT id, score
+                   FROM events
+                   WHERE camera = ?
+                     AND start_ts <= ?
+                     AND (end_ts IS NULL OR end_ts >= ?)
+                     AND has_snapshot = 1
+                   ORDER BY score DESC, ABS(start_ts - ?) ASC
+                   LIMIT 1""",
+                (camera, timestamp + 5.0, timestamp - 5.0, timestamp),
+            )
+        if not rows:
+            return None
+        event_id, score = rows[0]
+        # Verify this URL shape against installed Frigate version
+        # and existing working code before changing the path.
+        url = f"{settings.frigate_api_url}/api/events/{event_id}/snapshot.jpg"
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            r = await client.get(url)
+            if r.status_code == 200:
+                log.debug(
+                    "Phase 7: snapshot event=%s score=%.2f ts=%.0f",
+                    event_id, score or 0.0, timestamp,
+                )
+                return r.content
+    except Exception:
+        pass
+    return None
 
 
 @router.post("/preview/request")
@@ -239,19 +263,10 @@ async def request_previews(
     instead of waiting for the recency crawler to reach the right segments,
     the frontend signals exactly which window it needs right now.
     """
-    from app.services.preview_generator import process_pending_async
+    from app.services.preview_scheduler import get_scheduler
 
     enqueue_preview_request(camera, start, end)
-
-    async def _run():
-        try:
-            await process_pending_async(limit=30, min_start_ts=start)
-        except Exception:
-            pass
-
-    task = asyncio.create_task(_run())
-    _active_demand_tasks.add(task)
-    task.add_done_callback(_active_demand_tasks.discard)
+    get_scheduler().enqueue_viewport(camera, start, end)
 
     log.info(
         "On-demand preview request: camera=%s start=%.0f end=%.0f",
@@ -317,6 +332,8 @@ async def get_preview_strip(
 
 
 @router.get("/segment/{segment_id}/stream")
+# MP4 fallback — only used when Frigate VOD is unreachable (hls_url=None).
+# Preserve this endpoint. Do not delete it.
 async def stream_segment(segment_id: int):
     """Stream an MP4 segment for playback.
 
