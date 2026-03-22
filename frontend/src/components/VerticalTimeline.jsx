@@ -105,8 +105,6 @@ const EVENT_COLORS = {
   default:    '#ffcc00',
 };
 
-const FONT_STACK = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
-
 // ─── Icon map: Lucide SVG elements keyed by Frigate label ───────────────────
 // Unlisted labels ("face", "fire", "license_plate", etc.) silently produce no
 // icon — no text fallback, no placeholder, no console warning.
@@ -232,25 +230,26 @@ export default function VerticalTimeline({
   isMobile = false,
   timeFormat = '12h',
   onPreloadHint = null,
+  // Visual defaults last tuned: 2026-03-22 (from Storybook Controls)
   // Font props — optional, defaults match existing hardcoded values exactly.
   // App.jsx requires no changes. Override in Storybook Controls to experiment.
-  fontFamily     = FONT_STACK,
-  tickFontSize   = 11,
+  fontFamily     = 'IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace',
+  tickFontSize   = 16,
   tickFontWeight = 400,
   tickFontStyle  = 'normal',
-  tickColor      = 'rgba(74, 79, 101, 1.0)',
+  tickColor      = 'rgba(97, 137, 67)',
   labelFontSize   = 12,
   labelFontWeight = 600,
   labelFontStyle  = 'normal',
   secondsAccentColor = 'rgba(232, 69, 10, 0.95)',
   // Visual layout props — controllable from Storybook
-  backgroundColor    = null,           // overrides the canvas background when set
-  tickLabelXPct      = 93,             // 0-100: horizontal position of tick labels (legacy, superseded by tickLabelLeft)
+  backgroundColor    = '#0B0E14',      // overrides the canvas background when set
+  tickLabelXPct      = 100,            // 0-100: horizontal position of tick labels (legacy, superseded by tickLabelLeft)
   // TODO: test paddingLeft/paddingRight/tickLabelLeft props — verify barStart, barEnd, and tick label x position
   // respond to prop changes and that drawCanvas and drawReticleOnly stay in sync.
-  paddingLeft   = 4,                   // px: left edge of bar zone (barStart)
-  paddingRight  = 4,                   // px: right inset from canvas edge (barEnd = w - paddingRight)
-  tickLabelLeft = 8,                   // px: x coordinate for tick time label fillText
+  paddingLeft   = 0,                   // px: left edge of bar zone (barStart)
+  paddingRight  = 0,                   // px: right inset from canvas edge (barEnd = w - paddingRight)
+  tickLabelLeft = 30,                  // px: x coordinate for tick time label fillText
   // TODO: test showDensity prop — false skips density gradient, gap fill, and important event markers; true renders all three layers.
   showDensity   = false,               // when false, skips gap fill, density gradient, and important event markers
 }) {

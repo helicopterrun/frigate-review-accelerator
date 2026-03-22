@@ -1034,26 +1034,7 @@ export default function App() {
               ))}
             </div>
 
-            {/* 4. Time format toggle */}
-            <div style={{ display: 'flex', gap: 0, border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
-              {['12h', '24h'].map((fmt) => (
-                <button
-                  key={fmt}
-                  onClick={() => handleTimeFormatToggle(fmt)}
-                  style={{
-                    background: timeFormat === fmt ? '#2a3a5c' : '#1a1d27',
-                    border: 'none',
-                    color: timeFormat === fmt ? '#90c8f0' : '#666',
-                    padding: '4px 10px',
-                    cursor: 'pointer',
-                    fontSize: 13,
-                    fontFamily: 'monospace',
-                  }}
-                >{fmt}</button>
-              ))}
-            </div>
-
-            {/* 5. Goto */}
+            {/* 6. Goto */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ color: '#666', fontSize: 13 }}>Go to:</span>
               <input
@@ -1074,27 +1055,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Label filter pills (single-camera mode only) */}
-      {!multiMode && (
-        <LabelFilterPills
-          availableLabels={availableLabels}
-          activeLabels={activeLabels}
-          onToggle={toggleLabel}
-          onToggleAll={toggleAllLabels}
-          isMobile={isMobile}
-        />
-      )}
-
       {/* Main content */}
-      {multiMode && selectedCameras.length >= 2 ? (
-        /* ── Split view (unchanged) ── */
-        <SplitView
-          cameras={selectedCameras}
-          rangeStart={rangeStart}
-          rangeEnd={rangeEnd}
-          onRangeChange={handleRangeChange}
-        />
-      ) : !multiMode ? (
+      {(
         /* ── Single-camera: 2-column layout ── */
         <div ref={containerRef} style={{
           ...styles.singleLayout,
@@ -1197,7 +1159,7 @@ export default function App() {
             </div>
           </div>
         </div>
-      ) : null}
+      )}
 
       <AdminPanel open={opsOpen} onClose={() => setOpsOpen(false)} />
     </div>
