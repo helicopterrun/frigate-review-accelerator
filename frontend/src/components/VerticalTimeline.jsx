@@ -805,7 +805,15 @@ export default function VerticalTimeline({
     // 0.002: tight deadzone so very slow glides run to completion.
     const DEADZONE = secondsPerPixel * 0.002;
 
-    scrollVelocityRef.current *= DAMPING;
+    // zoomFactor: 0.0 at tightest zoom (5m), 1.0 at 1h and above.
+    // Provides zoom-aware sensitivity and damping without affecting
+    // the flywheel feel at wider zoom levels.
+    // At tight zoom decay faster for precision. At wide zoom use full
+    // DAMPING for the long flywheel glide.
+    const rangeSec = endTs - startTs;
+    const zoomFactor = Math.min(1.0, rangeSec / 3600);
+    const effectiveDamping = 0.88 + (DAMPING - 0.88) * zoomFactor;
+    scrollVelocityRef.current *= effectiveDamping;
 
     if (Math.abs(scrollVelocityRef.current) < DEADZONE) {
       scrollVelocityRef.current = 0;
@@ -815,7 +823,7 @@ export default function VerticalTimeline({
 
     onPan(scrollVelocityRef.current);
     scrollRafRef.current = requestAnimationFrame(decayScroll);
-  }, [onPan, secondsPerPixel]);
+  }, [onPan, secondsPerPixel, endTs, startTs]);
 
   const handleWheel = useCallback(
     (e) => {
@@ -838,7 +846,15 @@ export default function VerticalTimeline({
         * (normalizedDelta / 15) ** 2
         * 15;
 
-      const sensitivity = secondsPerPixel * K;
+      // zoomFactor: 0.0 at tightest zoom (5m), 1.0 at 1h and above.
+      // Provides zoom-aware sensitivity and damping without affecting
+      // the flywheel feel at wider zoom levels.
+      // Scale sensitivity down at tight zoom — more mass at small ranges.
+      // At 10m (600s range) this gives ~0.4x the normal sensitivity.
+      // At 1h+ it approaches 1.0x and the full flywheel feel is preserved.
+      const rangeSec = endTs - startTs;
+      const zoomFactor = Math.min(1.0, rangeSec / 3600);
+      const sensitivity = secondsPerPixel * K * (0.3 + 0.7 * zoomFactor);
       scrollVelocityRef.current += curved * sensitivity;
 
       // Impulse BEFORE clamp: first frame reflects raw intent.
@@ -1053,7 +1069,13 @@ export default function VerticalTimeline({
             const curvedDy = Math.sign(normalizedDy)
               * (normalizedDy / 60) ** 2
               * 60;
-            const deltaSec = curvedDy * secondsPerPixel * K_TOUCH;
+            // zoomFactor: 0.0 at tightest zoom (5m), 1.0 at 1h and above.
+            // Provides zoom-aware sensitivity and damping without affecting
+            // the flywheel feel at wider zoom levels.
+            const rangeSec = endTs - startTs;
+            const zoomFactor = Math.min(1.0, rangeSec / 3600);
+            const deltaSec = curvedDy * secondsPerPixel * K_TOUCH
+                             * (0.3 + 0.7 * zoomFactor);
             scrollVelocityRef.current = deltaSec;
             onPan(deltaSec);
             // Continuous tracking: update origin so each move delta is relative
