@@ -36,7 +36,7 @@ import {
   requestPreviews,
   eventSnapshotUrl,
 } from './utils/api.js';
-import { nowTs, formatDateTime, formatTime, formatTimeShort, bucketSizeForRange } from './utils/time.js';
+import { nowTs, formatDateTime, formatTime, formatTimeShort, formatDayDate, bucketSizeForRange } from './utils/time.js';
 import { RETICLE_FRACTION } from './utils/constants.js';
 
 // Autoplay: idle threshold before timeline starts advancing.
@@ -1126,7 +1126,7 @@ export default function App() {
           }}>
             {/* Top range label */}
             <div style={styles.rangeLabel}>
-              {formatTimeShort(rangeStart, timeFormat)}
+              {formatDayDate(rangeStart)}
             </div>
 
             {/* VerticalTimeline */}
@@ -1155,7 +1155,7 @@ export default function App() {
 
             {/* Bottom range label */}
             <div style={{ ...styles.rangeLabel, borderTop: '1px solid #1e2130', borderBottom: 'none' }}>
-              {formatTimeShort(rangeEnd, timeFormat)}
+              {formatDayDate(rangeEnd)}
             </div>
           </div>
         </div>
@@ -1271,7 +1271,7 @@ const styles = {
     color: '#555',
     borderBottom: '1px solid #1e2130',
     flexShrink: 0,
-    fontFamily: 'monospace',
+    fontFamily: '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace',
   },
   loading: { color: '#888', textAlign: 'center', paddingTop: 100, fontSize: 16 },
 };

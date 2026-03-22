@@ -48,6 +48,20 @@ export function formatDuration(sec) {
 }
 
 /**
+ * Format a Unix timestamp as "Weekday, Mon D", e.g. "Wednesday, Nov 14".
+ * Used for range labels in the VerticalTimeline column.
+ *
+ * formatDayDate(1700000000) → "Tuesday, Nov 14"
+ */
+export function formatDayDate(ts) {
+  const d = new Date(ts * 1000);
+  const day = d.toLocaleDateString('en-US', { weekday: 'long' });
+  const month = d.toLocaleDateString('en-US', { month: 'short' });
+  const date = d.getDate();
+  return `${day}, ${month} ${date}`;
+}
+
+/**
  * Get the start of today (midnight) as Unix timestamp.
  * Used as default timeline range.
  */
