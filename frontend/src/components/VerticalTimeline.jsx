@@ -4,9 +4,10 @@
  * Time flows bottom (startTs) → top (endTs). Future is UP, past is DOWN.
  *
  * Horizontal zones (left to right):
- *   [0 … 58px]      — time tick labels (right-aligned, monospace 11px)
+ *   [0 … 58px]      — left label zone: event icons (right-aligned to LABEL_WIDTH-18)
  *   [58px]           — 1px separator line
- *   [59 … w-18px]    — bar zone: density gradient, detection ticks, event markers
+ *   [59 … w-18px]    — bar zone: density gradient, detection ticks, event markers,
+ *                      tick labels (left-aligned at LABEL_WIDTH+6)
  *   [w-18px … w]     — right edge (used by important-event diamond markers)
  *
  * Drawing order (bottom layer → top):
@@ -515,9 +516,9 @@ export default function VerticalTimeline({
       ctx.fillStyle = tickColor;
 
       ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
-      ctx.textAlign = 'right';
+      ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(formatHHMM(t, timeFormat), (tickLabelXPct / 100) * LABEL_WIDTH, y);
+      ctx.fillText(formatHHMM(t, timeFormat), LABEL_WIDTH + 6, y);
       ctx.globalAlpha = 1.0;          // ALWAYS reset immediately
     }
 
@@ -1056,17 +1057,19 @@ export default function VerticalTimeline({
       />
 
       {/* Reticle timestamp badge — DOM overlay scoped to canvas wrapper, pointer-events:none */}
+      {/* TODO: test tick label and badge alignment — tick labels left-aligned
+          at LABEL_WIDTH + 6, badge left-aligned to match */}
       {reticleParts && (
         <div
           style={{
             position: 'absolute',
             top: `calc(${RETICLE_FRACTION * 100}% - 24px)`,
-            left: LABEL_WIDTH + 2,
+            left: LABEL_WIDTH - 4,
             right: EVENT_WIDTH + 2,
             height: 48,
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
+            justifyContent: 'flex-start',
             pointerEvents: 'none',
             userSelect: 'none',
           }}
