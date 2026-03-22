@@ -220,7 +220,9 @@ export default function App() {
 
       lastInteractionRef.current = Date.now();
       autoplayActiveRef.current = false;
-      setCursorTs(prev => Math.min(prev + delta, nowTs()));
+      // TODO: test cursor ceiling — cursorTs must never exceed latest_ts for the
+      // selected camera; autoplay stops advancing when latest_ts is reached.
+      setCursorTs(prev => Math.min(prev + delta, latestCameraTsRef.current ?? nowTs()));
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -290,6 +292,18 @@ export default function App() {
   // selectedCameraRef: read by the stable RAF tick without stale closure.
   const selectedCameraRef = useRef(null);
   useEffect(() => { selectedCameraRef.current = selectedCamera; }, [selectedCamera]);
+
+  // latestCameraTs: the most recent segment end for the selected camera.
+  // Derived from /api/cameras response (cam.latest_ts). Clamping cursorTs
+  // to this value prevents autoplay and pan from advancing into the future
+  // beyond actual recordings.
+  const latestCameraTs = useMemo(() => {
+    const cam = cameras.find(c => c.name === selectedCamera);
+    return cam?.latest_ts ?? null;
+  }, [cameras, selectedCamera]);
+  // Ref mirror so the RAF tick can read the current ceiling without stale closure.
+  const latestCameraTsRef = useRef(null);
+  useEffect(() => { latestCameraTsRef.current = latestCameraTs; }, [latestCameraTs]);
   // preloadRequestRef: incremented on interaction to cancel in-flight preload fetches.
   // idlePreloadStartedRef: prevents re-firing preload within the same idle window.
   // TODO: test preload cancel — preloadRequestRef increment on interaction discards
@@ -380,7 +394,10 @@ export default function App() {
             }
           }
 
-          return Math.min(prev + advanceSec, nowTs());
+          // TODO: test cursor ceiling — cursorTs must never exceed latest_ts for the
+          // selected camera; autoplay stops advancing when latest_ts is reached.
+          const ceiling = latestCameraTsRef.current ?? nowTs();
+          return Math.min(prev + advanceSec, ceiling);
         });
       } else {
         if (autoplayActiveRef.current) {
@@ -582,14 +599,17 @@ export default function App() {
     nearEventCacheRef.current = { sorted, event: next };
   }, [filteredEvents]);
 
-  // ─── Pan: shift cursorTs by deltaSec, clamping at nowTs() ───
+  // ─── Pan: shift cursorTs by deltaSec, clamping at camera latest_ts ───
   const handlePan = useCallback((deltaSec) => {
     lastInteractionRef.current = Date.now();
     autoplayActiveRef.current = false;
     preloadRequestRef.current++; // cancel in-flight idle preload
     idlePreloadStartedRef.current = false; // allow fresh preload on next idle window
     setPreloadTarget(null);
-    setCursorTs(prev => Math.min(prev + deltaSec, nowTs()));
+    // TODO: test cursor ceiling — cursorTs must never exceed latest_ts for the
+    // selected camera; autoplay stops advancing when latest_ts is reached.
+    const ceiling = latestCameraTsRef.current ?? nowTs();
+    setCursorTs(prev => Math.min(prev + deltaSec, ceiling));
   }, []);
 
   // ─── Zoom: change visible window width, keeping cursorTs fixed ───
