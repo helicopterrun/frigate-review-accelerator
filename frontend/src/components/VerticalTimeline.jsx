@@ -791,11 +791,19 @@ export default function VerticalTimeline({
   }, []);
 
   // ── Scroll-to-pan: inertial physics with velocity + damping ─────────────────
+  // Scroll physics — tuned for MacBook M3 trackpad + iPhone 15 Pro Max
+  // Scroll physics — flywheel model
+  // Squared velocity curve: small inputs barely move, large inputs
+  // build fast. High DAMPING = long glide. Tuned for MacBook M3
+  // trackpad + iPhone 15 Pro Max touch.
+  // K / K_TOUCH kept low — the curve provides the dynamic range.
+  const DAMPING   = 0.97;    // long slow decay — flywheel feel
+  const K         = 0.06;    // base wheel sensitivity (kept low)
+  const K_TOUCH   = 0.03;    // touch sensitivity (touch dy >> trackpad deltaY)
+
   const decayScroll = useCallback(() => {
-    const DAMPING  = 0.88;
-    // 0.008 ≈ 0.5/60: frame-time normalized deadzone.
-    // Sub-pixel at all zoom levels — no jitter, no premature stop.
-    const DEADZONE = secondsPerPixel * 0.008;
+    // 0.002: tight deadzone so very slow glides run to completion.
+    const DEADZONE = secondsPerPixel * 0.002;
 
     scrollVelocityRef.current *= DAMPING;
 
@@ -820,23 +828,24 @@ export default function VerticalTimeline({
         scrollRafRef.current = null;
       }
 
-      // Clamp to 40: normalizes trackpad micro-events and mouse wheel.
+      // Normalize delta — clamp tighter for trackpad precision
       const normalizedDelta =
-        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 40);
+        Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 15);
 
-      // K=0.22: zoom-aware sensitivity. Same gesture = same screen
-      // fraction regardless of zoom level. Tune ±0.05 if needed.
-      const K = 0.22;
+      // Squared curve: sign preserved, magnitude squared then rescaled.
+      // Small inputs stay small, large inputs grow fast.
+      const curved = Math.sign(normalizedDelta)
+        * (normalizedDelta / 15) ** 2
+        * 15;
+
       const sensitivity = secondsPerPixel * K;
-
-      scrollVelocityRef.current += normalizedDelta * sensitivity;
+      scrollVelocityRef.current += curved * sensitivity;
 
       // Impulse BEFORE clamp: first frame reflects raw intent.
       onPan(scrollVelocityRef.current);
 
-      // Clamp for decay stability only — not felt on frame 1.
-      // range*0.15: consistent cap across zoom levels, no teleport.
-      const maxV = (endTs - startTs) * 0.15;
+      // Raised cap: fast flicks can really travel at wide zoom.
+      const maxV = (endTs - startTs) * 0.25;
       scrollVelocityRef.current = Math.max(
         -maxV,
         Math.min(maxV, scrollVelocityRef.current)
@@ -1038,9 +1047,13 @@ export default function VerticalTimeline({
               cancelAnimationFrame(scrollRafRef.current);
               scrollRafRef.current = null;
             }
-            // Same zoom-aware sensitivity as the wheel handler (K=0.22).
-            const K = 0.22;
-            const deltaSec = dy * secondsPerPixel * K;
+            // Squared curve applied to touch dy — same model as wheel handler.
+            // Clamp at 60px (typical fast swipe); small taps stay precise.
+            const normalizedDy = Math.sign(dy) * Math.min(Math.abs(dy), 60);
+            const curvedDy = Math.sign(normalizedDy)
+              * (normalizedDy / 60) ** 2
+              * 60;
+            const deltaSec = curvedDy * secondsPerPixel * K_TOUCH;
             scrollVelocityRef.current = deltaSec;
             onPan(deltaSec);
             // Continuous tracking: update origin so each move delta is relative
@@ -1061,7 +1074,7 @@ export default function VerticalTimeline({
           const touch = e.changedTouches[0];
           if (touchPannedRef.current) {
             // Pan gesture: kick off inertial glide and skip click-to-recenter.
-            const DEADZONE = secondsPerPixel * 0.008;
+            const DEADZONE = secondsPerPixel * 0.002;
             if (Math.abs(scrollVelocityRef.current) > DEADZONE) {
               if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
               scrollRafRef.current = requestAnimationFrame(decayScroll);
