@@ -999,13 +999,14 @@ export default function VerticalTimeline({
         userSelect: 'none',
         display: 'flex',
         flexDirection: 'column',
+        touchAction: 'none',
       }}
     >
       {/* Canvas wrapper — relative-positioned so the badge is scoped to canvas height */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
       <canvas
         ref={canvasRef}
-        style={{ cursor: 'crosshair', display: 'block', width: '100%', height: '100%', touchAction: 'manipulation' }}
+        style={{ cursor: 'crosshair', display: 'block', width: '100%', height: '100%', touchAction: 'none' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -1017,14 +1018,18 @@ export default function VerticalTimeline({
             scrollRafRef.current = null;
           }
           e.preventDefault();
+          e.stopPropagation();
           const touch = e.touches[0];
           touchStartRef.current = { x: touch.clientX, y: touch.clientY };
           handleMouseDown({ clientX: touch.clientX, clientY: touch.clientY });
         }}
         // TODO: test touch pan -- vertical swipe calls onPan with
         // zoom-scaled delta; inertial decay fires on touchEnd
+        // TODO: test mobile touch isolation — vertical swipe on timeline
+        // must not cause page scroll or overscroll bounce
         onTouchMove={(e) => {
           e.preventDefault();
+          e.stopPropagation();
           const touch = e.touches[0];
           const dx = touch.clientX - (touchStartRef.current?.x ?? touch.clientX);
           const dy = touch.clientY - (touchStartRef.current?.y ?? touch.clientY);
@@ -1053,6 +1058,7 @@ export default function VerticalTimeline({
         }}
         onTouchEnd={(e) => {
           e.preventDefault();
+          e.stopPropagation();
           const touch = e.changedTouches[0];
           // Kick off inertial glide if the last touch move left non-trivial velocity.
           const DEADZONE = secondsPerPixel * 0.008;
