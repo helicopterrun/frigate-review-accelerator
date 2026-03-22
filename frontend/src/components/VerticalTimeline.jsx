@@ -4,11 +4,10 @@
  * Time flows bottom (startTs) → top (endTs). Future is UP, past is DOWN.
  *
  * Horizontal zones (left to right):
- *   [0 … 58px]      — left label zone: event icons (right-aligned to LABEL_WIDTH-18)
- *   [58px]           — 1px separator line
- *   [59 … w-18px]    — bar zone: density gradient, detection ticks, event markers,
- *                      tick labels (left-aligned at LABEL_WIDTH+6)
- *   [w-18px … w]     — right edge (used by important-event diamond markers)
+ *   [0 … paddingLeft]            — left padding (default 4px)
+ *   [paddingLeft … w-paddingRight] — bar zone: density gradient, detection ticks,
+ *                                   event markers, tick labels (left-aligned at tickLabelLeft)
+ *   [w-paddingRight … w]         — right padding (default 4px)
  *
  * Drawing order (bottom layer → top):
  *   1.  Background
@@ -44,9 +43,6 @@ function useDebounce(fn, delay) {
     timer.current = setTimeout(() => fn(...args), delay);
   }, [fn, delay]);
 }
-
-const LABEL_WIDTH = 58;
-const EVENT_WIDTH = 18;
 
 // Named presets for quick-jump buttons (spec Section 6)
 const ZOOM_PRESETS = [
@@ -248,8 +244,13 @@ export default function VerticalTimeline({
   labelFontStyle  = 'normal',
   secondsAccentColor = 'rgba(232, 69, 10, 0.95)',
   // Visual layout props — controllable from Storybook
-  backgroundColor    = null,           // overrides both label-zone and bar-zone backgrounds when set
-  tickLabelXPct      = 93,             // 0-100: horizontal position of tick labels as % of LABEL_WIDTH
+  backgroundColor    = null,           // overrides the canvas background when set
+  tickLabelXPct      = 93,             // 0-100: horizontal position of tick labels (legacy, superseded by tickLabelLeft)
+  // TODO: test paddingLeft/paddingRight/tickLabelLeft props — verify barStart, barEnd, and tick label x position
+  // respond to prop changes and that drawCanvas and drawReticleOnly stay in sync.
+  paddingLeft   = 4,                   // px: left edge of bar zone (barStart)
+  paddingRight  = 4,                   // px: right inset from canvas edge (barEnd = w - paddingRight)
+  tickLabelLeft = 8,                   // px: x coordinate for tick time label fillText
 }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -344,8 +345,8 @@ export default function VerticalTimeline({
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.scale(dpr, dpr);
 
-    const barStart = LABEL_WIDTH + 1;
-    const barEnd = w - EVENT_WIDTH;
+    const barStart = paddingLeft;
+    const barEnd = w - paddingRight;
     const barW = barEnd - barStart;
     const reticleY = h * RETICLE_FRACTION;
 
@@ -361,17 +362,10 @@ export default function VerticalTimeline({
     const tickSec = TICK_INTERVALS.find((t) => t >= _minIntervalSec) ?? 86400;
 
     // 1. Background
-    ctx.fillStyle = backgroundColor ?? '#090b10';
-    ctx.fillRect(0, 0, LABEL_WIDTH, h);
     ctx.fillStyle = backgroundColor ?? '#0f1117';
-    ctx.fillRect(LABEL_WIDTH, 0, w - LABEL_WIDTH, h);
+    ctx.fillRect(0, 0, w, h);
 
-    // 3. Separator lines
-    ctx.fillStyle = '#1e2130';
-    ctx.fillRect(LABEL_WIDTH, 0, 1, h);
-    ctx.fillRect(barEnd, 0, 1, h);
-
-    // 4. Gap absence indication — subtle dark fill (no hatching)
+    // 3. Gap absence indication — subtle dark fill (no hatching)
     // Note: with flipped coords, tsToY(start_ts) > tsToY(end_ts), so clamp min/max.
     for (const gap of gaps) {
       const ya = tsToY(gap.start_ts);
@@ -518,7 +512,7 @@ export default function VerticalTimeline({
       ctx.globalAlpha = fadeFactor;   // fadeFactor is the sole opacity driver
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(formatHHMM(t, timeFormat), LABEL_WIDTH + 6, y);
+      ctx.fillText(formatHHMM(t, timeFormat), tickLabelLeft, y);
       ctx.globalAlpha = 1.0;          // ALWAYS reset immediately
     }
 
@@ -571,12 +565,13 @@ export default function VerticalTimeline({
         ctx.stroke();
       }
 
-      // Icon in left label zone — right-aligned to LABEL_WIDTH-4, collision-aware
+      // Icon — anchored at paddingLeft; may overlap tick labels at tickLabelLeft.
+      // TODO: revisit icon placement — icons at paddingLeft overlap tick labels at tickLabelLeft.
       const iconCanvas = ICON_CACHE.get(evt.label);
       if (iconCanvas && !labeledYs.some((ly) => Math.abs(y - ly) < 14)) {
         labeledYs.push(y);
         ctx.globalAlpha = distFromReticle <= 60 ? 1.0 : 0.45;
-        ctx.drawImage(iconCanvas, LABEL_WIDTH - 18, y - 7, 14, 14);
+        ctx.drawImage(iconCanvas, paddingLeft, y - 7, 14, 14);
       }
     }
     ctx.globalAlpha = 1.0;
@@ -675,7 +670,7 @@ export default function VerticalTimeline({
   }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
       fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
       labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor,
-      backgroundColor, tickLabelXPct]);
+      backgroundColor, tickLabelXPct, paddingLeft, paddingRight, tickLabelLeft]);
   // Note: cursorTs is NOT a dep — read from displayCursorRef at draw time.
 
   // Keep drawCanvasRef pointing to the latest version of drawCanvas.
@@ -727,8 +722,8 @@ export default function VerticalTimeline({
     // Re-apply DPR scale for all subsequent drawing (logical CSS pixels).
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    const barStart = LABEL_WIDTH + 1;
-    const barEnd = w - EVENT_WIDTH;
+    const barStart = paddingLeft;
+    const barEnd = w - paddingRight;
     const barW = barEnd - barStart;
     const reticleY = h * RETICLE_FRACTION;
     const spp = h > 0 ? (endTs - startTs) / h : 1;
@@ -765,7 +760,7 @@ export default function VerticalTimeline({
       ctx.closePath();
       ctx.fill();
     }
-  }, [dims, startTs, endTs]);
+  }, [dims, startTs, endTs, paddingLeft, paddingRight]);
 
   useEffect(() => { drawReticleOnlyRef.current = drawReticleOnly; }, [drawReticleOnly]);
 
@@ -1080,14 +1075,14 @@ export default function VerticalTimeline({
 
       {/* Reticle timestamp badge — DOM overlay scoped to canvas wrapper, pointer-events:none */}
       {/* TODO: test tick label and badge alignment — tick labels left-aligned
-          at LABEL_WIDTH + 6, badge left-aligned to match */}
+          at tickLabelLeft, badge left edge matches paddingLeft */}
       {reticleParts && (
         <div
           style={{
             position: 'absolute',
             top: `calc(${RETICLE_FRACTION * 100}% - 24px)`,
-            left: LABEL_WIDTH - 4,
-            right: EVENT_WIDTH + 2,
+            left: paddingLeft,
+            right: paddingRight,
             height: 48,
             display: 'flex',
             alignItems: 'center',
