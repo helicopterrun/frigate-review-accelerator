@@ -53,11 +53,23 @@ export default {
     // ── Visual layout controls ────────────────────────────────────────────
     backgroundColor: {
       control: { type: 'color' },
-      description: 'Canvas background color applied to both the label zone and bar zone',
+      description: 'Canvas background color',
     },
     tickLabelXPct: {
       control: { type: 'range', min: 0, max: 100, step: 1 },
-      description: 'Horizontal position of tick time labels as a percentage of the label zone width (0 = left, 100 = right)',
+      description: 'Legacy: horizontal position of tick labels as a % (superseded by tickLabelLeft)',
+    },
+    paddingLeft: {
+      control: { type: 'range', min: 0, max: 40, step: 1 },
+      description: 'Left edge of bar zone in px (barStart = paddingLeft)',
+    },
+    paddingRight: {
+      control: { type: 'range', min: 0, max: 40, step: 1 },
+      description: 'Right inset from canvas edge in px (barEnd = w - paddingRight)',
+    },
+    tickLabelLeft: {
+      control: { type: 'range', min: 0, max: 60, step: 1 },
+      description: 'X coordinate for tick time label fillText in px',
     },
     // ── Font controls ─────────────────────────────────────────────────────
     fontFamily: {
@@ -185,6 +197,7 @@ function makeMockGaps(anchorTs, rangeSec) {
 function InteractiveTimeline({
   timeFormat, isMobile, autoplayState,
   backgroundColor, tickLabelXPct,
+  paddingLeft, paddingRight, tickLabelLeft,
   fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
   labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor,
 }) {
@@ -225,6 +238,9 @@ function InteractiveTimeline({
           isMobile={isMobile}
           backgroundColor={backgroundColor}
           tickLabelXPct={tickLabelXPct}
+          paddingLeft={paddingLeft}
+          paddingRight={paddingRight}
+          tickLabelLeft={tickLabelLeft}
           fontFamily={fontFamily}
           tickFontSize={tickFontSize}
           tickFontWeight={tickFontWeight}
