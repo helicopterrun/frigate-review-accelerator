@@ -1,13 +1,48 @@
 """Shared fixtures for integration tests."""
 
 import asyncio
+import json
 import sqlite3
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
+
+
+# ---------------------------------------------------------------------------
+# DB helpers — plain functions shared across all integration test modules.
+# Not fixtures: import explicitly where needed.
+# ---------------------------------------------------------------------------
+
+def _insert_segment(db_path, camera, start_ts, end_ts, previews_generated=1):
+    """Insert a test segment row directly into the DB."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """INSERT INTO segments
+               (camera, start_ts, end_ts, duration, path, file_size, indexed_at, previews_generated)
+               VALUES (?, ?, ?, ?, ?, 1024, ?, ?)""",
+        (camera, start_ts, end_ts, end_ts - start_ts,
+         f"{camera}/{start_ts:.0f}.mp4", time.time(), previews_generated),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _insert_event(db_path, camera, start_ts, end_ts=None, label="person", zones=None):
+    """Insert a test event row directly into the DB."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """INSERT INTO events
+               (id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at, zones)
+               VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)""",
+        (f"{camera}-{start_ts}", camera, start_ts, end_ts, label, 0.9, time.time(),
+         json.dumps(zones or [])),
+    )
+    conn.commit()
+    conn.close()
 
 # ---------------------------------------------------------------------------
 # Patch settings BEFORE importing the app so the app sees test paths
@@ -39,6 +74,9 @@ def in_memory_db():
     conn.close()
 
 
+# function-scoped: each test gets a fresh DB.
+# Camera names in tests must be unique per test function to prevent
+# phantom row bleed if scope is ever elevated. See F-15 in code review.
 @pytest.fixture()
 def test_app(tmp_path, monkeypatch):
     """FastAPI test app pointing at temp directories."""
