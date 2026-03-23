@@ -61,6 +61,11 @@ export default function VideoPlayer({
   preloadTarget = null,
   autoplayActive = false,
   onPlaybackStateChange = null,
+  // DEV-only debug props — always null in production builds
+  debugOverrides = null,
+  onScrubPreviewStatus = null,
+  onDebugIsPlaying = null,
+  onDebugDisplayedUrl = null,
 }) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null);
@@ -121,16 +126,20 @@ export default function VideoPlayer({
       loadingImgRef.current = null;
     }
 
+    if (onScrubPreviewStatus) onScrubPreviewStatus('pending');
     const img = new Image();
     loadingImgRef.current = img;
 
     img.onload = () => {
       setDisplayedPreviewUrl(scrubPreviewUrl);
       loadingImgRef.current = null;
+      if (onScrubPreviewStatus) onScrubPreviewStatus(200);
+      if (onDebugDisplayedUrl) onDebugDisplayedUrl(scrubPreviewUrl);
     };
     img.onerror = () => {
       // Keep last good frame rather than going blank
       loadingImgRef.current = null;
+      if (onScrubPreviewStatus) onScrubPreviewStatus(404);
     };
 
     img.src = scrubPreviewUrl;
@@ -665,7 +674,8 @@ export default function VideoPlayer({
   // Use autoplayActive (prop) instead of isPlaying (local state): after a seek,
   // App.jsx sets autoplayActive=false immediately, but isPlaying may still be true
   // from a previous play() call that hasn't fired its pause/ended event yet.
-  const showOverlay = scrubPreviewUrl != null && !autoplayActive && eventSnapshot == null;
+  // TODO: test forceShowScrubOverlay bypasses autoplayActive condition
+  const showOverlay = scrubPreviewUrl != null && (debugOverrides?.forceShowScrubOverlay || !autoplayActive) && eventSnapshot == null;
   const showPlaceholder = !hasTarget && !showOverlay && !eventSnapshot;
 
   return (
@@ -689,6 +699,7 @@ export default function VideoPlayer({
             display: 'block',
             background: '#000',
             objectFit: 'contain',
+            ...(debugOverrides?.forceHideVideo && { visibility: 'hidden' }),
           }}
           onTimeUpdate={handleTimeUpdate}
           onLoadedMetadata={handleLoadedMetadata}
@@ -698,16 +709,26 @@ export default function VideoPlayer({
             setIsPlaying(true);
             if (onPlaybackStart) onPlaybackStart();
             if (onPlaybackStateChange) onPlaybackStateChange(true);
+            if (onDebugIsPlaying) onDebugIsPlaying(true);
           }}
           onPause={() => {
             setIsPlaying(false);
             if (onPlaybackStateChange) onPlaybackStateChange(false);
+            if (onDebugIsPlaying) onDebugIsPlaying(false);
           }}
           playsInline
         />
 
-        {/* Hidden preload element for next MP4 segment */}
-        <video ref={preloadRef} style={{ display: 'none' }} preload="auto" muted />
+        {/* Hidden preload element for next MP4 segment / speculative HLS preload */}
+        <video
+          ref={preloadRef}
+          style={debugOverrides?.forceShowPreloadVideo
+            ? { position: 'absolute', top: 0, left: 0, width: 200, height: 112, opacity: 0.7, zIndex: 10 }
+            : { display: 'none' }
+          }
+          preload="auto"
+          muted
+        />
 
         {/* Scrub preview overlay — shown while hovering the timeline */}
         {showOverlay && (

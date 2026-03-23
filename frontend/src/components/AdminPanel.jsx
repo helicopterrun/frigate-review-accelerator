@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchPreviewProgress } from '../utils/api.js';
+import { formatDateTime } from '../utils/time.js';
 
 const API = '/api/admin';
 const MAX_LOG_LINES = 500;
@@ -419,8 +420,232 @@ function LogPane({ lines, isLive, filter, onFilterChange }) {
   );
 }
 
+// ── DebugTab (DEV only) ───────────────────────────────────────────────────────
+// TODO: test debug tab hidden in production (import.meta.env.DEV=false)
+// TODO: test forceShowScrubOverlay bypasses autoplayActive condition
+function DebugTab({
+  debugOverrides,
+  setDebugOverrides,
+  debugState,
+  onDebugTriggerAutoplay,
+  onDebugPromotePreload,
+  onDebugClearPlayback,
+}) {
+  const [queueStats, setQueueStats] = useState(null);
+  const [, setTick] = useState(0); // 500ms refresh for readouts
+
+  useEffect(() => {
+    async function fetchStats() {
+      try {
+        const res = await fetch('/api/debug/stats');
+        if (res.ok) setQueueStats(await res.json());
+      } catch { /* endpoint may not exist yet — ignore */ }
+    }
+    fetchStats();
+    const id = setInterval(fetchStats, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 500);
+    return () => clearInterval(id);
+  }, []);
+
+  function badge(val) {
+    if (val == null) return <span style={{ color: '#555' }}>—</span>;
+    return (
+      <span style={{
+        background: val ? 'rgba(107,203,119,0.2)' : 'rgba(255,107,107,0.2)',
+        color: val ? '#6bcb77' : '#ff6b6b',
+        padding: '1px 6px', borderRadius: 8, fontSize: 10, fontFamily: 'monospace',
+      }}>
+        {val ? 'true' : 'false'}
+      </span>
+    );
+  }
+
+  function statusBadge(status) {
+    if (status == null) return <span style={{ color: '#555' }}>—</span>;
+    if (status === 'pending') return <span style={{ color: '#ffd93d', fontSize: 11 }}>pending…</span>;
+    return (
+      <span style={{
+        color: status === 200 ? '#6bcb77' : '#ff6b6b',
+        fontSize: 11,
+      }}>{status}</span>
+    );
+  }
+
+  const st = debugState ?? {};
+  const pt = st.playbackTarget;
+  const pret = st.preloadTarget;
+  const scrubShort = st.scrubPreviewUrl ? st.scrubPreviewUrl.slice(-60) : 'none';
+  const dispShort = st.displayedPreviewUrl ? st.displayedPreviewUrl.slice(-60) : 'none';
+
+  const overrideCheckbox = (key, label) => (
+    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 6 }}>
+      <input
+        type="checkbox"
+        checked={debugOverrides?.[key] ?? false}
+        onChange={e => setDebugOverrides(prev => ({ ...prev, [key]: e.target.checked }))}
+        style={{ accentColor: '#4ecdc4' }}
+      />
+      <span style={{ color: '#aaa', fontSize: 11, fontFamily: 'monospace' }}>{label}</span>
+    </label>
+  );
+
+  const debugBtn = (label, onClick, color = '#4ecdc4') => (
+    <button
+      onClick={onClick}
+      style={{
+        background: 'transparent', border: `1px solid ${color}`,
+        color, borderRadius: 4, padding: '4px 10px',
+        cursor: 'pointer', fontSize: 11, fontFamily: 'monospace',
+        marginRight: 6, marginBottom: 6,
+      }}
+    >{label}</button>
+  );
+
+  return (
+    <div style={{ padding: 12, overflowY: 'auto', flex: 1, fontSize: 11, fontFamily: 'monospace' }}>
+
+      {/* Section 1: Layer overrides */}
+      <div style={sd.section}>
+        <div style={sd.sectionTitle}>Layer overrides</div>
+        {overrideCheckbox('forceShowScrubOverlay', 'forceShowScrubOverlay — bypass !autoplayActive, always show scrub preview')}
+        {overrideCheckbox('forceHideVideo', 'forceHideVideo — visibility:hidden on <video> (playback continues)')}
+        {overrideCheckbox('forceShowPreloadVideo', 'forceShowPreloadVideo — show preload <video> at 200×112 (top-left)')}
+      </div>
+
+      {/* Section 2: Live readouts */}
+      <div style={sd.section}>
+        <div style={sd.sectionTitle}>Live readouts</div>
+
+        <div style={s.statusRow}>
+          <span style={s.statusLabel}>autoplayActive</span>
+          <span style={s.statusValue}>{badge(st.autoplayActive)}</span>
+        </div>
+        <div style={s.statusRow}>
+          <span style={s.statusLabel}>isPlaying (VideoPlayer state)</span>
+          <span style={s.statusValue}>{badge(st.isPlaying)}</span>
+        </div>
+        <div style={s.statusRow}>
+          <span style={s.statusLabel}>videoPlayingRef (RAF guard)</span>
+          <span style={s.statusValue}>{badge(st.videoPlayingRef)}</span>
+        </div>
+
+        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
+          <span style={s.statusLabel}>scrubPreviewUrl</span>
+          <span style={{ ...s.statusValue, color: '#aaa', wordBreak: 'break-all' }}>{scrubShort}</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+            <span style={{ color: '#555', fontSize: 10 }}>HTTP status:</span>
+            {statusBadge(st.scrubPreviewStatus)}
+          </span>
+        </div>
+
+        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
+          <span style={s.statusLabel}>displayedPreviewUrl (last good frame)</span>
+          <span style={{ ...s.statusValue, color: '#aaa', wordBreak: 'break-all' }}>{dispShort}</span>
+        </div>
+
+        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
+          <span style={s.statusLabel}>playbackTarget.requested_ts</span>
+          <span style={s.statusValue}>
+            {pt ? (
+              <>
+                <span style={{ color: '#4ecdc4' }}>{pt.requested_ts}</span>
+                {' — '}
+                <span style={{ color: '#888' }}>{formatDateTime(pt.requested_ts)}</span>
+              </>
+            ) : <span style={{ color: '#555' }}>none</span>}
+          </span>
+        </div>
+
+        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
+          <span style={s.statusLabel}>preloadTarget.requested_ts</span>
+          <span style={s.statusValue}>
+            {pret ? (
+              <>
+                <span style={{ color: '#c77dff' }}>{pret.requested_ts}</span>
+                {' — '}
+                <span style={{ color: '#888' }}>{formatDateTime(pret.requested_ts)}</span>
+              </>
+            ) : <span style={{ color: '#555' }}>none</span>}
+          </span>
+        </div>
+
+        <div style={s.statusRow}>
+          <span style={s.statusLabel}>preloadTarget.hls_url</span>
+          <span style={s.statusValue}>
+            {pret?.hls_url
+              ? <span style={{ color: '#6bcb77' }}>ready</span>
+              : <span style={{ color: '#555' }}>none</span>}
+          </span>
+        </div>
+
+        {queueStats && (
+          <>
+            <div style={s.statusRow}>
+              <span style={s.statusLabel}>scheduler_queue_depth</span>
+              <span style={{ ...s.statusValue, color: '#ffd93d' }}>{queueStats.scheduler_queue_depth ?? '—'}</span>
+            </div>
+            <div style={s.statusRow}>
+              <span style={s.statusLabel}>generation_rate_fps</span>
+              <span style={{ ...s.statusValue, color: '#4ecdc4' }}>{queueStats.generation_rate_fps ?? '—'}</span>
+            </div>
+          </>
+        )}
+        {!queueStats && (
+          <div style={{ color: '#555', fontSize: 10, marginTop: 4 }}>/api/debug/stats not available</div>
+        )}
+      </div>
+
+      {/* Section 3: Actions */}
+      <div style={sd.section}>
+        <div style={sd.sectionTitle}>Actions</div>
+        {debugBtn('Trigger autoplay now', onDebugTriggerAutoplay, '#4ecdc4')}
+        {debugBtn('Force preload → playback', onDebugPromotePreload, '#c77dff')}
+        {debugBtn('Clear playback target', onDebugClearPlayback, '#ff6b6b')}
+        {debugBtn('Reset all overrides', () => setDebugOverrides({
+          forceShowScrubOverlay: false,
+          forceHideVideo: false,
+          forceShowPreloadVideo: false,
+        }), '#ffd93d')}
+      </div>
+    </div>
+  );
+}
+
+// DebugTab section styles
+const sd = {
+  section: {
+    marginBottom: 16,
+    padding: '10px 12px',
+    background: '#13161f',
+    border: '1px solid #1e2130',
+    borderRadius: 4,
+  },
+  sectionTitle: {
+    color: '#4ecdc4',
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+    marginBottom: 10,
+  },
+};
+
 // ── AdminPanel ────────────────────────────────────────────────────────────────
-export default function AdminPanel({ open, onClose }) {
+export default function AdminPanel({
+  open,
+  onClose,
+  // DEV-only debug props — never passed in production
+  debugOverrides,
+  setDebugOverrides,
+  debugState,
+  onDebugTriggerAutoplay,
+  onDebugPromotePreload,
+  onDebugClearPlayback,
+}) {
   const [tab, setTab] = useState('logs');
   const [status, setStatus] = useState(null);
   const [logLines, setLogLines] = useState([]);
@@ -711,14 +936,17 @@ export default function AdminPanel({ open, onClose }) {
 
         {/* Tab strip */}
         <div style={{ ...s.tabs, borderBottom: '1px solid #2a2d37', flexShrink: 0 }}>
-          {['logs', 'status', 'progress', 'reindex', 'script'].map((t) => (
+          {[
+            'logs', 'status', 'progress', 'reindex', 'script',
+            ...(import.meta.env.DEV ? ['debug'] : []),
+          ].map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
               style={{
                 ...s.tab,
                 borderBottom: tab === t ? '2px solid #4ecdc4' : '2px solid transparent',
-                color: tab === t ? '#4ecdc4' : '#666',
+                color: tab === t ? '#4ecdc4' : t === 'debug' ? '#9966cc' : '#666',
               }}
             >
               {t}
@@ -747,6 +975,17 @@ export default function AdminPanel({ open, onClose }) {
           {tab === 'progress' && <ProgressTab />}
 
           {tab === 'reindex' && <ReindexTab />}
+
+          {tab === 'debug' && import.meta.env.DEV && (
+            <DebugTab
+              debugOverrides={debugOverrides}
+              setDebugOverrides={setDebugOverrides}
+              debugState={debugState}
+              onDebugTriggerAutoplay={onDebugTriggerAutoplay}
+              onDebugPromotePreload={onDebugPromotePreload}
+              onDebugClearPlayback={onDebugClearPlayback}
+            />
+          )}
 
           {tab === 'script' && (
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
