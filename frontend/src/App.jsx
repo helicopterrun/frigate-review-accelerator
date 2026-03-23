@@ -881,6 +881,13 @@ export default function App() {
     setAutoplayRunning(false);
     setSelectedCamera(name);
     const cam = cameras.find(c => c.name === name);
+    // TODO: Vitest test — latestCameraTsRef reset on camera switch
+    // Reset synchronously so the autoplay RAF ceiling uses the new camera's
+    // latest_ts before the useEffect mirror has a chance to propagate.
+    // Without this, there is a one-render window where latestCameraTsRef still
+    // holds the previous camera's value, causing the ceiling to fall back to
+    // nowTs() + 30 and advance past the new camera's newest recording.
+    latestCameraTsRef.current = cam?.latest_ts ?? null;
     setCursorTs(cam?.latest_ts ?? nowTs());
     setPlaybackTarget(null);
     setTimelineData(null);
