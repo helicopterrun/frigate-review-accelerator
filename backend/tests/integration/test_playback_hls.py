@@ -274,3 +274,126 @@ async def test_hls_url_has_24h_window(client, test_app, monkeypatch):
     assert window_sec >= 86000, (
         f"Expected HLS window >= 86000s (24h), got {window_sec}s in URL: {hls_url}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Exponential backoff for negative reachability cache TTL
+# ---------------------------------------------------------------------------
+
+class TestNegativeCacheBackoff:
+    """Unit tests for _resolve_hls_url negative cache exponential backoff.
+
+    These tests drive _resolve_hls_url directly (not via the HTTP API) so
+    they can inspect _hls_reachable_cache internals and control time.
+    """
+
+    def setup_method(self):
+        from app.services import hls
+        hls._hls_reachable_cache.clear()
+
+    def teardown_method(self):
+        from app.services import hls
+        hls._hls_reachable_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_first_failure_ttl_is_2s(self, monkeypatch):
+        from app.services import hls
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+        monkeypatch.setattr(hls, "_hls_reachable_cache", {})
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 0
+        assert min(2 * (2 ** fail_count), 60) == 2
+
+    @pytest.mark.asyncio
+    async def test_second_failure_ttl_is_4s(self, monkeypatch):
+        from app.services import hls
+
+        # Seed a prior failure (fail_count=0, expired)
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 0)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 1
+        assert min(2 * (2 ** fail_count), 60) == 4
+
+    @pytest.mark.asyncio
+    async def test_third_failure_ttl_is_8s(self, monkeypatch):
+        from app.services import hls
+
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 1)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 2
+        assert min(2 * (2 ** fail_count), 60) == 8
+
+    @pytest.mark.asyncio
+    async def test_sixth_failure_ttl_capped_at_60s(self, monkeypatch):
+        from app.services import hls
+
+        # fail_count=4 stored → next failure stores fail_count=5
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 4)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 5
+        assert min(2 * (2 ** fail_count), 60) == 60  # 64 capped to 60
+
+    @pytest.mark.asyncio
+    async def test_success_resets_fail_count_to_zero(self, monkeypatch):
+        from app.services import hls
+
+        # Prior failures stored
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 3)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(return_value=mock_response)
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is not None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is True
+        assert fail_count == 0
