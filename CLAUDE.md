@@ -762,15 +762,25 @@ When examples are needed, use placeholders.
 ## Testing
 
 ```bash
-# Run all tests
+# Backend — run all tests
 cd backend && pytest
 
-# Run a single test
+# Backend — run a single test
 cd backend && pytest tests/unit/test_preview.py::test_quantize_ts_alignment -v
 
-# Run with coverage
+# Backend — run with coverage
 cd backend && pytest --cov=app tests/
+
+# Frontend tests
+cd frontend && npm test
+
+# Frontend tests — watch mode
+cd frontend && npm run test:watch
 ```
+
+Frontend tests: Vitest + React Testing Library
+Config: `frontend/vite.config.js` (test block), `frontend/src/test/setup.js`
+Test files: `frontend/src/test/`
 
 Test structure:
 
@@ -786,6 +796,13 @@ backend/tests/
     test_api.py                  # httpx AsyncClient against real in-memory SQLite
     test_playback_hls.py         # HLS URL construction + reachability cache
     conftest.py                  # fixtures
+
+frontend/src/test/
+  setup.js                       # jest-dom matchers + matchMedia + RAF stubs
+  time.test.js                   # bucketSizeForRange, nowTs, formatTime, formatDuration
+  errorBoundary.test.jsx         # ErrorBoundary catches/resets/renders fallback
+  cursorTs.test.jsx              # cursorTs finite after init/camera-switch; health poll
+                                 # does not reset selectedCamera
 ```
 
 Use `pytest` + `pytest-asyncio` + `httpx.AsyncClient`.
