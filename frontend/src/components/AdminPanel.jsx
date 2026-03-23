@@ -423,6 +423,9 @@ function LogPane({ lines, isLive, filter, onFilterChange }) {
 // ── DebugTab (DEV only) ───────────────────────────────────────────────────────
 // TODO: test debug tab hidden in production (import.meta.env.DEV=false)
 // TODO: test forceShowScrubOverlay bypasses autoplayActive condition
+// TODO: test event log entries fire in correct order for:
+//   idle → preloadTarget set → autoplay → promote path
+//   idle → preload too slow → autoplay → fallback path
 function DebugTab({
   debugOverrides,
   setDebugOverrides,
@@ -430,9 +433,34 @@ function DebugTab({
   onDebugTriggerAutoplay,
   onDebugPromotePreload,
   onDebugClearPlayback,
+  registerDebugLog,
 }) {
   const [queueStats, setQueueStats] = useState(null);
   const [, setTick] = useState(0); // 500ms refresh for readouts
+
+  // Event log state
+  const [logEntries, setLogEntries] = useState([]);
+  const logRef = useRef(null);
+  const [userScrolled, setUserScrolled] = useState(false);
+
+  // Register addEntry with App.jsx so it can push events fire-and-forget.
+  // Effect runs once; registerDebugLog writes to a ref in App.jsx so [] is safe.
+  useEffect(() => {
+    if (!registerDebugLog) return;
+    registerDebugLog((label, detail) => {
+      setLogEntries(prev => {
+        const entry = { ms: Date.now() - (window.__debugAppStart ?? 0), label, detail: detail ?? '' };
+        return prev.length >= 200 ? [...prev.slice(1), entry] : [...prev, entry];
+      });
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-scroll to bottom unless the user has scrolled up.
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el || userScrolled) return;
+    el.scrollTop = el.scrollHeight;
+  }, [logEntries, userScrolled]);
 
   // Track when autoplayActive first became true — used for the stalled-video warning.
   const autoplayActiveSinceRef = useRef(null);
@@ -586,6 +614,29 @@ function DebugTab({
     );
   }
 
+  // ── Event log helpers ───────────────────────────────────────────────────────
+
+  function labelColor(label) {
+    if (/^(seek|interaction|camera switch)$/.test(label)) return '#4ecdc4';
+    if (/^preloadTarget/.test(label)) return '#c77dff';
+    if (/^(autoplay fired|promote:|fallback fetch)/.test(label)) return '#ffd93d';
+    if (/^playbackTarget/.test(label)) return '#6bcb77';
+    if (/^video (play|pause|stalled|ended)$/.test(label)) return '#FF9800';
+    if (/^(HLS manifest|HLS error|preload swap)/.test(label)) return '#2196F3';
+    if (label === 'preview 200') return '#4CAF50';
+    if (label === 'preview 404') return '#ff6b6b';
+    if (label === 'preview displayed') return '#8BC34A';
+    if (label === 'app init') return '#888';
+    return '#aaa';
+  }
+
+  function copyLog() {
+    const text = logEntries.map(e =>
+      `+${String(e.ms).padStart(6)}ms  ${e.label}  ${e.detail}`
+    ).join('\n');
+    navigator.clipboard.writeText(text).catch(() => {});
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
@@ -730,6 +781,64 @@ function DebugTab({
             color="#ffd93d"
           />
         </ActionGroup>
+      </div>
+
+      {/* ── Section 4: Event Log ── */}
+      <div style={sd.section}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={sd.sectionTitle}>Event log</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={() => { setLogEntries([]); setUserScrolled(false); }}
+              style={sd.logBtn}
+            >Clear</button>
+            <button onClick={copyLog} style={sd.logBtn}>Copy</button>
+          </div>
+        </div>
+        <div
+          ref={logRef}
+          onScroll={e => {
+            const el = e.currentTarget;
+            setUserScrolled(el.scrollTop + el.clientHeight < el.scrollHeight - 20);
+          }}
+          style={{
+            height: 280, overflowY: 'auto',
+            background: '#0a0c12', border: '1px solid #1e2130', borderRadius: 3,
+            fontFamily: 'monospace', fontSize: 11, lineHeight: 1.6,
+          }}
+        >
+          {logEntries.length === 0 && (
+            <div style={{ color: '#333', padding: '8px 10px' }}>
+              No events yet — interact with the timeline.
+            </div>
+          )}
+          {logEntries.map((e, i) => (
+            <div key={i} style={{ display: 'flex', padding: '0 6px', minHeight: '1.6em' }}>
+              <span style={{
+                width: 70, flexShrink: 0, textAlign: 'right',
+                color: '#555', paddingRight: 8,
+              }}>
+                +{e.ms}ms
+              </span>
+              <span style={{ color: labelColor(e.label), flexShrink: 0, marginRight: 6 }}>
+                {e.label}
+              </span>
+              <span style={{
+                color: '#888',
+                overflow: 'hidden', textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap', maxWidth: 200,
+              }}>
+                {e.detail}
+              </span>
+            </div>
+          ))}
+        </div>
+        {userScrolled && (
+          <button
+            onClick={() => setUserScrolled(false)}
+            style={{ ...sd.logBtn, marginTop: 4, width: '100%' }}
+          >↓ scroll to latest</button>
+        )}
       </div>
     </div>
   );

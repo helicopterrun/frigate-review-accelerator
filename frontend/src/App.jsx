@@ -39,6 +39,12 @@ import {
 import { nowTs, formatDateTime, formatTime, formatTimeShort, formatDayDate, bucketSizeForRange } from './utils/time.js';
 import { RETICLE_FRACTION } from './utils/constants.js';
 
+// Record page-load time for debug event log relative timestamps.
+// Runs once at module scope — all log entries are relative to this moment.
+if (import.meta.env.DEV) {
+  window.__debugAppStart = Date.now();
+}
+
 // Autoplay: idle threshold before timeline starts advancing.
 const AUTOPLAY_DELAY_MS = 1500;
 // Preload: start background HLS fetch this many ms after last interaction.
@@ -227,6 +233,7 @@ export default function App() {
 
       lastInteractionRef.current = Date.now();
       autoplayActiveRef.current = false;
+      if (import.meta.env.DEV) debugEventRef.current?.('interaction', 'keyboard');
       // TODO: test cursor ceiling — cursorTs must never exceed latest_ts for the
       // selected camera; autoplay stops advancing when latest_ts is reached.
       // TODO: test ceiling slack — cursor may reach latest_ts + 30 but no further.
@@ -282,6 +289,14 @@ export default function App() {
   const [debugScrubPreviewStatus, setDebugScrubPreviewStatus] = useState(null);
   const [debugIsPlaying, setDebugIsPlaying] = useState(false);
   const [debugDisplayedUrl, setDebugDisplayedUrl] = useState(null);
+
+  // Stable ref to DebugTab's addEntry function, registered by DebugTab on mount.
+  // App.jsx and VideoPlayer.jsx fire-and-forget into this ref — no re-render cost.
+  const debugEventRef = useRef(null);
+  // Stable callback wrapper — safe to pass as prop without causing VideoPlayer re-renders.
+  const onDebugEventStable = useCallback((l, d) => {
+    if (import.meta.env.DEV) debugEventRef.current?.(l, d);
+  }, []); // stable — ref reads are always current
 
   // Idle preload: PlaybackTarget fetched during idle window, promoted to
   // playbackTarget when AUTOPLAY_DELAY_MS fires.
@@ -369,7 +384,10 @@ export default function App() {
           fetchPlaybackTarget(cam, ts)
             .then(target => {
               if (myId !== preloadRequestRef.current) return; // cancelled by interaction
-              if (target) setPreloadTarget(target);
+              if (target) {
+                setPreloadTarget(target);
+                if (import.meta.env.DEV) debugEventRef.current?.('preloadTarget set', `ts=${target.requested_ts}, hls=${target.hls_url ? 'ready' : 'none'}`);
+              }
             })
             .catch((e) => { console.warn('[RAF] idle preload fetch failed:', e.message); });
         }
@@ -381,6 +399,7 @@ export default function App() {
           autoplayActiveRef.current = true;
           autoplayStartRef.current = now;
           console.log('[RAF] autoplay threshold reached — setAutoplayRunning(true)', { idleMs, preloadReady: !!preloadTargetRef.current, cam: selectedCameraRef.current, ts: cursorTsRef.current });
+          if (import.meta.env.DEV) debugEventRef.current?.('autoplay fired', `preloadTarget=${preloadTargetRef.current ? 'ready' : 'none'} at this moment`);
           setAutoplayRunning(true); // triggers preload→playback promotion in useEffect
         }
 
@@ -458,6 +477,7 @@ export default function App() {
 
         setCameras(cams);
         setHealth(hp);
+        if (import.meta.env.DEV) debugEventRef.current?.('app init', `cursorTs=${Math.round(cursorTsRef.current ?? 0)}, camera=${cams[0]?.name ?? 'none'}`);
         // TODO: when a frontend test harness is introduced, add a test that
         // verifies the 30s health poll does NOT reset selectedCamera when one
         // is already active. See CLAUDE.md "Example prompt" for context.
@@ -650,6 +670,10 @@ export default function App() {
     autoplayActiveRef.current = false;
     preloadRequestRef.current++; // cancel in-flight idle preload
     idlePreloadStartedRef.current = false; // allow fresh preload on next idle window
+    if (import.meta.env.DEV) {
+      debugEventRef.current?.('interaction', 'pan');
+      debugEventRef.current?.('preloadTarget cleared', 'reason=interaction');
+    }
     setPreloadTarget(null);
     // TODO: test cursor ceiling — cursorTs must never exceed latest_ts for the
     // selected camera; autoplay stops advancing when latest_ts is reached.
@@ -666,6 +690,10 @@ export default function App() {
     autoplayActiveRef.current = false;
     preloadRequestRef.current++; // cancel in-flight idle preload
     idlePreloadStartedRef.current = false; // allow fresh preload on next idle window
+    if (import.meta.env.DEV) {
+      debugEventRef.current?.('interaction', 'zoom');
+      debugEventRef.current?.('preloadTarget cleared', 'reason=interaction');
+    }
     setPreloadTarget(null);
     if (newRangeSec < MIN_RANGE_SEC || newRangeSec > MAX_RANGE_SEC) return;
     setRangeSec(newRangeSec);
@@ -681,6 +709,10 @@ export default function App() {
     autoplayActiveRef.current = false;
     preloadRequestRef.current++; // cancel in-flight idle preload
     idlePreloadStartedRef.current = false; // allow fresh preload after 400ms
+    if (import.meta.env.DEV) {
+      debugEventRef.current?.('seek', `ts=${Math.round(ts)}`);
+      debugEventRef.current?.('preloadTarget cleared', 'reason=interaction');
+    }
     setPreloadTarget(null);
     setAutoplayRunning(false);
     setCursorTs(ts);
@@ -701,6 +733,7 @@ export default function App() {
         const myId = seekRequestIdRef.current;
         const target = await fetchPlaybackTarget(selectedCamera, info.start_ts + 0.1);
         if (myId !== seekRequestIdRef.current) return;
+        if (import.meta.env.DEV && target) debugEventRef.current?.('playbackTarget set', `ts=${target.requested_ts}, offset=${target.offset_sec}s`);
         console.log('[APP] setPlaybackTarget from auto-advance', target);
         setPlaybackTarget(target);
       } catch {
@@ -749,6 +782,7 @@ export default function App() {
   }, []);
 
   const handleDebugClearPlayback = useCallback(() => {
+    if (import.meta.env.DEV) debugEventRef.current?.('playbackTarget cleared', 'reason=debug');
     setPlaybackTarget(null);
   }, []);
 
@@ -773,6 +807,11 @@ export default function App() {
   useEffect(() => {
     if (!autoplayRunning) return;
     if (!preloadTarget) return; // wait for Effect B fallback
+    if (import.meta.env.DEV) {
+      debugEventRef.current?.('promote: preload→playback', `ts=${preloadTarget.requested_ts}`);
+      debugEventRef.current?.('preloadTarget cleared', 'reason=promoted');
+      debugEventRef.current?.('playbackTarget set', `ts=${preloadTarget.requested_ts}, offset=${preloadTarget.offset_sec}s`);
+    }
     console.log('[APP] autoplay: promoting preload target', preloadTarget);
     setPlaybackTarget(preloadTarget);
     setPreloadTarget(null);
@@ -792,12 +831,18 @@ export default function App() {
       const cam = selectedCameraRef.current;
       const ts = cursorTsRef.current;
       if (!cam || ts == null) return;
+      if (import.meta.env.DEV) debugEventRef.current?.('fallback fetch started', `cursorTs=${Math.round(ts)}`);
       fetchPlaybackTarget(cam, ts)
         .then(target => {
           if (autoplayActiveRef.current && target) {
+            if (import.meta.env.DEV) {
+              debugEventRef.current?.('fallback fetch done', `ts=${target.requested_ts}, status=ok`);
+              debugEventRef.current?.('playbackTarget set', `ts=${target.requested_ts}, offset=${target.offset_sec}s`);
+            }
             console.log('[APP] autoplay: fallback fetch', target);
             setPlaybackTarget(target);
           } else if (!target) {
+            if (import.meta.env.DEV) debugEventRef.current?.('fallback fetch done', `ts=${Math.round(ts)}, status=null`);
             console.warn('[APP] autoplay: fallback fetch returned null — no segment at ts', ts);
           }
         })
@@ -819,6 +864,11 @@ export default function App() {
   const handleCameraChange = useCallback((name) => {
     preloadRequestRef.current++; // cancel in-flight idle preload for old camera
     idlePreloadStartedRef.current = false;
+    if (import.meta.env.DEV) {
+      debugEventRef.current?.('camera switch', `→ ${name}`);
+      debugEventRef.current?.('preloadTarget cleared', 'reason=camera-switch');
+      debugEventRef.current?.('playbackTarget cleared', 'reason=camera-switch');
+    }
     setPreloadTarget(null);
     setAutoplayRunning(false);
     setSelectedCamera(name);
@@ -900,6 +950,7 @@ export default function App() {
       const myId = seekRequestIdRef.current;
       const playTarget = await fetchPlaybackTarget(selectedCamera, targetTs);
       if (myId !== seekRequestIdRef.current) return;
+      if (import.meta.env.DEV && playTarget) debugEventRef.current?.('playbackTarget set', `ts=${playTarget.requested_ts}, offset=${playTarget.offset_sec}s`);
       console.log('[APP] setPlaybackTarget from event navigation', playTarget);
       setPlaybackTarget(playTarget);
     } catch {}
@@ -1185,6 +1236,7 @@ export default function App() {
                 onScrubPreviewStatus={import.meta.env.DEV ? setDebugScrubPreviewStatus : null}
                 onDebugIsPlaying={import.meta.env.DEV ? setDebugIsPlaying : null}
                 onDebugDisplayedUrl={import.meta.env.DEV ? setDebugDisplayedUrl : null}
+                onDebugEvent={import.meta.env.DEV ? onDebugEventStable : null}
               />
             </div>
 
@@ -1284,6 +1336,7 @@ export default function App() {
           onDebugTriggerAutoplay: handleDebugTriggerAutoplay,
           onDebugPromotePreload: handleDebugPromotePreload,
           onDebugClearPlayback: handleDebugClearPlayback,
+          registerDebugLog: (fn) => { debugEventRef.current = fn; },
         } : {})}
       />
     </div>
