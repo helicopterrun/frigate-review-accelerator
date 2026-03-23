@@ -139,7 +139,8 @@ def scan_recordings_dir(recordings_path: Path, scan_state: dict | None = None) -
     Args:
         recordings_path: Root directory of Frigate recordings.
         scan_state: Per-camera dict {camera_name: last_scanned_ts} from
-                    _get_scan_state(). If None, performs a full rglob.
+                    _get_scan_state(). If None or empty, global_since=0.0
+                    is used so all directories are visited (cold start).
                     Each camera uses its own cutoff so a slow camera
                     doesn't force faster cameras to re-scan old directories.
 
@@ -152,39 +153,41 @@ def scan_recordings_dir(recordings_path: Path, scan_state: dict | None = None) -
         log.error("Recordings path does not exist: %s", root)
         return segments
 
-    if scan_state is None:
-        # Full scan — used on first run when scan_state is empty
-        mp4_files = list(root.rglob("*.mp4"))
-    else:
-        # Incremental scan — per-camera cutoffs at the camera directory level.
-        # Day/hour directories are filtered with the global minimum cutoff;
-        # individual camera directories are filtered with their own cutoff.
-        global_since = min(scan_state.values()) if scan_state else 0
-        mp4_files = []
-        try:
-            for day_entry in os.scandir(root):
-                if not day_entry.is_dir():
+    # Normalise None → empty dict so .get() is always safe below.
+    # With global_since=0 the mtime guards are never triggered, so every
+    # directory is visited — equivalent to a full scan but O(n_dirs) instead
+    # of O(n_files) that rglob would require on a 1.5M-file corpus.
+    scan_state = scan_state or {}
+    global_since = min(scan_state.values()) if scan_state else 0.0
+
+    # Mtime-based directory walk — per-camera cutoffs at the camera level.
+    # Day/hour directories are filtered with the global minimum cutoff;
+    # individual camera directories are filtered with their own cutoff.
+    mp4_files = []
+    try:
+        for day_entry in os.scandir(root):
+            if not day_entry.is_dir():
+                continue
+            if global_since > 0 and day_entry.stat().st_mtime < global_since - 600:
+                # Day directory untouched for all cameras — skip
+                continue
+            for hour_entry in os.scandir(day_entry.path):
+                if not hour_entry.is_dir():
                     continue
-                if global_since > 0 and day_entry.stat().st_mtime < global_since - 600:
-                    # Day directory untouched for all cameras — skip
+                if global_since > 0 and hour_entry.stat().st_mtime < global_since - 60:
                     continue
-                for hour_entry in os.scandir(day_entry.path):
-                    if not hour_entry.is_dir():
+                for cam_entry in os.scandir(hour_entry.path):
+                    if not cam_entry.is_dir():
                         continue
-                    if global_since > 0 and hour_entry.stat().st_mtime < global_since - 60:
+                    cam_since = scan_state.get(cam_entry.name, 0)
+                    if cam_since > 0 and cam_entry.stat().st_mtime < cam_since - 60:
+                        # This camera's dir hasn't changed since our last scan
                         continue
-                    for cam_entry in os.scandir(hour_entry.path):
-                        if not cam_entry.is_dir():
-                            continue
-                        cam_since = scan_state.get(cam_entry.name, 0)
-                        if cam_since > 0 and cam_entry.stat().st_mtime < cam_since - 60:
-                            # This camera's dir hasn't changed since our last scan
-                            continue
-                        for entry in os.scandir(cam_entry.path):
-                            if entry.name.endswith(".mp4") and entry.is_file():
-                                mp4_files.append(Path(entry.path))
-        except PermissionError as exc:
-            log.warning("Scan permission error: %s", exc)
+                    for entry in os.scandir(cam_entry.path):
+                        if entry.name.endswith(".mp4") and entry.is_file():
+                            mp4_files.append(Path(entry.path))
+    except PermissionError as exc:
+        log.warning("Scan permission error: %s", exc)
 
     for mp4 in mp4_files:
         rel = mp4.relative_to(root)
