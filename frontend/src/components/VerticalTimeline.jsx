@@ -534,13 +534,24 @@ export default function VerticalTimeline({
     }
 
     if (events.length > 0 && renderedEventCount === 0) {
-      console.warn('[VerticalTimeline] Events present but not visible', {
-        eventCount: events.length,
-        startTs,
-        endTs,
-        minEventTs: Math.min(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
-        maxEventTs: Math.max(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
+      // Only warn when events that fall within the visible range didn't render.
+      // Events outside [startTs, endTs] are expected when the fetch window is
+      // wider than the visible range (padded fetch in App.jsx) — those events
+      // are off-canvas by design, not a rendering failure.
+      const anyInRange = events.some(e => {
+        const ts = e.start_ts ?? e.start_time ?? e.timestamp;
+        return ts != null && ts >= startTs && ts <= endTs;
       });
+      if (anyInRange) {
+        console.warn('[VerticalTimeline] Events present but not visible', {
+          eventCount: events.length,
+          startTs,
+          endTs,
+          minEventTs: Math.min(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
+          maxEventTs: Math.max(...events.map(e => e.start_ts ?? e.start_time ?? 0)),
+        });
+      }
+      // events outside visible range: expected with padded fetch window — no warn
     }
 
     // Sort by proximity to reticle so icon collision keeps closest events.

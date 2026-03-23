@@ -485,8 +485,17 @@ export default function App() {
     const timer = setTimeout(async () => {
       try {
         const opts = { signal: controller.signal };
+        // Pad the timeline fetch window by 1x rangeSec on each side so that
+        // events fetched during autoplay remain valid for ~rangeSec worth of
+        // cursor advance before drifting below startTs. This prevents the
+        // "[Events present but not visible]" warning that fires when the 300ms
+        // debounce causes filteredEvents to lag behind the advancing visible window.
+        // fetchPreviewStrip uses the tight window — pixel-dense strips don't
+        // need the padding and fetching 3x would over-fetch frame URLs.
+        const fetchStart = rangeStart - rangeSec;
+        const fetchEnd = rangeEnd + rangeSec;
         const [tl, strip] = await Promise.all([
-          fetchTimeline(selectedCamera, rangeStart, rangeEnd, opts),
+          fetchTimeline(selectedCamera, fetchStart, fetchEnd, opts),
           fetchPreviewStrip(selectedCamera, rangeStart, rangeEnd, 300, opts),
         ]);
 

@@ -248,6 +248,55 @@ async def test_timeline_events_within_requested_range(client):
         )
 
 
+async def test_timeline_returns_events_outside_tight_range_when_padded(client):
+    """Backend correctly returns events that fall within a padded fetch window.
+
+    Documents the App.jsx padded-fetch pattern: when the frontend fetches
+    [rangeStart - rangeSec, rangeEnd + rangeSec] instead of the tight visible
+    window, events up to rangeSec before the visible bottom are returned and
+    available for navigation / rendering as the cursor advances.
+    """
+    from app import config
+    db_path = config.settings.database_path
+
+    tight_start = 1700070000.0
+    tight_end   = 1700080000.0   # 10 000-second tight window
+    range_sec   = tight_end - tight_start
+
+    # Event inside the tight visible window
+    _insert_event(db_path, "padded-cam", tight_start + 500, tight_start + 600)
+    # Event just outside the bottom of the tight window (30 min before tight_start)
+    _insert_event(db_path, "padded-cam", tight_start - 1800, tight_start - 1700)
+
+    # Fetch with tight window — event outside should NOT appear
+    resp_tight = await client.get(
+        "/api/timeline",
+        params={"camera": "padded-cam", "start": tight_start, "end": tight_end},
+    )
+    assert resp_tight.status_code == 200
+    tight_ts = {e["start_ts"] for e in resp_tight.json()["events"]}
+    assert tight_start + 500 in tight_ts, "In-window event must appear in tight fetch"
+    assert tight_start - 1800 not in tight_ts, (
+        "Out-of-window event must not appear in tight fetch"
+    )
+
+    # Fetch with padded window — event outside tight window SHOULD appear
+    padded_start = tight_start - range_sec
+    padded_end   = tight_end + range_sec
+    resp_padded = await client.get(
+        "/api/timeline",
+        params={"camera": "padded-cam", "start": padded_start, "end": padded_end},
+    )
+    assert resp_padded.status_code == 200
+    padded_ts = {e["start_ts"] for e in resp_padded.json()["events"]}
+    assert tight_start + 500 in padded_ts, "In-window event must appear in padded fetch"
+    assert tight_start - 1800 in padded_ts, (
+        "Event just below tight window must appear in padded fetch"
+    )
+
+
+
+
 # ---------------------------------------------------------------------------
 # Playback / gap snapping
 # ---------------------------------------------------------------------------
