@@ -25,6 +25,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from PIL import Image
+
 from app.config import settings
 
 log = logging.getLogger(__name__)
@@ -116,13 +118,24 @@ def extract_preview_frame(
     output_path = day_dir / filename
 
     if output_path.exists():
+        # Read actual output dimensions — do not assume 16:9.
+        # ffmpeg scale={width}:-1 preserves source aspect ratio, so cameras
+        # that are not 16:9 (e.g. Ubiquiti 4:3) will produce a different height.
+        # PIL header-only open is O(1) — it reads only the JPEG SOF marker.
+        actual_width = width
+        actual_height = int(width * 9 / 16)  # safe fallback if PIL read fails
+        try:
+            with Image.open(output_path) as _img:
+                actual_width, actual_height = _img.size
+        except Exception:
+            pass  # fallback to 16:9 estimate — non-fatal
         return {
             "ts": ts,
             "camera": camera,
             "segment_id": segment["id"],
             "image_path": str(output_path.relative_to(settings.preview_output_path)),
-            "width": width,
-            "height": int(width * 9 / 16),
+            "width": actual_width,
+            "height": actual_height,
         }
 
     # Step 3 — Run exactly ONE ffmpeg subprocess
@@ -169,13 +182,24 @@ def extract_preview_frame(
 
     # Step 4 — Return result or None
     if result.returncode == 0 and output_path.exists():
+        # Read actual output dimensions — do not assume 16:9.
+        # ffmpeg scale={width}:-1 preserves source aspect ratio, so cameras
+        # that are not 16:9 (e.g. Ubiquiti 4:3) will produce a different height.
+        # PIL header-only open is O(1) — it reads only the JPEG SOF marker.
+        actual_width = width
+        actual_height = int(width * 9 / 16)  # safe fallback if PIL read fails
+        try:
+            with Image.open(output_path) as _img:
+                actual_width, actual_height = _img.size
+        except Exception:
+            pass  # fallback to 16:9 estimate — non-fatal
         return {
             "ts": ts,
             "camera": camera,
             "segment_id": segment["id"],
             "image_path": str(output_path.relative_to(settings.preview_output_path)),
-            "width": width,
-            "height": int(width * 9 / 16),
+            "width": actual_width,
+            "height": actual_height,
         }
 
     log.debug("Preview extraction failed for %s ts=%.2f", camera, ts)
