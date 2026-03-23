@@ -308,7 +308,7 @@ async def _process_scheduler_jobs(jobs: list) -> int:
 
                 # ffmpeg runs in executor — do not block the event loop
                 frame = await loop.run_in_executor(
-                    None,
+                    _preview_executor,
                     lambda s=segment, j=job: extract_preview_frame(
                         camera=s["camera"],
                         ts=j.bucket_ts,
