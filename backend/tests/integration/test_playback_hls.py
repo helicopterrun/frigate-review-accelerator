@@ -204,6 +204,43 @@ async def test_positive_cache_entry_format(monkeypatch):
 # HLS window is at least 86000 seconds wide (24-hour default)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# POST /api/admin/invalidate-hls-cache clears the reachability cache
+# ---------------------------------------------------------------------------
+
+async def test_invalidate_hls_cache_clears_entries(client, test_app):
+    """Calling the endpoint removes all entries from _hls_reachable_cache."""
+    import time
+    from app.services import hls as hls_mod
+
+    # Populate cache with fake negative entries for two cameras
+    hls_mod._hls_reachable_cache["cam-a"] = (False, time.time())
+    hls_mod._hls_reachable_cache["cam-b"] = (False, time.time())
+    assert len(hls_mod._hls_reachable_cache) >= 2
+
+    resp = await client.post("/api/admin/invalidate-hls-cache")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cleared"] is True
+    assert data["entries_removed"] >= 2
+    assert len(hls_mod._hls_reachable_cache) == 0
+
+
+# ---------------------------------------------------------------------------
+# Negative cache TTL is 2.0s (defence-in-depth: expires within one health-poll cycle)
+# ---------------------------------------------------------------------------
+
+async def test_negative_cache_ttl_is_2s():
+    """HLS_NEGATIVE_CACHE_TTL must be 2.0 so stale entries expire within one health-poll cycle."""
+    from app.services.hls import HLS_NEGATIVE_CACHE_TTL
+    assert HLS_NEGATIVE_CACHE_TTL == 2.0, (
+        f"Expected HLS_NEGATIVE_CACHE_TTL == 2.0, got {HLS_NEGATIVE_CACHE_TTL}. "
+        "This value was reduced from 5.0 to ensure stale negative entries expire "
+        "within a single 2s health-poll cycle after a Frigate restart."
+    )
+
+
 async def test_hls_url_has_24h_window(client, test_app, monkeypatch):
     from app import config
     db_path = config.settings.database_path

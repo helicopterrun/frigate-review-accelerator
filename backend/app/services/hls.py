@@ -22,7 +22,7 @@ from app.config import settings
 # without hammering the API on every seek.
 _hls_reachable_cache: dict[str, tuple[bool, float]] = {}
 _HLS_CACHE_TTL_SEC = 30.0
-HLS_NEGATIVE_CACHE_TTL = 5.0
+HLS_NEGATIVE_CACHE_TTL = 2.0
 
 
 # ---------------------------------------------------------------------------

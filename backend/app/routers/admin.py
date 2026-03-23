@@ -139,6 +139,21 @@ async def _stream_script(
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@router.post("/invalidate-hls-cache", dependencies=[Depends(verify_admin_secret)])
+async def invalidate_hls_cache():
+    """Clear the HLS reachability cache.
+
+    Forces the next playback request to re-probe Frigate VOD reachability
+    rather than serving a stale negative cache entry. Call this after a
+    Frigate restart to ensure playback switches back to HLS immediately.
+    """
+    from app.services.hls import _hls_reachable_cache
+    cleared = len(_hls_reachable_cache)
+    _hls_reachable_cache.clear()
+    log.info("Admin: HLS reachability cache cleared (%d entries)", cleared)
+    return {"cleared": True, "entries_removed": cleared}
+
+
 @router.post("/restart", dependencies=[Depends(verify_admin_secret)])
 async def admin_restart():
     """Restart backend services via restart.sh --backend.
@@ -148,9 +163,21 @@ async def admin_restart():
 
     Note: this restarts the uvicorn process, so the SSE connection will
     drop when the server comes back up. The frontend handles this gracefully.
+
+    The HLS reachability cache is cleared after the script stream ends so that
+    stale negative entries don't block playback when the server comes back up.
+    In the typical path the process dies before this runs; in error paths
+    (restart fails, process stays up) it ensures the cache is clean.
     """
+    async def _with_cache_clear():
+        async for chunk in _stream_script(_script("restart.sh"), args=["--backend"]):
+            yield chunk
+        from app.services.hls import _hls_reachable_cache
+        _hls_reachable_cache.clear()
+        log.debug("Admin restart: HLS reachability cache cleared post-stream")
+
     return StreamingResponse(
-        _stream_script(_script("restart.sh"), args=["--backend"]),
+        _with_cache_clear(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

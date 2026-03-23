@@ -12,6 +12,7 @@ from app.models.database import init_db_sync
 from app.routers import timeline, preview
 from app.routers.admin import router as admin_router
 from app.services.worker import start_worker, stop_worker, set_preview_executor
+from app.services.coverage import populate_from_db
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +35,10 @@ async def lifespan(app: FastAPI):
     # Initialize database
     settings.ensure_dirs()
     init_db_sync()
+
+    # Populate in-memory coverage index from existing segments (one-time O(n))
+    covered = populate_from_db()
+    log.info("Coverage index: loaded %d segments", covered)
 
     # Create bounded executor for preview generation (preview_workers from config)
     executor = ThreadPoolExecutor(

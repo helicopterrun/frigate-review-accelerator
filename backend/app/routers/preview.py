@@ -37,6 +37,7 @@ from app.models.schemas import CameraPreviewStatus, PreviewFrame, PreviewStrip
 from app.services.worker import enqueue_preview_request
 from app.services.hls import _build_hls_url, _resolve_hls_url
 from app.services.time_index import get_time_index
+from app.services.coverage import is_covered
 
 router = APIRouter(prefix="/api", tags=["preview"])
 log = logging.getLogger(__name__)
@@ -166,10 +167,10 @@ async def get_preview_frame(camera: str, timestamp: float):
         else:
             # No adjacent bucket found.
             # Only fall back to Frigate snapshot when no local segment covers
-            # this ts. If a segment exists, generation is possible — enqueue
+            # this ts. If the hour is covered, generation is possible — enqueue
             # and return 404 rather than serving a potentially stale or
             # off-timestamp Frigate event thumbnail.
-            if await _segment_exists_for_ts(camera, bucket_ts):
+            if is_covered(camera, bucket_ts):
                 enqueue_preview_request(camera, bucket_ts, bucket_ts + interval)
                 raise HTTPException(
                     status_code=404,

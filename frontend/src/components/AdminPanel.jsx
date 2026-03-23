@@ -959,6 +959,10 @@ export default function AdminPanel({
         if (res.ok) {
           clearInterval(healthPollRef.current);
           healthPollRef.current = null;
+          // Clear stale HLS negative cache entries so the first playback
+          // attempt after restart hits Frigate directly rather than a
+          // cached "unreachable" result from before the restart.
+          fetch(`${API}/invalidate-hls-cache`, { method: 'POST' }).catch(() => {});
           onBack();
         }
       } catch { /* still restarting */ }
