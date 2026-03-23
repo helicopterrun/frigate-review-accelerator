@@ -25,6 +25,7 @@ import CameraSelector from './components/CameraSelector.jsx';
 import VerticalTimeline from './components/VerticalTimeline.jsx';
 import VideoPlayer from './components/VideoPlayer.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
+import { ErrorBoundary } from './components/ErrorBoundary.jsx';
 import {
   fetchCameras,
   fetchDensity,
@@ -1236,26 +1237,28 @@ export default function App() {
           {/* Left/top: video viewer column */}
           <div style={{ ...styles.viewerCol, flex: isMobile ? 'none' : 1 }}>
             <div style={{ flex: 1, minHeight: 0 }}>
-              <VideoPlayer
-                playbackTarget={playbackTarget}
-                camera={selectedCamera}
-                onTimeUpdate={handlePlaybackTimeUpdate}
-                onSegmentAdvance={handleSegmentAdvance}
-                scrubPreviewUrl={reticlePreviewUrl}
-                isMobile={isMobile}
-                eventSnapshot={activeEventSnapshot}
-                onSeek={handleSeek}
-                onPlaybackStart={handlePlaybackStart}
-                preloadTargetTs={preloadTargetTs}
-                preloadTarget={preloadTarget}
-                autoplayActive={autoplayRunning}
-                onPlaybackStateChange={(playing) => { videoPlayingRef.current = playing; }}
-                debugOverrides={import.meta.env.DEV ? debugOverrides : null}
-                onScrubPreviewStatus={import.meta.env.DEV ? setDebugScrubPreviewStatus : null}
-                onDebugIsPlaying={import.meta.env.DEV ? setDebugIsPlaying : null}
-                onDebugDisplayedUrl={import.meta.env.DEV ? setDebugDisplayedUrl : null}
-                onDebugEvent={import.meta.env.DEV ? onDebugEventStable : null}
-              />
+              <ErrorBoundary label="Video Player">
+                <VideoPlayer
+                  playbackTarget={playbackTarget}
+                  camera={selectedCamera}
+                  onTimeUpdate={handlePlaybackTimeUpdate}
+                  onSegmentAdvance={handleSegmentAdvance}
+                  scrubPreviewUrl={reticlePreviewUrl}
+                  isMobile={isMobile}
+                  eventSnapshot={activeEventSnapshot}
+                  onSeek={handleSeek}
+                  onPlaybackStart={handlePlaybackStart}
+                  preloadTargetTs={preloadTargetTs}
+                  preloadTarget={preloadTarget}
+                  autoplayActive={autoplayRunning}
+                  onPlaybackStateChange={(playing) => { videoPlayingRef.current = playing; }}
+                  debugOverrides={import.meta.env.DEV ? debugOverrides : null}
+                  onScrubPreviewStatus={import.meta.env.DEV ? setDebugScrubPreviewStatus : null}
+                  onDebugIsPlaying={import.meta.env.DEV ? setDebugIsPlaying : null}
+                  onDebugDisplayedUrl={import.meta.env.DEV ? setDebugDisplayedUrl : null}
+                  onDebugEvent={import.meta.env.DEV ? onDebugEventStable : null}
+                />
+              </ErrorBoundary>
             </div>
 
             {/* Footer: timestamp + coverage stats */}
@@ -1305,26 +1308,28 @@ export default function App() {
 
             {/* VerticalTimeline */}
             <div style={{ flex: 1, minHeight: 0 }}>
-              <VerticalTimeline
-                startTs={rangeStart}
-                endTs={rangeEnd}
-                gaps={timelineData?.gaps || []}
-                events={filteredEvents}
-                densityData={densityData}
-                activeLabels={activeLabels}
-                cursorTs={cursorTs}
-                onSeek={handleSeek}
-                onPan={handlePan}
-                onZoomChange={handleZoomChange}
-                autoplayState={autoplayState}
-                isMobile={isMobile}
-                timeFormat={timeFormat}
-                onPreviewRequest={(ts) => {
-                  const halfWindow = 5 * 60;
-                  requestPreviews(selectedCamera, ts - halfWindow, ts + halfWindow).catch(() => {});
-                }}
-                onPreloadHint={handlePreloadHint}
-              />
+              <ErrorBoundary label="Timeline">
+                <VerticalTimeline
+                  startTs={rangeStart}
+                  endTs={rangeEnd}
+                  gaps={timelineData?.gaps || []}
+                  events={filteredEvents}
+                  densityData={densityData}
+                  activeLabels={activeLabels}
+                  cursorTs={cursorTs}
+                  onSeek={handleSeek}
+                  onPan={handlePan}
+                  onZoomChange={handleZoomChange}
+                  autoplayState={autoplayState}
+                  isMobile={isMobile}
+                  timeFormat={timeFormat}
+                  onPreviewRequest={(ts) => {
+                    const halfWindow = 5 * 60;
+                    requestPreviews(selectedCamera, ts - halfWindow, ts + halfWindow).catch(() => {});
+                  }}
+                  onPreloadHint={handlePreloadHint}
+                />
+              </ErrorBoundary>
             </div>
 
             {/* Bottom range label */}
