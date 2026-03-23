@@ -271,6 +271,18 @@ export default function App() {
   // Set inside the RAF tick on the false→true and true→false transitions only.
   const [autoplayRunning, setAutoplayRunning] = useState(false);
 
+  // ── Debug state (DEV only) ─────────────────────────────────────────────────
+  // In production builds import.meta.env.DEV is false and these are never read.
+  // TODO: test debug tab hidden in production (import.meta.env.DEV=false)
+  const [debugOverrides, setDebugOverrides] = useState({
+    forceShowScrubOverlay: false,
+    forceHideVideo: false,
+    forceShowPreloadVideo: false,
+  });
+  const [debugScrubPreviewStatus, setDebugScrubPreviewStatus] = useState(null);
+  const [debugIsPlaying, setDebugIsPlaying] = useState(false);
+  const [debugDisplayedUrl, setDebugDisplayedUrl] = useState(null);
+
   // Idle preload: PlaybackTarget fetched during idle window, promoted to
   // playbackTarget when AUTOPLAY_DELAY_MS fires.
   const [preloadTarget, setPreloadTarget] = useState(null);
@@ -715,6 +727,31 @@ export default function App() {
     setActiveEventSnapshot(null);
   }, []);
 
+  // ─── Debug action callbacks (DEV only) ────────────────────────────────────
+  const handleDebugTriggerAutoplay = useCallback(() => {
+    // Cross the 1500ms idle threshold immediately by backdating lastInteractionRef.
+    lastInteractionRef.current = Date.now() - 2000;
+  }, []);
+
+  const handleDebugPromotePreload = useCallback(() => {
+    if (preloadTargetRef.current) {
+      setPlaybackTarget(preloadTargetRef.current);
+      setPreloadTarget(null);
+    } else {
+      const cam = selectedCameraRef.current;
+      const ts = cursorTsRef.current;
+      if (cam && ts != null) {
+        fetchPlaybackTarget(cam, ts)
+          .then(target => { if (target) setPlaybackTarget(target); })
+          .catch(() => {});
+      }
+    }
+  }, []);
+
+  const handleDebugClearPlayback = useCallback(() => {
+    setPlaybackTarget(null);
+  }, []);
+
   // ─── Auto-dismiss event snapshot when cursor moves >30s away from it ───
   // Prevents the snapshot overlay from pinning while autoplay or scrolling
   // advances the cursor beyond the event that triggered the snapshot.
@@ -1144,6 +1181,10 @@ export default function App() {
                 preloadTarget={preloadTarget}
                 autoplayActive={autoplayRunning}
                 onPlaybackStateChange={(playing) => { videoPlayingRef.current = playing; }}
+                debugOverrides={import.meta.env.DEV ? debugOverrides : null}
+                onScrubPreviewStatus={import.meta.env.DEV ? setDebugScrubPreviewStatus : null}
+                onDebugIsPlaying={import.meta.env.DEV ? setDebugIsPlaying : null}
+                onDebugDisplayedUrl={import.meta.env.DEV ? setDebugDisplayedUrl : null}
               />
             </div>
 
@@ -1224,7 +1265,27 @@ export default function App() {
         </div>
       )}
 
-      <AdminPanel open={opsOpen} onClose={() => setOpsOpen(false)} />
+      <AdminPanel
+        open={opsOpen}
+        onClose={() => setOpsOpen(false)}
+        {...(import.meta.env.DEV ? {
+          debugOverrides,
+          setDebugOverrides,
+          debugState: {
+            autoplayActive: autoplayRunning,
+            isPlaying: debugIsPlaying,
+            videoPlayingRef: videoPlayingRef.current,
+            playbackTarget,
+            preloadTarget,
+            scrubPreviewUrl: reticlePreviewUrl,
+            scrubPreviewStatus: debugScrubPreviewStatus,
+            displayedPreviewUrl: debugDisplayedUrl,
+          },
+          onDebugTriggerAutoplay: handleDebugTriggerAutoplay,
+          onDebugPromotePreload: handleDebugPromotePreload,
+          onDebugClearPlayback: handleDebugClearPlayback,
+        } : {})}
+      />
     </div>
   );
 }
