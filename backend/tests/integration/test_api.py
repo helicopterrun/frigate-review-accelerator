@@ -675,3 +675,103 @@ async def test_worker_scheduler_jobs_row_name_access(test_app, monkeypatch):
     assert called_with["start_ts"] == pytest.approx(1700000000.0)
     assert called_with["end_ts"] == pytest.approx(1700000010.0)
     assert called_with["duration"] == pytest.approx(10.0)
+
+
+# ---------------------------------------------------------------------------
+# Worker retry logic — previews_generated stays 0 until MAX_RETRIES
+# ---------------------------------------------------------------------------
+
+async def test_recency_pass_does_not_suppress_until_max_retries(test_app, monkeypatch):
+    """A segment with extract_preview_frame=None stays previews_generated=0
+    until retry_count reaches MAX_RETRIES, then gets previews_generated=1.
+
+    Uses a real in-process SQLite DB (via test_app fixture) and drives
+    _run_recency_pass directly, mocking only extract_preview_frame.
+    """
+    import sqlite3
+    from app import config
+    from app.services.worker import _run_recency_pass, MAX_RETRIES
+
+    monkeypatch.setattr("app.services.worker.extract_preview_frame", lambda **kw: None)
+
+    db_path = config.settings.database_path
+    # Use a recent timestamp so the segment falls within the recency window
+    recent_ts = time.time() - 60  # 1 minute ago
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """INSERT INTO segments
+           (camera, start_ts, end_ts, duration, path, file_size, indexed_at, previews_generated, retry_count)
+           VALUES (?, ?, ?, ?, ?, 1024, ?, 0, 0)""",
+        ("retry-cam", recent_ts, recent_ts + 10.0, 10.0, "retry-cam/retry.mp4", time.time()),
+    )
+    conn.commit()
+    seg_id = conn.execute(
+        "SELECT id FROM segments WHERE camera = 'retry-cam'"
+    ).fetchone()[0]
+    conn.close()
+
+    # Each pass increments retry_count; previews_generated stays 0 until MAX_RETRIES-1
+    for attempt in range(1, MAX_RETRIES):
+        await _run_recency_pass(limit=10)
+        conn = sqlite3.connect(str(db_path))
+        row = conn.execute(
+            "SELECT previews_generated, retry_count FROM segments WHERE id = ?", (seg_id,)
+        ).fetchone()
+        conn.close()
+        assert row[1] == attempt, f"retry_count should be {attempt} after attempt {attempt}"
+        assert row[0] == 0, (
+            f"previews_generated must stay 0 before MAX_RETRIES (attempt {attempt})"
+        )
+
+    # Final attempt — should hit MAX_RETRIES and set previews_generated=1
+    await _run_recency_pass(limit=10)
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT previews_generated, retry_count FROM segments WHERE id = ?", (seg_id,)
+    ).fetchone()
+    conn.close()
+    assert row[1] == MAX_RETRIES, f"retry_count should be {MAX_RETRIES} after final attempt"
+    assert row[0] == 1, "previews_generated must be 1 after MAX_RETRIES failures"
+
+
+async def test_admin_reset_preview_failures_zeroes_retry_count(client, test_app):
+    """POST /api/admin/reset-preview-failures must reset retry_count to 0.
+
+    Inserts a segment with previews_generated=1, retry_count=MAX_RETRIES, and no
+    matching preview row.  After the reset call the segment should have
+    previews_generated=0 and retry_count=0 so the worker will retry it.
+    """
+    import sqlite3
+    from app import config
+    from app.services.worker import MAX_RETRIES
+
+    db_path = config.settings.database_path
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """INSERT INTO segments
+           (camera, start_ts, end_ts, duration, path, file_size, indexed_at,
+            previews_generated, retry_count, preview_failure_reason)
+           VALUES (?, ?, ?, ?, ?, 1024, ?, 1, ?, 'ffmpeg_nonzero_exit')""",
+        ("reset-cam", 1700400000.0, 1700400010.0, 10.0, "reset-cam/reset.mp4",
+         time.time(), MAX_RETRIES),
+    )
+    conn.commit()
+    seg_id = conn.execute(
+        "SELECT id FROM segments WHERE camera = 'reset-cam'"
+    ).fetchone()[0]
+    conn.close()
+
+    resp = await client.post("/api/admin/reset-preview-failures")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reset"] >= 1, "Expected at least one segment to be reset"
+
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT previews_generated, retry_count, preview_failure_reason FROM segments WHERE id = ?",
+        (seg_id,),
+    ).fetchone()
+    conn.close()
+    assert row[0] == 0, "previews_generated must be 0 after reset"
+    assert row[1] == 0, "retry_count must be 0 after reset"
+    assert row[2] is None, "preview_failure_reason must be NULL after reset"

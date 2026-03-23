@@ -366,7 +366,13 @@ class TestRecencyPass:
 
     @pytest.mark.asyncio
     async def test_marks_segment_done_on_failure(self, tmp_path, monkeypatch):
-        """previews_generated is set to 1 even when extract_preview_frame returns None."""
+        """After MAX_RETRIES failures previews_generated is set to 1.
+
+        With the retry logic, a single failure increments retry_count and leaves
+        previews_generated=0. Only on the MAX_RETRIES-th failure is the segment
+        suppressed (previews_generated=1). This test drives the pass MAX_RETRIES
+        times to reach suppression.
+        """
         import app.services.worker as w
         from app import config
 
@@ -378,14 +384,15 @@ class TestRecencyPass:
         conn.execute("""CREATE TABLE segments
             (id INTEGER PRIMARY KEY, camera TEXT, start_ts REAL, end_ts REAL,
              duration REAL, path TEXT, file_size INTEGER, indexed_at REAL,
-             previews_generated INTEGER DEFAULT 0)""")
+             previews_generated INTEGER DEFAULT 0,
+             retry_count INTEGER NOT NULL DEFAULT 0)""")
         conn.execute("""CREATE TABLE previews
             (id INTEGER PRIMARY KEY, camera TEXT, ts REAL, segment_id INTEGER,
              image_path TEXT, width INTEGER, height INTEGER)""")
         import time
         recency_ts = time.time()
         conn.execute(
-            "INSERT INTO segments VALUES (1,'cam',?,?,10.0,'cam/seg.mp4',1024,?,0)",
+            "INSERT INTO segments VALUES (1,'cam',?,?,10.0,'cam/seg.mp4',1024,?,0,0)",
             (recency_ts, recency_ts + 10.0, recency_ts),
         )
         conn.commit()
@@ -395,13 +402,18 @@ class TestRecencyPass:
         monkeypatch.setattr(config.settings, "preview_recency_hours", 168)
         monkeypatch.setattr(w.settings, "preview_recency_hours", 168)
 
-        processed = await w._run_recency_pass(limit=10)
-        assert processed == 1
+        # Drive MAX_RETRIES passes — segment stays in queue until final failure
+        for _ in range(w.MAX_RETRIES):
+            processed = await w._run_recency_pass(limit=10)
+            assert processed == 1
 
         conn = sqlite3.connect(str(db_path))
-        row = conn.execute("SELECT previews_generated FROM segments WHERE id = 1").fetchone()
+        row = conn.execute(
+            "SELECT previews_generated, retry_count FROM segments WHERE id = 1"
+        ).fetchone()
         conn.close()
-        assert row[0] == 1
+        assert row[0] == 1, "previews_generated must be 1 after MAX_RETRIES failures"
+        assert row[1] == w.MAX_RETRIES, f"retry_count must be {w.MAX_RETRIES}"
 
         conn = sqlite3.connect(str(db_path))
         count = conn.execute("SELECT COUNT(*) FROM previews").fetchone()[0]
@@ -422,14 +434,15 @@ class TestRecencyPass:
         conn.execute("""CREATE TABLE segments
             (id INTEGER PRIMARY KEY, camera TEXT, start_ts REAL, end_ts REAL,
              duration REAL, path TEXT, file_size INTEGER, indexed_at REAL,
-             previews_generated INTEGER DEFAULT 0)""")
+             previews_generated INTEGER DEFAULT 0,
+             retry_count INTEGER NOT NULL DEFAULT 0)""")
         conn.execute("""CREATE TABLE previews
             (id INTEGER PRIMARY KEY, camera TEXT, ts REAL, segment_id INTEGER,
              image_path TEXT, width INTEGER, height INTEGER)""")
         import time
         recency_ts = time.time()
         conn.execute(
-            "INSERT INTO segments VALUES (1,'cam',?,?,10.0,'cam/seg.mp4',1024,?,0)",
+            "INSERT INTO segments VALUES (1,'cam',?,?,10.0,'cam/seg.mp4',1024,?,0,0)",
             (recency_ts, recency_ts + 10.0, recency_ts),
         )
         conn.commit()

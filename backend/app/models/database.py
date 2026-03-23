@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS segments (
     file_size   INTEGER NOT NULL DEFAULT 0,
     indexed_at  REAL NOT NULL,   -- when we discovered this segment
     previews_generated     INTEGER NOT NULL DEFAULT 0,  -- 0=pending, 1=done
-    preview_failure_reason TEXT                          -- set on ffmpeg failure, cleared on success
+    preview_failure_reason TEXT,                         -- set on ffmpeg failure, cleared on success
+    retry_count            INTEGER NOT NULL DEFAULT 0   -- incremented on each failure; capped at MAX_RETRIES
 );
 
 CREATE INDEX IF NOT EXISTS idx_segments_camera_time
@@ -89,6 +90,7 @@ def init_db_sync():
     for migration in [
         "ALTER TABLE events ADD COLUMN zones TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE segments ADD COLUMN preview_failure_reason TEXT",
+        "ALTER TABLE segments ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
     ]:
         try:
             conn.execute(migration)
