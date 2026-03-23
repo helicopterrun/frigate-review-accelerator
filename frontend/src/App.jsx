@@ -90,9 +90,11 @@ function toDatetimeLocal(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// React.memo: LabelFilterPills props change only on label toggle or
+// timeline data refresh, not on every 60fps cursorTs update.
 // TODO: unit test — verify labelCounts updates when timelineData changes,
 // and that count badges show 0 for labels with no events in range.
-function LabelFilterPills({ availableLabels, activeLabels, onToggle, onToggleAll, labelCounts = {}, isMobile }) {
+const LabelFilterPills = React.memo(function LabelFilterPills({ availableLabels, activeLabels, onToggle, onToggleAll, labelCounts = {}, isMobile }) {
   if (!availableLabels?.length) return null;
   const allActive = activeLabels === null;
 
@@ -132,7 +134,7 @@ function LabelFilterPills({ availableLabels, activeLabels, onToggle, onToggleAll
       })}
     </div>
   );
-}
+});
 
 export default function App() {
   const isMobile = useIsMobile();
