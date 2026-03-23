@@ -1,6 +1,7 @@
 import { expect } from 'vitest';
 import * as matchers from '@testing-library/jest-dom/matchers';
 
+// Extend Vitest's expect with jest-dom DOM matchers (toBeInTheDocument, etc.)
 expect.extend(matchers);
 
 // Mock matchMedia — jsdom does not implement this; useIsMobile() depends on it.
