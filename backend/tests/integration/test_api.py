@@ -83,6 +83,63 @@ async def test_preview_progress_empty(client):
     assert isinstance(resp.json(), list)
 
 
+async def test_preview_returns_404_not_snapshot_when_segment_exists(
+    client, monkeypatch
+):
+    """Frigate snapshot fallback must NOT fire when a local segment covers the ts.
+
+    Contract: segment present → enqueue + 404. _try_frigate_event_snapshot
+    must never be called so we don't serve stale or off-timestamp thumbnails
+    while local generation is pending.
+    """
+    from unittest.mock import AsyncMock
+    from app import config
+
+    db_path = config.settings.database_path
+    ts = 1700100000.0
+    # Insert a segment that covers `ts` — no preview file on disk
+    _insert_segment(db_path, "seg-gate-cam", ts - 5.0, ts + 5.0, previews_generated=0)
+
+    called = []
+
+    async def fake_snapshot(camera, timestamp):
+        called.append((camera, timestamp))
+        return b"fake-snapshot-bytes"
+
+    monkeypatch.setattr("app.routers.preview._try_frigate_event_snapshot", fake_snapshot)
+
+    resp = await client.get(f"/api/preview/seg-gate-cam/{ts}")
+    assert resp.status_code == 404, (
+        "Expected 404 when segment exists but preview not yet generated"
+    )
+    assert called == [], (
+        "_try_frigate_event_snapshot must NOT be called when a segment covers the ts"
+    )
+
+
+async def test_preview_calls_frigate_fallback_when_no_segment(client, monkeypatch):
+    """Frigate snapshot fallback fires when no local segment covers the ts.
+
+    Contract: no segment → try Frigate snapshot → 200 FRIGATE-SNAPSHOT.
+    """
+    from app import config
+
+    # Intentionally do NOT insert a segment for this camera/ts
+    ts = 1700200000.0
+
+    async def fake_snapshot(camera, timestamp):
+        return b"\xff\xd8\xff\xe0fake-jpeg"  # minimal fake JPEG bytes
+
+    monkeypatch.setattr("app.routers.preview._try_frigate_event_snapshot", fake_snapshot)
+
+    resp = await client.get(f"/api/preview/no-seg-cam/{ts}")
+    assert resp.status_code == 200, (
+        "Expected 200 when no segment exists and Frigate snapshot is available"
+    )
+    assert resp.headers.get("x-cache") == "FRIGATE-SNAPSHOT"
+    assert resp.content == b"\xff\xd8\xff\xe0fake-jpeg"
+
+
 # ---------------------------------------------------------------------------
 # Timeline
 # ---------------------------------------------------------------------------
