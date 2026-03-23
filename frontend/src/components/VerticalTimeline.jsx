@@ -14,8 +14,7 @@
  *   2.  Vertical separator lines
  *   3.  Gap absence fill (subtle dark)
  *   4.  Layer 1: Density gradient (interpolated Float32Array, blue spectrum)
- *   5.  "Now" dashed line (current wall-clock time, if in range)
- *   6.  Time tick labels + hairlines (proximity fade from reticle)
+ *   5.  Time tick labels + hairlines (proximity fade from reticle)
  *   7.  Layer 2: Detection ticks with proximity-aware labels
  *   8.  Layer 3: Important event markers (amber-red, diamond, snapshot dot)
  *   9.  Hover line (yellow, mouse position)
@@ -33,7 +32,7 @@
  */
 
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { formatTimeShort, formatTime, clampTs, nowTs } from '../utils/time.js';
+import { formatTimeShort, formatTime, clampTs } from '../utils/time.js';
 import { RETICLE_FRACTION } from '../utils/constants.js';
 
 function useDebounce(fn, delay) {
@@ -453,20 +452,7 @@ export default function VerticalTimeline({
       }
     }
 
-    // 6. "Now" dashed line (green, if wall-clock is within range)
-    const currentWallTs = nowTs();
-    if (currentWallTs >= startTs && currentWallTs <= endTs) {
-      const ny = tsToY(currentWallTs);
-      ctx.save();
-      ctx.strokeStyle = 'rgba(76,200,80,0.45)';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(barStart, ny);
-      ctx.lineTo(barEnd, ny);
-      ctx.stroke();
-      ctx.restore();
-    }
+    // TODO: add frontend canvas rendering tests (no test harness exists yet)
 
     // 7. Time tick labels + horizontal hairlines (proximity fade from reticle)
     // Fine-grained intervals (5/10/15/30s) support tight zoom levels.
