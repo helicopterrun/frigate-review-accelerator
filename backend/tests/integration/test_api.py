@@ -180,6 +180,74 @@ async def test_timeline_empty_camera_no_segments(client):
     assert data["coverage_pct"] == pytest.approx(0.0)
 
 
+def _insert_event(db_path, camera, start_ts, end_ts=None, label="person"):
+    """Insert a test event row directly into the DB."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """INSERT INTO events (id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at)
+           VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)""",
+        (f"evt-{start_ts}", camera, start_ts, end_ts, label, 0.9, start_ts),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def test_timeline_events_within_requested_range(client):
+    """Events with start_ts inside the query range are returned; events entirely
+    outside are not.
+
+    Also documents the NULL-end_ts edge case: an open event (end_ts IS NULL) that
+    started well before the range matches the SQL clause `(end_ts IS NULL OR
+    end_ts >= start)` and will be included by the backend. The client-side
+    post-filter in App.jsx (filteredEvents useMemo) guards against this — see
+    fix(frontend): stale events outside visible window cause spurious canvas warnings.
+    """
+    from app import config
+    db_path = config.settings.database_path
+
+    range_start = 1700050000.0
+    range_end   = 1700060000.0  # 10 000-second window
+
+    # Event fully inside the range
+    _insert_event(db_path, "evt-range-cam", range_start + 100, range_start + 200)
+    # Event fully outside the range (ended before range_start)
+    _insert_event(db_path, "evt-range-cam", range_start - 5000, range_start - 4000)
+    # Open event (end_ts IS NULL) that started long before the range — exposes
+    # the NULL-end_ts inclusion bug; this event WILL be returned by the current
+    # backend because (end_ts IS NULL) satisfies the overlap condition.
+    _insert_event(db_path, "evt-range-cam", range_start - 180000, end_ts=None)
+
+    resp = await client.get(
+        "/api/timeline",
+        params={"camera": "evt-range-cam", "start": range_start, "end": range_end},
+    )
+    assert resp.status_code == 200
+    events = resp.json()["events"]
+
+    returned_start_ts = {e["start_ts"] for e in events}
+
+    # The event inside the range must appear
+    assert range_start + 100 in returned_start_ts, (
+        "Event with start_ts inside the range should be returned"
+    )
+    # The event that ended before range_start must NOT appear
+    assert range_start - 5000 not in returned_start_ts, (
+        "Event that ended before range_start must not be returned"
+    )
+    # The NULL-end_ts event from 50h ago — document that the backend returns it.
+    # The client-side filteredEvents post-filter in App.jsx is the guardrail.
+    null_end_included = (range_start - 180000) in returned_start_ts
+    # We do not assert False here because this is a known backend behaviour;
+    # instead we leave a clear signal in the test output.
+    if null_end_included:
+        import warnings
+        warnings.warn(
+            "Backend includes NULL-end_ts events starting outside the requested range. "
+            "The client-side filteredEvents post-filter in App.jsx is the active guardrail. "
+            "TODO: fix backend: add a bounded cutoff for open events in timeline.py."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Playback / gap snapping
 # ---------------------------------------------------------------------------

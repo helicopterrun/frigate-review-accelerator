@@ -543,9 +543,19 @@ export default function App() {
 
   const filteredEvents = useMemo(() => {
     if (!timelineData?.events) return [];
-    if (activeLabels === null) return timelineData.events;
-    return timelineData.events.filter(e => activeLabels.has(e.label));
-  }, [timelineData, activeLabels]);
+    // Post-filter: drop events whose start_ts falls outside the current visible window.
+    // Defense-in-depth guard against NULL-end_ts events from the backend:
+    // the SQL clause `(end_ts IS NULL OR end_ts >= start)` includes open/incomplete
+    // events regardless of how old they are, producing start_ts values 50+ hours
+    // before the visible window. The primary fix belongs in the backend query, but
+    // this guard ensures stale events never reach the canvas or navigation logic.
+    // TODO: fix backend: replace NULL-end_ts open condition with a bounded cutoff.
+    const inWindow = timelineData.events.filter(
+      e => e.start_ts >= rangeStart - rangeSec && e.start_ts <= rangeEnd + rangeSec
+    );
+    if (activeLabels === null) return inWindow;
+    return inWindow.filter(e => activeLabels.has(e.label));
+  }, [timelineData, activeLabels, rangeStart, rangeEnd, rangeSec]);
 
   // ─── Timeline resize state ───────────────────────────────────────────────────
   // TODO: test resize persists to localStorage and clamps to [15, 60]

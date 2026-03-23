@@ -721,6 +721,7 @@ export default function VideoPlayer({
               <img
                 src={displayedPreviewUrl}
                 alt="Preview"
+                onError={(e) => { e.target.style.display = 'none'; }}
                 style={{ width: '100%', height: '100%', objectFit: 'contain' }}
               />
             )}
