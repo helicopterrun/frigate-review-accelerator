@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import settings
+from app.services.coverage import mark_covered
 
 log = logging.getLogger(__name__)
 
@@ -295,6 +296,8 @@ def index_segments_sync(
             rows,
         )
         conn.commit()
+        for seg in batch:
+            mark_covered(seg["camera"], seg["start_ts"])
         log.info("Indexed batch %d-%d / %d", i, i + len(batch), len(new_segments))
 
     # Update scan_state per camera with the latest file timestamp we saw
@@ -460,6 +463,8 @@ def index_segments_since(
             rows,
         )
         conn.commit()
+        for seg in batch:
+            mark_covered(seg["camera"], seg["start_ts"])
         processed_so_far += len(batch)
         log.info("Reindex batch %d-%d / %d", i, i + len(batch), len(new_segments))
         if progress_callback:

@@ -97,8 +97,15 @@ async def test_preview_returns_404_not_snapshot_when_segment_exists(
 
     db_path = config.settings.database_path
     ts = 1700100000.0
-    # Insert a segment that covers `ts` — no preview file on disk
+    # Insert a segment that covers `ts` — no preview file on disk.
+    # Also mark it in the in-memory coverage index, which is what the
+    # hot path consults instead of hitting the DB.
     _insert_segment(db_path, "seg-gate-cam", ts - 5.0, ts + 5.0, previews_generated=0)
+    from app.services.coverage import mark_covered
+    # Mark coverage for ts itself (not ts-5) because ts=1700100000 is an exact
+    # hour boundary; the segment starts 5 s before it, landing in the prior hour.
+    # is_covered uses the hour of the queried ts, so we mark that same hour.
+    mark_covered("seg-gate-cam", ts)
 
     called = []
 
