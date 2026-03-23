@@ -27,6 +27,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 from app.config import settings
 from app.models.database import get_db
@@ -39,6 +40,17 @@ from app.services.time_index import get_time_index
 log = logging.getLogger(__name__)
 
 _worker_task: asyncio.Task | None = None
+
+# Bounded executor for preview generation — set by main.py lifespan before
+# start_worker() is called. Falls back to the default executor (None) if not
+# set, which is safe but ignores the preview_workers config value.
+_preview_executor: ThreadPoolExecutor | None = None
+
+
+def set_preview_executor(executor: ThreadPoolExecutor) -> None:
+    """Wire the bounded ThreadPoolExecutor created in main.py lifespan."""
+    global _preview_executor
+    _preview_executor = executor
 
 # Run background (Tier 2) crawl every N worker cycles.
 # At scan_interval_sec=30 and BACKGROUND_INTERVAL=3, that's every ~90 seconds.
@@ -84,7 +96,7 @@ async def _process_demand_queue() -> int:
         camera, bucket_ts = _demand_queue.popleft()
 
         frame = await loop.run_in_executor(
-            None,
+            _preview_executor,
             lambda c=camera, b=bucket_ts: extract_preview_frame(
                 camera=c,
                 ts=b,
@@ -135,7 +147,7 @@ async def _run_recency_pass(limit: int = 50) -> int:
         bucket_ts = idx.bucket_ts(midpoint)
 
         frame = await loop.run_in_executor(
-            None,
+            _preview_executor,
             lambda s=segment, b=bucket_ts: extract_preview_frame(
                 camera=s["camera"],
                 ts=b,
@@ -205,7 +217,7 @@ async def _run_background_pass(limit: int = 20) -> int:
         bucket_ts = idx.bucket_ts(midpoint)
 
         frame = await loop.run_in_executor(
-            None,
+            _preview_executor,
             lambda s=segment, b=bucket_ts: extract_preview_frame(
                 camera=s["camera"],
                 ts=b,
