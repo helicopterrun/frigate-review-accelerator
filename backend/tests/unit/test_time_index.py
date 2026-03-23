@@ -126,6 +126,95 @@ class TestAutoResolution:
             )
 
 
+class TestTimelineBuckets:
+    """Tests for timeline_buckets — specifically the density alignment fix.
+
+    The bug: event_density keyed events by floor(ts/bucket_sec)*bucket_sec,
+    while the bucket loop looked up floor(b_start/bucket_sec)*bucket_sec where
+    b_start = range_start + i*bucket_sec.  When range_start is not a multiple
+    of bucket_sec these two key series diverge, causing events near bucket
+    boundaries to be attributed to the wrong logical bucket.
+
+    The fix computes density inline using b_start/b_end overlap, so keys
+    always match the logical bucket series regardless of range_start alignment.
+    """
+
+    class FakeEvent:
+        def __init__(self, start_ts, end_ts=None, label="person"):
+            self.start_ts = start_ts
+            self.end_ts = end_ts
+            self.label = label
+
+    def test_first_bucket_not_zero_when_event_crosses_global_boundary(self, idx):
+        """Event at t=1050 falls in logical bucket [995,1055) but in a different
+        global-aligned 60s bucket than range_start=995.  Must appear in bucket 0,
+        not bucket 1."""
+        # Use explicit end_ts so spans stay within bucket 0 [995,1055)
+        events = [
+            self.FakeEvent(1000.0, end_ts=1001.0),
+            self.FakeEvent(1050.0, end_ts=1051.0),
+        ]
+        # range_dur=120, resolution=2 → bucket_sec=60
+        # Logical bucket 0: [995, 1055), bucket 1: [1055, 1115)
+        buckets = idx.timeline_buckets(
+            range_start=995.0,
+            range_end=1115.0,
+            camera="cam",
+            events=events,
+            resolution=2,
+            preview_ts_set=set(),
+        )
+        assert len(buckets) == 2
+        assert buckets[0]["event_density"] >= 1, (
+            "Bucket 0 must count events in [995,1055); got 0"
+        )
+        # Both events fall within bucket 0; bucket 1 should be empty
+        assert buckets[0]["event_density"] == 2
+        assert buckets[1]["event_density"] == 0
+
+    def test_density_correct_for_unaligned_range_start(self, idx):
+        """Density must be correct when range_start is an arbitrary Unix timestamp
+        (the common case — real timestamps are never multiples of bucket_sec)."""
+        events = [self.FakeEvent(1001.0)]
+        # range_start=999 is not a multiple of bucket_sec=60
+        buckets = idx.timeline_buckets(
+            range_start=999.0,
+            range_end=1119.0,
+            camera="cam",
+            events=events,
+            resolution=2,
+            preview_ts_set=set(),
+        )
+        # Event at 1001 falls in bucket 0 [999, 1059)
+        assert buckets[0]["event_density"] == 1
+        assert buckets[1]["event_density"] == 0
+
+    def test_event_in_second_bucket_not_leaked_into_first(self, idx):
+        """An event in bucket 1 must not bleed into bucket 0."""
+        events = [self.FakeEvent(1060.0)]
+        buckets = idx.timeline_buckets(
+            range_start=995.0,
+            range_end=1115.0,
+            camera="cam",
+            events=events,
+            resolution=2,
+            preview_ts_set=set(),
+        )
+        assert buckets[0]["event_density"] == 0
+        assert buckets[1]["event_density"] == 1
+
+    def test_no_events_all_zero(self, idx):
+        buckets = idx.timeline_buckets(
+            range_start=995.0,
+            range_end=1115.0,
+            camera="cam",
+            events=[],
+            resolution=2,
+            preview_ts_set=set(),
+        )
+        assert all(b["event_density"] == 0 for b in buckets)
+
+
 class TestGetTimeIndexSingleton:
     def test_get_time_index_singleton(self, monkeypatch, tmp_path):
         """Two calls to get_time_index() must return the same object."""
