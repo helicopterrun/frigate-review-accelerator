@@ -358,6 +358,110 @@ class TestVaapiSemaphore:
         assert pg._VAAPI_MAX_CONCURRENT == 1
 
 
+class TestLazyVaapiProbe:
+
+    def test_get_vaapi_device_returns_probe_result(self, monkeypatch):
+        """_get_vaapi_device() calls _vaapi_device() and returns its result."""
+        import app.services.preview_generator as pg
+
+        monkeypatch.setattr(pg, "_VAAPI_DEVICE", "unchecked")
+        monkeypatch.setattr(pg, "_vaapi_device", lambda: "/dev/dri/renderD128")
+
+        result = pg._get_vaapi_device()
+        assert result == "/dev/dri/renderD128"
+
+    def test_get_vaapi_device_cached_after_first_call(self, monkeypatch):
+        """_vaapi_device() is called exactly once; subsequent calls use the cached value."""
+        import app.services.preview_generator as pg
+
+        call_count = {"n": 0}
+
+        def counting_probe():
+            call_count["n"] += 1
+            return "/dev/dri/renderD128"
+
+        monkeypatch.setattr(pg, "_VAAPI_DEVICE", "unchecked")
+        monkeypatch.setattr(pg, "_vaapi_device", counting_probe)
+
+        pg._get_vaapi_device()
+        pg._get_vaapi_device()
+        pg._get_vaapi_device()
+
+        assert call_count["n"] == 1, "_vaapi_device must be called exactly once"
+
+    def test_vaapi_probe_not_called_at_import_time(self):
+        """Reloading the module must not invoke _vaapi_device().
+
+        Verified by patching shutil.which (the first call inside _vaapi_device)
+        to raise — if any module-level code calls the probe, reload raises.
+        """
+        import importlib
+        import shutil
+        import app.services.preview_generator as pg
+
+        original_which = shutil.which
+        called = {"probe": False}
+
+        def raising_which(name):
+            if name == "ffmpeg":
+                called["probe"] = True
+                raise AssertionError("_vaapi_device was called at import/reload time")
+            return original_which(name)
+
+        shutil.which = raising_which
+        try:
+            importlib.reload(pg)
+            assert not called["probe"], "_vaapi_device must not run at module import"
+            assert pg._VAAPI_DEVICE == "unchecked", "sentinel must be set after reload"
+        finally:
+            shutil.which = original_which
+            # Restore module to a clean post-reload state
+            importlib.reload(pg)
+
+    def test_get_vaapi_device_called_once_under_concurrency(self, monkeypatch):
+        """Two threads calling _get_vaapi_device() simultaneously must trigger exactly one probe.
+
+        The barrier belongs in the caller (not the probe) so both threads race
+        to the first unchecked check simultaneously; only one wins the lock and
+        calls _vaapi_device(); the second sees the updated value and short-circuits.
+        """
+        import time
+        import app.services.preview_generator as pg
+
+        call_count = {"n": 0}
+        start_barrier = threading.Barrier(2)
+
+        def slow_probe():
+            call_count["n"] += 1
+            time.sleep(0.05)  # hold lock briefly so second thread is definitely waiting
+            return "/dev/dri/renderD128"
+
+        monkeypatch.setattr(pg, "_VAAPI_DEVICE", "unchecked")
+        monkeypatch.setattr(pg, "_vaapi_device", slow_probe)
+        # Reset the lock so double-checked locking starts from a clean state
+        monkeypatch.setattr(pg, "_VAAPI_LOCK", threading.Lock())
+
+        results = []
+
+        def caller():
+            start_barrier.wait()  # both threads enter simultaneously
+            results.append(pg._get_vaapi_device())
+
+        t1 = threading.Thread(target=caller)
+        t2 = threading.Thread(target=caller)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert call_count["n"] == 1, (
+            f"_vaapi_device must be called exactly once under concurrency, got {call_count['n']}"
+        )
+        assert all(r == "/dev/dri/renderD128" for r in results), (
+            "Both callers must receive the correct device path"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Recency pass tests (via worker helpers)
 # ---------------------------------------------------------------------------

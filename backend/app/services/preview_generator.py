@@ -79,12 +79,31 @@ def _vaapi_device() -> str | None:
         return None
 
 
-_VAAPI_DEVICE: str | None = _vaapi_device()
+# Lazy VAAPI probe — not evaluated at import time to avoid stalling startup.
+# 'unchecked' is the sentinel meaning the probe has not yet run.
+_VAAPI_DEVICE: str | None = "unchecked"  # type: ignore[assignment]
+_VAAPI_LOCK = threading.Lock()
 
-if _VAAPI_DEVICE:
-    log.info("VAAPI hardware decode enabled (%s)", _VAAPI_DEVICE)
-else:
-    log.info("VAAPI not available, using software decode")
+
+def _get_vaapi_device() -> str | None:
+    """Return the VAAPI device path, probing on first call (lazy init).
+
+    Uses double-checked locking so the probe runs exactly once even when
+    multiple worker threads call this simultaneously on startup.
+    """
+    global _VAAPI_DEVICE
+    if _VAAPI_DEVICE != "unchecked":
+        return _VAAPI_DEVICE  # type: ignore[return-value]
+    with _VAAPI_LOCK:
+        if _VAAPI_DEVICE != "unchecked":  # double-checked locking
+            return _VAAPI_DEVICE  # type: ignore[return-value]
+        _VAAPI_DEVICE = _vaapi_device()
+        if _VAAPI_DEVICE:
+            log.info("VAAPI hardware decode enabled (%s)", _VAAPI_DEVICE)
+        else:
+            log.info("VAAPI not available, using software decode")
+        return _VAAPI_DEVICE  # type: ignore[return-value]
+
 
 # Serialize VAAPI access — a single iGPU does not parallelize across
 # concurrent ffmpeg processes.  Software-decode workers are not gated.
@@ -167,15 +186,16 @@ def extract_preview_frame(
         }
 
     # Step 3 — Run exactly ONE ffmpeg subprocess
+    vaapi_dev = _get_vaapi_device()
     hw_flags: list[str] = []
-    if _VAAPI_DEVICE:
+    if vaapi_dev:
         hw_flags = [
             "-hwaccel", "vaapi",
-            "-hwaccel_device", _VAAPI_DEVICE,
+            "-hwaccel_device", vaapi_dev,
             "-hwaccel_output_format", "vaapi",
         ]
 
-    if _VAAPI_DEVICE:
+    if vaapi_dev:
         vf = f"hwdownload,format=nv12,scale={width}:-1"
     else:
         vf = f"scale={width}:-1"
@@ -196,7 +216,7 @@ def extract_preview_frame(
     ]
 
     try:
-        if _VAAPI_DEVICE:
+        if vaapi_dev:
             with _vaapi_semaphore:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         else:
