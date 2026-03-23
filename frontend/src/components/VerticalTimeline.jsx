@@ -819,8 +819,9 @@ export default function VerticalTimeline({
       // Impulse BEFORE clamp: first frame reflects raw intent.
       onPan(scrollVelocityRef.current);
 
-      // Raised cap: fast flicks can really travel at wide zoom.
-      const maxV = (endTs - startTs) * 0.25;
+      // Cap: 10% of visible range, max 3600s — prevents 6h overshoot on
+      // trackpad flick at 24h zoom. See CLAUDE.md scroll interaction model.
+      const maxV = Math.min((endTs - startTs) * 0.10, 3600);
       scrollVelocityRef.current = Math.max(
         -maxV,
         Math.min(maxV, scrollVelocityRef.current)
