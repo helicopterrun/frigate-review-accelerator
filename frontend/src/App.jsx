@@ -293,11 +293,7 @@ export default function App() {
   const lastInteractionRef = useRef(Date.now());
   const autoplayActiveRef = useRef(false);
   const autoplayStartRef = useRef(Date.now());
-  // autoplayPromotedRef: true after the first promotion dispatch for the current
-  // autoplay session. Prevents the promote useEffect from firing more than once
-  // per session when autoplayRunning toggles rapidly due to ceiling clamping.
-  // TODO: test autoplayPromotedRef resets on autoplayRunning false→true transition.
-  const autoplayPromotedRef = useRef(false);
+  const autoplayFallbackRef = useRef(null);
   // INVARIANT: autoplay is always enabled. The RAF loop always advances the cursor
   // after AUTOPLAY_DELAY_MS of idle, and always preloads after PRELOAD_DELAY_MS.
   const autoplayRafRef = useRef(null);
@@ -732,43 +728,45 @@ export default function App() {
   }, [cursorTs, activeEventSnapshot]);
 
   // ─── Promote preload → playback when autoplay activates ───
-  // Happy path: preload was fetched during the 400–1500ms idle window, so the
-  // HLS manifest is already buffered. Swap it to the main player for near-instant
-  // playback start via VideoPlayer's existing hlsPreloadRef swap path.
-  // Fallback: if preload isn't ready (e.g. cancelled by user interaction),
-  // fetch directly. This is the same path as before idle preload was added.
+  // Effect A — fast path: preloadTarget already arrived before autoplayRunning fired.
+  // Promotes the buffered target to the main player for near-instant playback start.
+  // TODO: test Effect A fires when preloadTarget arrives before autoplay
   // TODO: test swap path — preloadTarget promoted to playbackTarget at
   //   autoplayRunning=true triggers existing hlsPreloadRef swap in VideoPlayer
   useEffect(() => {
+    if (!autoplayRunning) return;
+    if (!preloadTarget) return; // wait for Effect B fallback
+    console.log('[APP] autoplay: promoting preload target', preloadTarget);
+    setPlaybackTarget(preloadTarget);
+    setPreloadTarget(null);
+  }, [autoplayRunning, preloadTarget]);
+
+  // Effect B — fallback: preloadTarget didn't arrive in time (fetch resolved after
+  // the 1500ms autoplay threshold). Waits 200ms then fetches directly.
+  // Cancelled if autoplayRunning goes false (user interacted) or if Effect A fires.
+  // TODO: test Effect B fallback fires 200ms after autoplay when no preloadTarget
+  useEffect(() => {
     if (!autoplayRunning) {
-      autoplayPromotedRef.current = false;
+      clearTimeout(autoplayFallbackRef.current);
       return;
     }
-    if (autoplayPromotedRef.current) return;
-    autoplayPromotedRef.current = true;
-    const existing = preloadTargetRef.current;
-    if (existing) {
-      console.log('[APP] autoplay: promoting preload target', existing);
-      setPlaybackTarget(existing);
-      setPreloadTarget(null);
-    } else {
-      // Fallback: fetch fresh (preload wasn't ready in time)
+    if (preloadTarget) return; // Effect A will handle it
+    autoplayFallbackRef.current = setTimeout(() => {
       const cam = selectedCameraRef.current;
-      if (!cam) return;
-      preloadRequestRef.current++;
-      const myId = preloadRequestRef.current;
-      fetchPlaybackTarget(cam, cursorTsRef.current)
+      const ts = cursorTsRef.current;
+      if (!cam || ts == null) return;
+      fetchPlaybackTarget(cam, ts)
         .then(target => {
-          if (myId !== preloadRequestRef.current) return;
           if (autoplayActiveRef.current && target) {
             console.log('[APP] autoplay: fallback fetch', target);
             setPlaybackTarget(target);
           } else if (!target) {
-            console.warn('[APP] autoplay: fallback fetch returned null — no segment at ts', cursorTsRef.current);
+            console.warn('[APP] autoplay: fallback fetch returned null — no segment at ts', ts);
           }
         })
         .catch((e) => { console.warn('[APP] autoplay: fallback fetch failed:', e.message); });
-    }
+    }, 200);
+    return () => clearTimeout(autoplayFallbackRef.current);
   }, [autoplayRunning]);
 
   // ─── Preload hint: communicated from VerticalTimeline during slow scrub ───

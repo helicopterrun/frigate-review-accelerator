@@ -661,7 +661,11 @@ export default function VideoPlayer({
   }, []);
 
   const hasTarget = playbackTarget != null;
-  const showOverlay = scrubPreviewUrl != null && !isPlaying && eventSnapshot == null;
+  // TODO: test showOverlay shows immediately after handleSeek sets autoplayActive=false
+  // Use autoplayActive (prop) instead of isPlaying (local state): after a seek,
+  // App.jsx sets autoplayActive=false immediately, but isPlaying may still be true
+  // from a previous play() call that hasn't fired its pause/ended event yet.
+  const showOverlay = scrubPreviewUrl != null && !autoplayActive && eventSnapshot == null;
   const showPlaceholder = !hasTarget && !showOverlay && !eventSnapshot;
 
   return (

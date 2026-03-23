@@ -5,6 +5,14 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    watch: {
+      // Exclude backend runtime directories from Vite's file watcher.
+      // Without this, SQLite WAL files written to backend/data/ and log
+      // files in logs/ trigger hot-reload every ~30s, causing a React
+      // remount that resets selectedCamera and playbackTarget.
+      // TODO: if backend/data/ is moved outside the project root, revisit.
+      ignored: ['**/backend/data/**', '**/logs/**', '**/.pids/**'],
+    },
     proxy: {
       '/api': {
         target: 'http://localhost:8100',
