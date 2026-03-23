@@ -94,8 +94,12 @@ def init_db_sync():
     ]:
         try:
             conn.execute(migration)
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if 'duplicate column' in msg or 'already exists' in msg:
+                pass  # expected idempotency case
+            else:
+                raise  # disk full, locked DB, malformed SQL — do not suppress
     conn.commit()
     conn.close()
 
