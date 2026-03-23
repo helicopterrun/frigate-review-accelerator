@@ -157,3 +157,76 @@ class TestActivityBuckets:
         assert bucket_60.labels.get("person") == 2
         assert bucket_60.labels.get("car") == 1
         assert bucket_60.count == 3
+
+    def test_event_spanning_multiple_buckets_increments_all(self):
+        """An event spanning 3 buckets must increment all 3 bucket counts."""
+        # range ≤ 1h → bucket_sec = 60
+        range_start = 0.0
+        range_end = 3600.0
+        # Event from t=60 to t=200: spans buckets 60, 120, 180
+        evts = [make_evt("e1", start=60.0, end=200.0)]
+        buckets = _compute_activity(evts, range_start, range_end)
+        bucket_60  = next(b for b in buckets if b.bucket_ts == 60.0)
+        bucket_120 = next(b for b in buckets if b.bucket_ts == 120.0)
+        bucket_180 = next(b for b in buckets if b.bucket_ts == 180.0)
+        bucket_240 = next(b for b in buckets if b.bucket_ts == 240.0)
+        assert bucket_60.count == 1
+        assert bucket_120.count == 1
+        assert bucket_180.count == 1
+        assert bucket_240.count == 0  # event ends at 200, floor(200/60)=3 → bucket 180
+
+    def test_event_contained_in_single_bucket(self):
+        """An event entirely within one bucket increments only that bucket."""
+        range_start = 0.0
+        range_end = 3600.0
+        evts = [make_evt("e1", start=65.0, end=90.0)]  # both in bucket 60
+        buckets = _compute_activity(evts, range_start, range_end)
+        bucket_60  = next(b for b in buckets if b.bucket_ts == 60.0)
+        bucket_120 = next(b for b in buckets if b.bucket_ts == 120.0)
+        assert bucket_60.count == 1
+        assert bucket_120.count == 0
+
+    def test_event_with_none_end_ts_uses_fallback(self):
+        """An event with end_ts=None must use start_ts + 30s as the span."""
+        range_start = 0.0
+        range_end = 3600.0
+        # start=65, end=None → effective_end=95; floor(65/60)=1→bucket 60,
+        # floor(95/60)=1→bucket 60.  Both land in the same bucket.
+        evts = [make_evt("e1", start=65.0, end=None)]
+        buckets = _compute_activity(evts, range_start, range_end)
+        bucket_60  = next(b for b in buckets if b.bucket_ts == 60.0)
+        bucket_120 = next(b for b in buckets if b.bucket_ts == 120.0)
+        assert bucket_60.count == 1
+        assert bucket_120.count == 0
+
+        # start=90, end=None → effective_end=120; floor(90/60)=1→bucket 60,
+        # floor(120/60)=2→bucket 120.  Two buckets get incremented.
+        evts2 = [make_evt("e2", start=90.0, end=None)]
+        buckets2 = _compute_activity(evts2, range_start, range_end)
+        b60  = next(b for b in buckets2 if b.bucket_ts == 60.0)
+        b120 = next(b for b in buckets2 if b.bucket_ts == 120.0)
+        assert b60.count == 1
+        assert b120.count == 1
+
+    def test_pathological_event_is_capped(self):
+        """A 24-hour event must not blow up — capped at MAX_SPAN_BUCKETS=200."""
+        # Use >24h range → bucket_sec=1800
+        range_start = 0.0
+        range_end = 90_000.0  # 25 hours
+        # Event spanning the entire range (86400s / 1800s per bucket = 48 buckets < 200 cap)
+        evts = [make_evt("e1", start=0.0, end=86_400.0)]
+        buckets = _compute_activity(evts, range_start, range_end)
+        # Expect exactly 48 incremented buckets (0, 1800, ..., 46*1800=82800)
+        # floor(86400/1800)=48, so buckets 0..48 → 49 buckets
+        incremented = [b for b in buckets if b.count > 0]
+        assert len(incremented) == 49  # buckets 0 through 48*1800
+
+        # Now test the cap: event so long it would exceed 200 buckets
+        # bucket_sec=1800, 200 buckets = 360000s
+        # Event 0..720000 → would be 400 buckets without cap
+        evts_huge = [make_evt("e2", start=0.0, end=720_000.0)]
+        # range must contain at least 200 buckets
+        range_end_huge = 720_000.0 + 1800.0
+        buckets_huge = _compute_activity(evts_huge, 0.0, range_end_huge)
+        incremented_huge = [b for b in buckets_huge if b.count > 0]
+        assert len(incremented_huge) == 200  # capped

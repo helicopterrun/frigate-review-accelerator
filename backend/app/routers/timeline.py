@@ -126,12 +126,21 @@ def _compute_activity(
         buckets[t] = {}
         t += bucket_sec
 
-    # Count events into buckets
+    # Count events into every bucket they span.
+    # Cap per-event span to avoid O(n*buckets) work for pathologically long events.
+    MAX_SPAN_BUCKETS = 200
+    DEFAULT_SPAN_SEC = 30.0
+
     for evt in events:
-        b = math.floor(evt.start_ts / bucket_sec) * bucket_sec
-        if b in buckets:
-            label = evt.label
-            buckets[b][label] = buckets[b].get(label, 0) + 1
+        effective_end = evt.end_ts if evt.end_ts is not None else evt.start_ts + DEFAULT_SPAN_SEC
+        first_idx = int(evt.start_ts // bucket_sec)
+        last_idx = int(effective_end // bucket_sec)
+        last_idx = min(last_idx, first_idx + MAX_SPAN_BUCKETS - 1)
+        label = evt.label
+        for idx in range(first_idx, last_idx + 1):
+            b = idx * bucket_sec
+            if b in buckets:
+                buckets[b][label] = buckets[b].get(label, 0) + 1
 
     return [
         ActivityBucket(
