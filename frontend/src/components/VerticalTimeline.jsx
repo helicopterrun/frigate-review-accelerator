@@ -670,7 +670,9 @@ export default function VerticalTimeline({
       ctx.fill();
 
     }
-  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, autoplayState, tsToY, timeFormat,
+  // autoplayState intentionally omitted — not read inside drawCanvas.
+  // Adding it causes full redraws on every autoplay state transition (~60fps).
+  }, [dims, startTs, endTs, gaps, events, densityData, activeLabels, tsToY, timeFormat,
       fontFamily, tickFontSize, tickFontWeight, tickFontStyle, tickColor,
       labelFontSize, labelFontWeight, labelFontStyle, secondsAccentColor,
       backgroundColor, tickLabelXPct, paddingLeft, paddingRight, tickLabelLeft, showDensity]);
