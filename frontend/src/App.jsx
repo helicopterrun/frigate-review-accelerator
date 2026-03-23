@@ -870,6 +870,9 @@ export default function App() {
   // Falls back to nowTs() — never sets cursorTs to null which would NaN-cascade
   // into rangeStart/rangeEnd, API fetches, and the autoplay RAF loop.
   const handleCameraChange = useCallback((name) => {
+    // Reset synchronously so RAF tick never magnetizes to a previous
+    // camera's events during the state-update transition window.
+    nearEventCacheRef.current = { sorted: [], event: null };
     preloadRequestRef.current++; // cancel in-flight idle preload for old camera
     idlePreloadStartedRef.current = false;
     if (import.meta.env.DEV) {
