@@ -653,6 +653,7 @@ export default function VideoPlayer({
     }
   }, [playbackTarget, onTimeUpdate, extendHlsWindow]);
 
+  // TODO: Vitest test — handleEnded reads displayTimeRef.current not stale displayTime
   // TODO: test displayTimeRef is current when handleEnded fires after
   // long playback session — stale state version of this bug was fixed
   // in fix(frontend): displayTimeRef for handleEnded stale closure
@@ -690,7 +691,7 @@ export default function VideoPlayer({
         setIsPlaying(false);
       }
     }
-  }, [playbackTarget, onSegmentAdvance, displayTime, extendHlsWindow]);
+  }, [playbackTarget, onSegmentAdvance, displayTimeRef, extendHlsWindow]);
 
   const handleError = useCallback(() => {
     setError('Failed to load video segment');
