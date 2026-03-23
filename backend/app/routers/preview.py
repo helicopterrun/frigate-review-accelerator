@@ -164,7 +164,19 @@ async def get_preview_frame(camera: str, timestamp: float):
                 bucket_ts = alt_ts
                 break
         else:
-            # No adjacent bucket found — Phase 7: try Frigate event snapshot
+            # No adjacent bucket found.
+            # Only fall back to Frigate snapshot when no local segment covers
+            # this ts. If a segment exists, generation is possible — enqueue
+            # and return 404 rather than serving a potentially stale or
+            # off-timestamp Frigate event thumbnail.
+            if await _segment_exists_for_ts(camera, bucket_ts):
+                enqueue_preview_request(camera, bucket_ts, bucket_ts + interval)
+                raise HTTPException(
+                    status_code=404,
+                    detail="Preview not yet generated — enqueued",
+                )
+
+            # Phase 7: no local segment — try Frigate event snapshot as last resort
             snapshot_data = await _try_frigate_event_snapshot(camera, timestamp)
             if snapshot_data:
                 _cache.put(camera, bucket_ts, snapshot_data)
@@ -204,12 +216,27 @@ async def get_preview_frame(camera: str, timestamp: float):
     )
 
 
+async def _segment_exists_for_ts(camera: str, ts: float) -> bool:
+    """Return True if any segment covers this timestamp (generation is possible)."""
+    async with get_db() as db:
+        rows = await db.execute_fetchall(
+            """SELECT 1 FROM segments
+               WHERE camera = ? AND start_ts <= ? AND end_ts >= ?
+               LIMIT 1""",
+            (camera, ts, ts),
+        )
+    return len(rows) > 0
+
+
 async def _try_frigate_event_snapshot(camera: str, timestamp: float) -> bytes | None:
     """Serve the best Frigate event snapshot overlapping this timestamp.
 
     Selection: highest confidence score; ties broken by temporal proximity.
     If a snapshot is returned, the caller MUST NOT enqueue a generation job —
     Frigate already has the best available frame.
+
+    Only called when no local segment covers the requested timestamp — i.e.
+    local generation is not possible. Do not invoke on routine cache misses.
     """
     try:
         async with get_db() as db:
@@ -222,7 +249,7 @@ async def _try_frigate_event_snapshot(camera: str, timestamp: float) -> bytes | 
                      AND has_snapshot = 1
                    ORDER BY score DESC, ABS(start_ts - ?) ASC
                    LIMIT 1""",
-                (camera, timestamp + 5.0, timestamp - 5.0, timestamp),
+                (camera, timestamp + 2.0, timestamp - 2.0, timestamp),
             )
         if not rows:
             return None
