@@ -27,6 +27,8 @@ async def lifespan(app: FastAPI):
     log.info("  Previews:   %s", settings.preview_output_path)
     log.info("  Database:   %s", settings.database_path)
     log.info("  Frigate:    %s", settings.frigate_api_url)
+    if not settings.admin_secret:
+        log.warning("Admin endpoints are unauthenticated — set ADMIN_SECRET in .env")
 
     # Initialize database
     settings.ensure_dirs()

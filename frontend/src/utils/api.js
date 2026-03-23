@@ -46,12 +46,12 @@ export async function fetchPreviewStrip(camera, startTs, endTs, maxFrames = 300,
  * Backend resolves timestamp → segment + offset.
  * Returns: { segment_id, offset_sec, stream_url, next_segment_id, ... }
  */
-export async function fetchPlaybackTarget(camera, ts) {
+export async function fetchPlaybackTarget(camera, ts, options = {}) {
   const params = new URLSearchParams({
     camera,
     ts: String(ts),
   });
-  return apiFetch(`/playback?${params}`);
+  return apiFetch(`/playback?${params}`, options);
 }
 
 /**

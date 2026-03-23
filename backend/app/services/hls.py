@@ -15,8 +15,14 @@ from app.config import settings
 # ---------------------------------------------------------------------------
 # Reachability cache
 # ---------------------------------------------------------------------------
-_hls_reachable_cache: dict[str, float] = {}
+# Stores (reachable: bool, timestamp: float) tuples.
+# Positive entries (True) are kept for _HLS_CACHE_TTL_SEC seconds.
+# Negative entries (False) are kept for HLS_NEGATIVE_CACHE_TTL seconds so that
+# after a Frigate restart clients stop getting stale positive hits quickly,
+# without hammering the API on every seek.
+_hls_reachable_cache: dict[str, tuple[bool, float]] = {}
 _HLS_CACHE_TTL_SEC = 30.0
+HLS_NEGATIVE_CACHE_TTL = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -65,16 +71,23 @@ async def _resolve_hls_url(camera: str, requested_ts: float, seg_start: float) -
     if not settings.frigate_vod_enabled:
         return None
     now = _time.time()
-    if _hls_reachable_cache.get(camera, 0) + _HLS_CACHE_TTL_SEC > now:
-        # Cache hit — Frigate was reachable recently, skip the HEAD request
-        return _build_hls_url(camera, requested_ts, seg_start)
+    cached = _hls_reachable_cache.get(camera)
+    if cached is not None:
+        reachable, ts = cached
+        ttl = _HLS_CACHE_TTL_SEC if reachable else HLS_NEGATIVE_CACHE_TTL
+        if ts + ttl > now:
+            # Cache hit — return URL for positive entry, None for negative entry
+            return _build_hls_url(camera, requested_ts, seg_start) if reachable else None
     url = _build_hls_url(camera, requested_ts, seg_start)
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.head(url)
             if r.status_code < 300:
-                _hls_reachable_cache[camera] = now
+                _hls_reachable_cache[camera] = (True, now)
                 return url
     except Exception:
         pass
+    # Store negative result with short TTL so stale positive entries expire quickly
+    # after Frigate restarts or becomes temporarily unreachable.
+    _hls_reachable_cache[camera] = (False, now)
     return None

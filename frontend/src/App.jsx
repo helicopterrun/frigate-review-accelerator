@@ -343,10 +343,13 @@ export default function App() {
   const latestCameraTsRef = useRef(null);
   useEffect(() => { latestCameraTsRef.current = latestCameraTs; }, [latestCameraTs]);
   // preloadRequestRef: incremented on interaction to cancel in-flight preload fetches.
+  // abortControllerRef: AbortController for the in-flight idle preload network request.
+  //   Aborted on interaction (via preloadRequestRef++) and on component unmount.
   // idlePreloadStartedRef: prevents re-firing preload within the same idle window.
   // TODO: test preload cancel — preloadRequestRef increment on interaction discards
   // stale fetchPlaybackTarget responses.
   const preloadRequestRef = useRef(0);
+  const abortControllerRef = useRef(null);
   const idlePreloadStartedRef = useRef(false);
   // nearEventCacheRef: sorted filteredEvents + next upcoming event ahead of cursor.
   // Updated by useEffect on filteredEvents (infrequent); re-searched inside setCursorTs.
@@ -381,7 +384,11 @@ export default function App() {
         const ts = cursorTsRef.current;
         const cam = selectedCameraRef.current;
         if (cam && ts != null) {
-          fetchPlaybackTarget(cam, ts)
+          // Abort any in-flight preload network request before issuing a new one.
+          abortControllerRef.current?.abort();
+          abortControllerRef.current = new AbortController();
+          const signal = abortControllerRef.current.signal;
+          fetchPlaybackTarget(cam, ts, { signal })
             .then(target => {
               if (myId !== preloadRequestRef.current) return; // cancelled by interaction
               if (target) {
@@ -389,7 +396,10 @@ export default function App() {
                 if (import.meta.env.DEV) debugEventRef.current?.('preloadTarget set', `ts=${target.requested_ts}, hls=${target.hls_url ? 'ready' : 'none'}`);
               }
             })
-            .catch((e) => { console.warn('[RAF] idle preload fetch failed:', e.message); });
+            .catch((e) => {
+              if (e.name === 'AbortError') return; // cancelled — not an error
+              console.warn('[RAF] idle preload fetch failed:', e.message);
+            });
         }
       }
 
@@ -463,6 +473,7 @@ export default function App() {
     autoplayRafRef.current = requestAnimationFrame(tick);
     return () => {
       if (autoplayRafRef.current) cancelAnimationFrame(autoplayRafRef.current);
+      abortControllerRef.current?.abort();
     };
   }, []); // stable — all values read from refs
 
@@ -581,12 +592,9 @@ export default function App() {
   const filteredEvents = useMemo(() => {
     if (!timelineData?.events) return [];
     // Post-filter: drop events whose start_ts falls outside the current visible window.
-    // Defense-in-depth guard against NULL-end_ts events from the backend:
-    // the SQL clause `(end_ts IS NULL OR end_ts >= start)` includes open/incomplete
-    // events regardless of how old they are, producing start_ts values 50+ hours
-    // before the visible window. The primary fix belongs in the backend query, but
-    // this guard ensures stale events never reach the canvas or navigation logic.
-    // TODO: fix backend: replace NULL-end_ts open condition with a bounded cutoff.
+    // Defense-in-depth guard: the backend applies a 24h cutoff for open events but
+    // this client-side filter provides an additional layer ensuring stale events
+    // never reach the canvas or navigation logic regardless of backend behaviour.
     const inWindow = timelineData.events.filter(
       e => e.start_ts >= rangeStart - rangeSec && e.start_ts <= rangeEnd + rangeSec
     );

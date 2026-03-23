@@ -32,6 +32,34 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 
+def _write_preview_failure_reason(segment_id: int, reason: str) -> None:
+    """Record the reason a preview extraction failed for this segment."""
+    try:
+        conn = sqlite3.connect(str(settings.database_path))
+        conn.execute(
+            "UPDATE segments SET preview_failure_reason = ? WHERE id = ?",
+            (reason, segment_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        log.debug("Could not write preview_failure_reason for segment %d: %s", segment_id, exc)
+
+
+def _clear_preview_failure_reason(segment_id: int) -> None:
+    """Clear the failure reason after a successful extraction."""
+    try:
+        conn = sqlite3.connect(str(settings.database_path))
+        conn.execute(
+            "UPDATE segments SET preview_failure_reason = NULL WHERE id = ?",
+            (segment_id,),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        log.debug("Could not clear preview_failure_reason for segment %d: %s", segment_id, exc)
+
+
 def _vaapi_device() -> str | None:
     """Return /dev/dri/renderD128 if VAAPI is available, else None."""
     device = "/dev/dri/renderD128"
@@ -175,9 +203,11 @@ def extract_preview_frame(
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     except subprocess.TimeoutExpired:
         log.debug("Preview extraction timed out for %s ts=%.2f", camera, ts)
+        _write_preview_failure_reason(segment["id"], "timeout")
         return None
     except Exception as exc:
         log.debug("Preview extraction error for %s ts=%.2f: %s", camera, ts, exc)
+        _write_preview_failure_reason(segment["id"], "exception")
         return None
 
     # Step 4 — Return result or None
@@ -193,6 +223,7 @@ def extract_preview_frame(
                 actual_width, actual_height = _img.size
         except Exception:
             pass  # fallback to 16:9 estimate — non-fatal
+        _clear_preview_failure_reason(segment["id"])
         return {
             "ts": ts,
             "camera": camera,
@@ -205,6 +236,13 @@ def extract_preview_frame(
     log.debug("Preview extraction failed for %s ts=%.2f", camera, ts)
     if result is not None and result.stderr:
         log.debug("ffmpeg stderr: %s", result.stderr[-500:])
+    # Classify the failure reason for diagnostics
+    if result is not None and result.returncode != 0:
+        stderr_lower = (result.stderr or "").lower()
+        reason = "vaapi_decode_error" if "vaapi" in stderr_lower else "ffmpeg_nonzero_exit"
+    else:
+        reason = "output_not_written"
+    _write_preview_failure_reason(segment["id"], reason)
     return None
 
 

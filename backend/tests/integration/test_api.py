@@ -196,11 +196,9 @@ async def test_timeline_events_within_requested_range(client):
     """Events with start_ts inside the query range are returned; events entirely
     outside are not.
 
-    Also documents the NULL-end_ts edge case: an open event (end_ts IS NULL) that
-    started well before the range matches the SQL clause `(end_ts IS NULL OR
-    end_ts >= start)` and will be included by the backend. The client-side
-    post-filter in App.jsx (filteredEvents useMemo) guards against this — see
-    fix(frontend): stale events outside visible window cause spurious canvas warnings.
+    Also verifies the NULL-end_ts 24-hour cutoff: an open event that started
+    >24 hours before the window start is excluded; one that started within 24h
+    is included.
     """
     from app import config
     db_path = config.settings.database_path
@@ -212,10 +210,12 @@ async def test_timeline_events_within_requested_range(client):
     _insert_event(db_path, "evt-range-cam", range_start + 100, range_start + 200)
     # Event fully outside the range (ended before range_start)
     _insert_event(db_path, "evt-range-cam", range_start - 5000, range_start - 4000)
-    # Open event (end_ts IS NULL) that started long before the range — exposes
-    # the NULL-end_ts inclusion bug; this event WILL be returned by the current
-    # backend because (end_ts IS NULL) satisfies the overlap condition.
+    # Open event (end_ts IS NULL) that started >24h before range_start (~50h ago).
+    # Must be EXCLUDED by the backend's 24h cutoff.
     _insert_event(db_path, "evt-range-cam", range_start - 180000, end_ts=None)
+    # Open event (end_ts IS NULL) that started within 24h of range_start (~1h ago).
+    # Must be INCLUDED because it may still be ongoing at the window start.
+    _insert_event(db_path, "evt-range-cam", range_start - 3600, end_ts=None)
 
     resp = await client.get(
         "/api/timeline",
@@ -234,18 +234,14 @@ async def test_timeline_events_within_requested_range(client):
     assert range_start - 5000 not in returned_start_ts, (
         "Event that ended before range_start must not be returned"
     )
-    # The NULL-end_ts event from 50h ago — document that the backend returns it.
-    # The client-side filteredEvents post-filter in App.jsx is the guardrail.
-    null_end_included = (range_start - 180000) in returned_start_ts
-    # We do not assert False here because this is a known backend behaviour;
-    # instead we leave a clear signal in the test output.
-    if null_end_included:
-        import warnings
-        warnings.warn(
-            "Backend includes NULL-end_ts events starting outside the requested range. "
-            "The client-side filteredEvents post-filter in App.jsx is the active guardrail. "
-            "TODO: fix backend: add a bounded cutoff for open events in timeline.py."
-        )
+    # Open event from >24h ago must be EXCLUDED (24h cutoff fix)
+    assert range_start - 180000 not in returned_start_ts, (
+        "Open event starting >24h before window start must be excluded by the backend cutoff"
+    )
+    # Open event from within 24h of range_start must be INCLUDED
+    assert range_start - 3600 in returned_start_ts, (
+        "Open event starting within 24h of window start must be included"
+    )
 
 
 async def test_timeline_returns_events_outside_tight_range_when_padded(client):

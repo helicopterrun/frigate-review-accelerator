@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     frigate_vod_enabled: bool = True
     frigate_vod_window_sec: int = 86400  # width of HLS window to request from Frigate (24 h)
 
+    # Admin endpoint authentication
+    # Set this to a non-empty string to require X-Admin-Secret header on all
+    # POST /api/admin/* endpoints. If empty, the check is skipped and a WARNING
+    # is logged at startup.
+    admin_secret: str = ""
+
     # Labels that trigger "important" flag in density buckets.
     # Phase 1: label-only rules. Phase 2 adds zone-based rules.
     # Override via IMPORTANT_LABELS='["cat","bird","bear"]' in .env

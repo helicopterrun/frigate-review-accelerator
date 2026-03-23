@@ -163,7 +163,14 @@ class TestExtractPreviewFrame:
         assert frame["ts"] == pytest.approx(ts)
 
     def test_uses_provided_segment(self, tmp_path, monkeypatch):
-        """When segment is provided, sqlite3.connect is never called."""
+        """When segment is provided, sqlite3.connect is NOT called for segment lookup.
+
+        On success, _clear_preview_failure_reason does call sqlite3.connect once
+        (to clear any stale failure reason), but that is NOT a segment-lookup call.
+        The invariant enforced here is: no segment lookup happens when segment is
+        pre-provided. We verify this by inspecting that no SELECT FROM segments
+        was executed.
+        """
         recordings = tmp_path / "recordings"
         previews = tmp_path / "previews"
         recordings.mkdir()
@@ -190,7 +197,16 @@ class TestExtractPreviewFrame:
                     camera="cam", ts=1700000004.0, width=320, quality=5, segment=segment,
                 )
 
-        mock_connect.assert_not_called()
+        # On success, connect is called exactly once — for _clear_preview_failure_reason,
+        # NOT for a segment lookup. Verify no SELECT FROM segments was executed.
+        executed_queries = [
+            call_args[0][0]
+            for call_args in mock_connect.return_value.execute.call_args_list
+        ]
+        assert not any("SELECT" in q for q in executed_queries), (
+            "sqlite3.connect must not be used for segment lookup when segment is pre-provided; "
+            f"found queries: {executed_queries}"
+        )
 
     def test_stores_actual_dimensions_not_assumed_16x9(self, tmp_path, monkeypatch):
         """Actual file dimensions are used, not hardcoded 16:9."""

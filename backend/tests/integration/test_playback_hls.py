@@ -132,6 +132,75 @@ async def test_segment_info_not_found(client):
 
 
 # ---------------------------------------------------------------------------
+# Negative reachability cache TTL
+# ---------------------------------------------------------------------------
+
+async def test_negative_cache_stored_on_failure(monkeypatch):
+    """A failed reachability check stores a (False, timestamp) tuple in the cache."""
+    from app.services import hls as hls_mod
+
+    # Ensure the camera is not already cached
+    hls_mod._hls_reachable_cache.pop("neg-ttl-cam", None)
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+    with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+        result = await hls_mod._resolve_hls_url("neg-ttl-cam", 1700000000.0, 1699999990.0)
+
+    assert result is None
+    cached = hls_mod._hls_reachable_cache.get("neg-ttl-cam")
+    assert cached is not None, "Failed check must be stored in the cache"
+    reachable, ts = cached
+    assert reachable is False, "Negative cache entry must have reachable=False"
+
+
+async def test_negative_cache_returns_none_within_ttl(monkeypatch):
+    """Within the negative TTL, _resolve_hls_url returns None without a HEAD request."""
+    import time
+    from app.services import hls as hls_mod
+
+    # Inject a fresh negative cache entry
+    hls_mod._hls_reachable_cache["neg-hit-cam"] = (False, time.time())
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.head = AsyncMock()
+
+    with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+        result = await hls_mod._resolve_hls_url("neg-hit-cam", 1700000000.0, 1699999990.0)
+
+    assert result is None
+    mock_client.head.assert_not_called()  # no HEAD request during negative TTL
+
+
+async def test_positive_cache_entry_format(monkeypatch):
+    """A successful check stores a (True, timestamp) tuple in the cache."""
+    from app.services import hls as hls_mod
+
+    hls_mod._hls_reachable_cache.pop("pos-fmt-cam", None)
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.head = AsyncMock(return_value=mock_response)
+
+    with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+        result = await hls_mod._resolve_hls_url("pos-fmt-cam", 1700000000.0, 1699999990.0)
+
+    assert result is not None
+    cached = hls_mod._hls_reachable_cache.get("pos-fmt-cam")
+    assert cached is not None
+    reachable, ts = cached
+    assert reachable is True, "Positive cache entry must have reachable=True"
+
+
+# ---------------------------------------------------------------------------
 # HLS window is at least 86000 seconds wide (24-hour default)
 # ---------------------------------------------------------------------------
 
