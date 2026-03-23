@@ -145,6 +145,7 @@ function ReindexTab() {
   const [customHours, setCustomHours] = useState('');
   const [reindexProgress, setReindexProgress] = useState(null);
   // null | { done: number, total: number, pct: number }
+  const [scanning, setScanning] = useState(false);
   const bottomRef = useRef(null);
 
   useEffect(() => {
@@ -156,6 +157,7 @@ function ReindexTab() {
     setRunning(true);
     setLines([`▶ Reindexing last ${hours}h…`]);
     setReindexProgress(null);
+    setScanning(false);
 
     try {
       const res = await fetch(`${API}/reindex?since_hours=${hours}`, { method: 'POST' });
@@ -180,7 +182,10 @@ function ReindexTab() {
 
           if (event === 'line') {
             setLines(prev => [...prev, data]);
+          } else if (event === 'scanning') {
+            setScanning(true);
           } else if (event === 'discovered') {
+            setScanning(false);
             try {
               const p = JSON.parse(data);
               if (p.total > 0) {
@@ -193,6 +198,7 @@ function ReindexTab() {
               setReindexProgress({ done: p.done, total: p.total, pct: p.pct });
             } catch {}
           } else if (event === 'done') {
+            setScanning(false);
             setReindexProgress(prev => prev ? { ...prev, pct: 100, done: prev.total } : null);
             try {
               const parsed = JSON.parse(data);
@@ -205,6 +211,7 @@ function ReindexTab() {
             }
             setRunning(false);
           } else if (event === 'error') {
+            setScanning(false);
             try {
               const parsed = JSON.parse(data);
               setLines(prev => [...prev, `✗ Error: ${parsed.msg}`]);
@@ -237,6 +244,17 @@ function ReindexTab() {
         bypassing the incremental scanner. Use this when the timeline shows
         gaps despite recordings existing in Frigate.
       </div>
+
+      {/* Scanning indicator — visible between button press and __discovered__ */}
+      {running && scanning && !reindexProgress && (
+        <div style={{
+          marginBottom: 10, fontSize: 11, color: '#4ecdc4',
+          fontFamily: 'monospace', display: 'flex', alignItems: 'center', gap: 6,
+        }}>
+          <span style={{ animation: 'spin 1s linear infinite', display: 'inline-block' }}>⟳</span>
+          Scanning directories…
+        </div>
+      )}
 
       {/* Progress bar — visible after discovery */}
       {reindexProgress && (

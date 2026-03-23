@@ -315,7 +315,10 @@ async def admin_reindex(since_hours: float = 72.0):
 
             tag = msg["tag"]
 
-            if tag == "__discovered__":
+            if tag == "__scanning__":
+                yield _sse_json("scanning", {"message": "Scanning directories..."})
+
+            elif tag == "__discovered__":
                 total = msg["total"]
                 by_camera = msg["extra"]
                 if total == 0:

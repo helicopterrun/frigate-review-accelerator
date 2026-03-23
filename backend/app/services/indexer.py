@@ -382,6 +382,13 @@ def index_segments_since(
 
     valid_dates = {d for d, _h in valid_hours}
 
+    # Signal to the caller that the directory walk is about to start.
+    # For long windows (168h+) the walk can take 10+ seconds; this lets
+    # the frontend show "Scanning directories..." immediately rather than
+    # leaving the progress UI silent until __discovered__ fires.
+    if progress_callback:
+        progress_callback("__scanning__", 0, 0, {})
+
     # Walk only the matching directories
     mp4_files: list[Path] = []
     try:
