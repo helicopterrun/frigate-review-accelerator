@@ -375,11 +375,20 @@ frigate-review-accelerator/
         preview.py            # GET /api/preview/{camera}/{ts}  <- HOT PATH
         timeline.py           # GET /api/timeline, /api/playback, /api/health
         admin.py              # GET/POST /api/admin/* (SSE log stream, script runner)
+                              # POST endpoints require X-Admin-Secret header when ADMIN_SECRET is set
+                              # POST /api/admin/reset-preview-failures
+                              #   — re-queues segments that failed preview generation
+                              #   — query params: camera (optional), since_hours (optional)
+                              #   — resets previews_generated=0 + preview_failure_reason=NULL
+                              #   — only affects segments with no row in the previews table
       services/
         indexer.py            # Filesystem walker -> segments table
         preview_generator.py  # ffmpeg frame extractor (timestamp-based, not segment-based)
         worker.py             # Background task: index -> on-demand (timestamp-driven) -> recency -> background
         event_sync.py         # Frigate event poller -> events table
+                              # Sync watermark: uses min(start_time) of fetched events,
+                              # not wall-clock now(). Falls back to now() when no events
+                              # fetched. This prevents skipping backlogged events.
         hls.py                # Frigate VOD URL construction + reachability cache
     requirements.txt
     .env                      # Not in git — copy from .env.example
@@ -450,7 +459,13 @@ This means `api.js` uses relative `/api` paths in dev — no CORS issue during l
 ```sql
 segments     — one row per Frigate MP4 segment
   id, camera, start_ts, end_ts, duration, path, file_size, indexed_at
-  previews_generated  INTEGER  0=not yet processed  1=processed once (success or failure)
+  previews_generated     INTEGER  0=not yet processed  1=processed once (success or failure)
+  preview_failure_reason TEXT     NULL on success; one of:
+                                    "timeout"            — ffmpeg timed out (60s)
+                                    "exception"          — unexpected error in subprocess call
+                                    "vaapi_decode_error" — VAAPI hardware decode failed
+                                    "ffmpeg_nonzero_exit"— ffmpeg exited non-zero (non-VAAPI)
+                                    "output_not_written" — ffmpeg returned 0 but wrote no file
 
 previews     — one row per extracted JPEG thumbnail
   id, camera, ts, segment_id, image_path, width, height
@@ -577,7 +592,20 @@ PREVIEW_RECENCY_HOURS=48
 PREVIEW_BACKGROUND_BATCH=20
 SCAN_INTERVAL_SEC=30
 CORS_ORIGINS=["http://localhost:5173"]
+ADMIN_SECRET=                         # leave empty to skip auth (WARNING logged at startup)
 ```
+
+### ADMIN_SECRET
+
+If `ADMIN_SECRET` is set to a non-empty string, all `POST /api/admin/*` endpoints
+require the caller to send `X-Admin-Secret: <value>` in the request header. A
+missing or incorrect header returns HTTP 401.
+
+If `ADMIN_SECRET` is empty or unset, the check is skipped and a WARNING is logged
+at startup: `"Admin endpoints are unauthenticated — set ADMIN_SECRET in .env"`.
+
+The `GET /api/admin/status` and `GET /api/admin/logs/stream` endpoints are not
+protected (they are read-only and carry no operational risk).
 
 -----
 

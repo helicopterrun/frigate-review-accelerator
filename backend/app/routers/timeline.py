@@ -214,15 +214,19 @@ async def get_timeline(
             for r in seg_rows
         ]
 
-        # Events overlapping the range
+        # Events overlapping the range.
+        # Open events (end_ts IS NULL) are included only when their start_ts
+        # falls within 24 hours before the window start.  This prevents events
+        # that started days/weeks ago and were never closed from silently
+        # appearing in every timeline query regardless of the requested window.
         evt_rows = await db.execute_fetchall(
             """SELECT id, camera, start_ts, end_ts, label, score, has_snapshot
                FROM events
                WHERE camera = ?
-                 AND (end_ts IS NULL OR end_ts >= ?)
+                 AND ((end_ts IS NULL AND start_ts >= ? - 86400) OR end_ts >= ?)
                  AND start_ts <= ?
                ORDER BY start_ts""",
-            (camera, start, end),
+            (camera, start, start, end),
         )
 
         events = [

@@ -27,13 +27,24 @@ import subprocess
 import time
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 log = logging.getLogger(__name__)
+
+
+def verify_admin_secret(x_admin_secret: str | None = Header(None)) -> None:
+    """FastAPI dependency — enforce X-Admin-Secret header when ADMIN_SECRET is set.
+
+    If settings.admin_secret is empty the check is skipped (with a startup
+    WARNING logged in main.py lifespan).  If it is set, any request missing
+    or providing a wrong header value receives HTTP 401.
+    """
+    if settings.admin_secret and x_admin_secret != settings.admin_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # Project root: backend/app/routers/ → up 3 levels
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.resolve()
@@ -128,7 +139,7 @@ async def _stream_script(
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/restart")
+@router.post("/restart", dependencies=[Depends(verify_admin_secret)])
 async def admin_restart():
     """Restart backend services via restart.sh --backend.
 
@@ -148,7 +159,7 @@ async def admin_restart():
     )
 
 
-@router.post("/update")
+@router.post("/update", dependencies=[Depends(verify_admin_secret)])
 async def admin_update():
     """Run update.sh --no-pull (deps only, assumes edits already applied).
 
@@ -166,7 +177,7 @@ async def admin_update():
     )
 
 
-@router.post("/pull")
+@router.post("/pull", dependencies=[Depends(verify_admin_secret)])
 async def admin_pull():
     """Run git pull + update.sh (full update from remote).
 
@@ -233,7 +244,7 @@ async def admin_status():
     }
 
 
-@router.post("/reindex")
+@router.post("/reindex", dependencies=[Depends(verify_admin_secret)])
 async def admin_reindex(since_hours: float = 72.0):
     """Trigger a targeted reindex from a given number of hours ago.
 
@@ -315,7 +326,54 @@ async def admin_reindex(since_hours: float = 72.0):
     )
 
 
-@router.post("/reset-scan-state")
+@router.post("/reset-preview-failures", dependencies=[Depends(verify_admin_secret)])
+async def admin_reset_preview_failures(
+    camera: str | None = None,
+    since_hours: float | None = None,
+):
+    """Re-queue segments that failed preview generation so the worker retries them.
+
+    Resets previews_generated=0 and clears preview_failure_reason for segments
+    that were processed (previews_generated=1) but have no preview in the previews
+    table — i.e., ffmpeg failed and left nothing behind.
+
+    Query params:
+      camera      — if set, only reset this camera; otherwise all cameras
+      since_hours — if set, only reset segments newer than this many hours ago
+
+    This endpoint intentionally does NOT reset segments that have a matching
+    row in the previews table — those already produced a frame successfully.
+    """
+    from app.models.database import get_db
+
+    since_ts = time.time() - (since_hours * 3600) if since_hours is not None else None
+
+    async with get_db() as db:
+        result = await db.execute(
+            """UPDATE segments
+               SET previews_generated = 0, preview_failure_reason = NULL
+               WHERE previews_generated = 1
+                 AND id NOT IN (SELECT segment_id FROM previews)
+                 AND (camera = ? OR ? IS NULL)
+                 AND (start_ts >= ? OR ? IS NULL)""",
+            (camera, camera, since_ts, since_ts),
+        )
+        await db.commit()
+        reset_count = result.rowcount
+
+    log.info(
+        "Admin: reset %d failed preview segments (camera=%s, since_hours=%s)",
+        reset_count, camera or "all", since_hours,
+    )
+    return {
+        "reset": reset_count,
+        "camera": camera,
+        "since_hours": since_hours,
+        "message": f"Reset {reset_count} failed segments — worker will retry on next cycle",
+    }
+
+
+@router.post("/reset-scan-state", dependencies=[Depends(verify_admin_secret)])
 async def admin_reset_scan_state():
     """Reset scan_state for all cameras, forcing a full rescan on next worker cycle.
 

@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS segments (
     path        TEXT NOT NULL UNIQUE,
     file_size   INTEGER NOT NULL DEFAULT 0,
     indexed_at  REAL NOT NULL,   -- when we discovered this segment
-    previews_generated INTEGER NOT NULL DEFAULT 0  -- 0=pending, 1=done
+    previews_generated     INTEGER NOT NULL DEFAULT 0,  -- 0=pending, 1=done
+    preview_failure_reason TEXT                          -- set on ffmpeg failure, cleared on success
 );
 
 CREATE INDEX IF NOT EXISTS idx_segments_camera_time
@@ -83,12 +84,16 @@ def init_db_sync():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
-    # Idempotent migration: add zones column to existing databases.
-    # New databases already have it from the SCHEMA above.
-    try:
-        conn.execute("ALTER TABLE events ADD COLUMN zones TEXT NOT NULL DEFAULT '[]'")
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    # Idempotent migrations: add columns to existing databases.
+    # New databases already have these from the SCHEMA above.
+    for migration in [
+        "ALTER TABLE events ADD COLUMN zones TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE segments ADD COLUMN preview_failure_reason TEXT",
+    ]:
+        try:
+            conn.execute(migration)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
     conn.close()
 

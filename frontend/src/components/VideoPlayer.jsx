@@ -450,6 +450,7 @@ export default function VideoPlayer({
           // before use. Without detachMedia() + attachMedia(video), the Hls instance
           // will play silently into the hidden element and the user sees a frozen
           // screen with no error. This step is non-negotiable.
+          preloadHls.stopLoad();
           preloadHls.detachMedia();
           preloadHls.attachMedia(video);
 

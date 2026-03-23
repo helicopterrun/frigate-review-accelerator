@@ -98,10 +98,17 @@ def sync_frigate_events_sync(camera: str | None = None, db_path=None) -> int:
                         if not page:
                             break
                         all_events.extend(page)
-                        if len(all_events) >= 10 * _LIMIT:
+                        n = len(all_events)
+                        if n >= 5 * _LIMIT and n < 10 * _LIMIT and n // _LIMIT == 5:
+                            log.info(
+                                "Event sync for %s fetched %d events in %d pages"
+                                " — approaching pagination limit",
+                                cam, n, n // _LIMIT,
+                            )
+                        if n >= 10 * _LIMIT:
                             log.warning(
                                 "Event sync for camera %s: fetched %d events (>=%d), stopping pagination",
-                                cam, len(all_events), 10 * _LIMIT,
+                                cam, n, 10 * _LIMIT,
                             )
                             break
                         if len(page) < _LIMIT:
@@ -130,7 +137,10 @@ def sync_frigate_events_sync(camera: str | None = None, db_path=None) -> int:
                             str(evt["id"]),
                             cam,
                             float(evt.get("start_time", 0)),
-                            float(evt["end_time"]) if evt.get("end_time") is not None else None,
+                            # Explicitly check for None (not falsy) — 0.0 is a valid end_time
+                        # for instantaneous events; False would also pass this check but
+                        # indicates a malformed event from Frigate.
+                        float(evt["end_time"]) if evt.get("end_time") is not None else None,
                             str(evt.get("label", "unknown")),
                             float(evt["score"]) if evt.get("score") is not None else None,
                             int(bool(evt.get("has_clip", False))),
@@ -157,9 +167,14 @@ def sync_frigate_events_sync(camera: str | None = None, db_path=None) -> int:
                     )
                     total_synced += len(rows_to_upsert)
 
-                _write_last_sync_ts(conn, cam, now)
+                # Use the earliest start_time from fetched events as the watermark so
+                # that events arriving with a backlog (start_time < now) are not skipped
+                # on the next sync cycle.  Fall back to now only when all_events is empty
+                # (handled above in the `if not events` branch).
+                watermark = min(float(e.get("start_time", now)) for e in all_events)
+                _write_last_sync_ts(conn, cam, watermark)
                 conn.commit()
-                log.debug("Synced %d events for camera %s", len(rows_to_upsert), cam)
+                log.debug("Synced %d events for camera %s (watermark=%.0f)", len(rows_to_upsert), cam, watermark)
 
     finally:
         conn.close()
