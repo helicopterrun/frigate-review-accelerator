@@ -351,7 +351,9 @@ async def admin_reset_preview_failures(
     async with get_db() as db:
         result = await db.execute(
             """UPDATE segments
-               SET previews_generated = 0, preview_failure_reason = NULL
+               SET previews_generated = 0,
+                   preview_failure_reason = NULL,
+                   retry_count = 0
                WHERE previews_generated = 1
                  AND id NOT IN (SELECT segment_id FROM previews)
                  AND (camera = ? OR ? IS NULL)

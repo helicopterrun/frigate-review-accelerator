@@ -44,6 +44,13 @@ _worker_task: asyncio.Task | None = None
 # At scan_interval_sec=30 and BACKGROUND_INTERVAL=3, that's every ~90 seconds.
 BACKGROUND_INTERVAL = 3
 
+# Maximum number of failed extraction attempts before a segment is permanently
+# suppressed from the preview queue (previews_generated set to 1 on the
+# MAX_RETRIES-th failure). Transient errors (VAAPI spike, I/O blip) recover
+# within this many worker cycles. Permanently broken segments (corrupt file,
+# missing recording) are suppressed after MAX_RETRIES attempts.
+MAX_RETRIES = 3
+
 # On-demand queue: (camera, bucket_ts) pairs pushed by the preview router
 # when the frontend signals which timestamps it needs right now.
 _demand_queue: deque[tuple[str, float]] = deque(maxlen=50)
@@ -147,10 +154,26 @@ async def _run_recency_pass(limit: int = 50) -> int:
                     (frame["camera"], frame["ts"], frame["segment_id"],
                      frame["image_path"], frame["width"], frame["height"]),
                 )
-            await db.execute(
-                "UPDATE segments SET previews_generated = 1 WHERE id = ?",
-                (segment["id"],),
-            )
+                await db.execute(
+                    "UPDATE segments SET previews_generated = 1 WHERE id = ?",
+                    (segment["id"],),
+                )
+            else:
+                # Increment retry_count. On the MAX_RETRIES-th failure set
+                # previews_generated=1 to remove the segment from the queue so
+                # it does not consume worker budget indefinitely. The CASE uses
+                # the pre-update value of retry_count (SQLite evaluates SET
+                # expressions against the old row).
+                await db.execute(
+                    """UPDATE segments
+                       SET retry_count = retry_count + 1,
+                           previews_generated = CASE
+                               WHEN retry_count + 1 >= ? THEN 1
+                               ELSE 0
+                           END
+                       WHERE id = ?""",
+                    (MAX_RETRIES, segment["id"]),
+                )
             await db.commit()
         processed += 1
 
@@ -201,10 +224,21 @@ async def _run_background_pass(limit: int = 20) -> int:
                     (frame["camera"], frame["ts"], frame["segment_id"],
                      frame["image_path"], frame["width"], frame["height"]),
                 )
-            await db.execute(
-                "UPDATE segments SET previews_generated = 1 WHERE id = ?",
-                (segment["id"],),
-            )
+                await db.execute(
+                    "UPDATE segments SET previews_generated = 1 WHERE id = ?",
+                    (segment["id"],),
+                )
+            else:
+                await db.execute(
+                    """UPDATE segments
+                       SET retry_count = retry_count + 1,
+                           previews_generated = CASE
+                               WHEN retry_count + 1 >= ? THEN 1
+                               ELSE 0
+                           END
+                       WHERE id = ?""",
+                    (MAX_RETRIES, segment["id"]),
+                )
             await db.commit()
         processed += 1
 
@@ -279,10 +313,21 @@ async def _process_scheduler_jobs(jobs: list) -> int:
                         (frame["camera"], frame["ts"], frame["segment_id"],
                          frame["image_path"], frame["width"], frame["height"]),
                     )
-                await db.execute(
-                    "UPDATE segments SET previews_generated = 1 WHERE id = ?",
-                    (segment["id"],),
-                )
+                    await db.execute(
+                        "UPDATE segments SET previews_generated = 1 WHERE id = ?",
+                        (segment["id"],),
+                    )
+                else:
+                    await db.execute(
+                        """UPDATE segments
+                           SET retry_count = retry_count + 1,
+                               previews_generated = CASE
+                                   WHEN retry_count + 1 >= ? THEN 1
+                                   ELSE 0
+                               END
+                           WHERE id = ?""",
+                        (MAX_RETRIES, segment["id"]),
+                    )
                 await db.commit()
                 processed += 1
 
