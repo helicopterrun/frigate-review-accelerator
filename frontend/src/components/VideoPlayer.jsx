@@ -98,8 +98,21 @@ export default function VideoPlayer({
   // This prevents black flashes between frames during rapid scrubbing.
   const [displayedPreviewUrl, setDisplayedPreviewUrl] = useState(null);
 
+  // TODO: add frontend test — displayedPreviewUrl must be null immediately
+  // after camera prop changes, before the new camera's preview loads.
+  // Clear stale preview image immediately on camera change so we never show
+  // the previous camera's last frame on top of the new camera's video.
   useEffect(() => {
-    if (!scrubPreviewUrl) return;
+    setDisplayedPreviewUrl(null);
+  }, [camera]);
+
+  useEffect(() => {
+    if (!scrubPreviewUrl) {
+      // Intentional: do not clear displayedPreviewUrl here. The camera-change
+      // effect (above) clears it on camera switch. Keeping the last frame
+      // during the 75ms debounce window prevents a black flash.
+      return;
+    }
 
     // Cancel any in-flight load
     if (loadingImgRef.current) {

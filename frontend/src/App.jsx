@@ -186,13 +186,20 @@ export default function App() {
   // does not hammer the preview endpoint.
   // TODO: add frontend test verifying reticlePreviewUrl updates within 75ms
   // of a cursorTs change and is null when selectedCamera is null.
+
+  // TODO: add frontend test — reticlePreviewUrl URL must only change when
+  // cursorTs crosses a PREVIEW_BUCKET_SEC boundary, not on every RAF tick.
+  // Must match backend/app/config.py:preview_interval_sec.
+  const PREVIEW_BUCKET_SEC = 2; // keep in sync with backend settings.preview_interval_sec
+
   useEffect(() => {
     if (!selectedCamera || cursorTs == null) {
       setReticlePreviewUrl(null);
       return;
     }
+    const bucketTs = Math.round(cursorTs / PREVIEW_BUCKET_SEC) * PREVIEW_BUCKET_SEC;
     const timer = setTimeout(() => {
-      setReticlePreviewUrl(`/api/preview/${selectedCamera}/${cursorTs}`);
+      setReticlePreviewUrl(`/api/preview/${selectedCamera}/${bucketTs}`);
     }, 75);
     return () => clearTimeout(timer);
   }, [selectedCamera, cursorTs]);
@@ -696,11 +703,11 @@ export default function App() {
   // ─── Auto-dismiss event snapshot when cursor moves >30s away from it ───
   // Prevents the snapshot overlay from pinning while autoplay or scrolling
   // advances the cursor beyond the event that triggered the snapshot.
-  // TODO: test snapshot dismiss: activeEventSnapshot clears when cursorTs moves
-  // >30s from snapshot.ts
+  // TODO: add frontend test — activeEventSnapshot clears when cursorTs moves
+  // more than 8s from snapshot.ts (reduced from 30s to match autoplay UX).
   useEffect(() => {
     if (!activeEventSnapshot) return;
-    if (Math.abs(cursorTs - activeEventSnapshot.ts) > 30) {
+    if (Math.abs(cursorTs - activeEventSnapshot.ts) > 8) {
       setActiveEventSnapshot(null);
     }
   }, [cursorTs, activeEventSnapshot]);
