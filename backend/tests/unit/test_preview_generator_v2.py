@@ -192,6 +192,82 @@ class TestExtractPreviewFrame:
 
         mock_connect.assert_not_called()
 
+    def test_stores_actual_dimensions_not_assumed_16x9(self, tmp_path, monkeypatch):
+        """Actual file dimensions are used, not hardcoded 16:9."""
+        from PIL import Image as PILImage
+
+        recordings = tmp_path / "recordings"
+        previews = tmp_path / "previews"
+        recordings.mkdir()
+        previews.mkdir()
+
+        import app.services.preview_generator as pg
+        _patch_settings(monkeypatch, recordings, previews, tmp_path / "db.sqlite3")
+        monkeypatch.setattr(pg, "_VAAPI_DEVICE", None)
+
+        segment = _make_segment(recordings, camera="cam")
+        ts = 1700000004.0
+
+        def fake_run(cmd, **kwargs):
+            out_path = Path(cmd[-1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            img = PILImage.new("RGB", (320, 240), color=(128, 128, 128))
+            img.save(out_path, "JPEG")
+            r = MagicMock()
+            r.returncode = 0
+            r.stderr = ""
+            return r
+
+        with patch("app.services.preview_generator.subprocess.run",
+                   side_effect=fake_run):
+            frame = pg.extract_preview_frame(
+                camera="cam", ts=ts, width=320, quality=5, segment=segment,
+            )
+
+        assert frame is not None
+        assert frame["width"] == 320
+        assert frame["height"] == 240, (
+            f"Expected height=240 (actual 4:3 output), got {frame['height']}. "
+            "Do not assume 16:9 — read dimensions from the output file."
+        )
+
+    def test_falls_back_to_16x9_estimate_if_pil_fails(self, tmp_path, monkeypatch):
+        """Returns a valid frame dict with the fallback height when PIL.Image.open raises."""
+        recordings = tmp_path / "recordings"
+        previews = tmp_path / "previews"
+        recordings.mkdir()
+        previews.mkdir()
+
+        import app.services.preview_generator as pg
+        _patch_settings(monkeypatch, recordings, previews, tmp_path / "db.sqlite3")
+        monkeypatch.setattr(pg, "_VAAPI_DEVICE", None)
+
+        segment = _make_segment(recordings, camera="cam")
+        ts = 1700000004.0
+
+        def fake_run(cmd, **kwargs):
+            out_path = Path(cmd[-1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(b"fake jpeg")
+            r = MagicMock()
+            r.returncode = 0
+            r.stderr = ""
+            return r
+
+        with patch("app.services.preview_generator.subprocess.run",
+                   side_effect=fake_run):
+            with patch("app.services.preview_generator.Image.open",
+                       side_effect=OSError("corrupt header")):
+                frame = pg.extract_preview_frame(
+                    camera="cam", ts=ts, width=320, quality=5, segment=segment,
+                )
+
+        assert frame is not None, "Must return a valid frame dict even when PIL fails"
+        assert frame["width"] == 320
+        assert frame["height"] == int(320 * 9 / 16), (
+            "Fallback height should be the 16:9 estimate when PIL.Image.open raises"
+        )
+
     def test_returns_none_if_segment_not_found(self, tmp_path, monkeypatch):
         """Returns None without calling subprocess.run if DB has no matching segment."""
         recordings = tmp_path / "recordings"
