@@ -343,6 +343,10 @@ export default function App() {
   // Ref mirror so the RAF tick can read the current ceiling without stale closure.
   const latestCameraTsRef = useRef(null);
   useEffect(() => { latestCameraTsRef.current = latestCameraTs; }, [latestCameraTs]);
+  // segmentsRef: mirrors timelineData?.segments so functional updaters (handlePan,
+  // RAF tick) can call snapToCoverage without capturing stale state in a closure.
+  const segmentsRef = useRef([]);
+  useEffect(() => { segmentsRef.current = timelineData?.segments ?? []; }, [timelineData]);
   // preloadRequestRef: incremented on interaction to cancel in-flight preload fetches.
   // abortControllerRef: AbortController for the in-flight idle preload network request.
   //   Aborted on interaction (via preloadRequestRef++) and on component unmount.
@@ -453,7 +457,8 @@ export default function App() {
           // +30s slack: /api/cameras polls every 30s, so latest_ts may lag wall-clock
           // by up to 30s for in-progress recordings.
           const ceiling = (latestCameraTsRef.current ?? nowTs()) + 30;
-          return Math.min(prev + advanceSec, ceiling);
+          const next = Math.min(prev + advanceSec, ceiling);
+          return snapToCoverage(next, segmentsRef.current);
         });
       } else {
         if (autoplayActiveRef.current) {
@@ -690,7 +695,10 @@ export default function App() {
     // +30s slack: /api/cameras polls every 30s, so latest_ts may lag wall-clock
     // by up to 30s for in-progress recordings.
     const ceiling = (latestCameraTsRef.current ?? nowTs()) + 30;
-    setCursorTs(prev => Math.min(prev + deltaSec, ceiling));
+    setCursorTs(prev => {
+      const next = Math.min(prev + deltaSec, ceiling);
+      return snapToCoverage(next, segmentsRef.current);
+    });
   }, []);
 
   // ─── Zoom: change visible window width, keeping cursorTs fixed ───
@@ -724,7 +732,7 @@ export default function App() {
     }
     setPreloadTarget(null);
     setAutoplayRunning(false);
-    setCursorTs(ts);
+    setCursorTs(snapToCoverage(ts, segmentsRef.current));
     setActiveEventSnapshot(null);
   }, []);
 
