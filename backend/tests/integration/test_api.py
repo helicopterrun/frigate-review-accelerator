@@ -6,25 +6,9 @@ import time
 import pytest
 import pytest_asyncio
 
+from tests.integration.conftest import _insert_segment, _insert_event
 
 pytestmark = pytest.mark.asyncio
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _insert_segment(db_path, camera, start_ts, end_ts, previews_generated=1):
-    """Insert a test segment row directly into the DB."""
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """INSERT INTO segments (camera, start_ts, end_ts, duration, path, file_size, indexed_at, previews_generated)
-           VALUES (?, ?, ?, ?, ?, 1024, ?, ?)""",
-        (camera, start_ts, end_ts, end_ts - start_ts,
-         f"{camera}/{start_ts:.0f}.mp4", time.time(), previews_generated),
-    )
-    conn.commit()
-    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +139,12 @@ async def test_timeline_returns_gaps(client, monkeypatch):
     from app import config
     db_path = config.settings.database_path
     # Two segments with a gap between them
-    _insert_segment(db_path, "test-cam", 1700000000.0, 1700000010.0)
-    _insert_segment(db_path, "test-cam", 1700000200.0, 1700000210.0)
+    _insert_segment(db_path, "cameras-test-cam", 1700000000.0, 1700000010.0)
+    _insert_segment(db_path, "cameras-test-cam", 1700000200.0, 1700000210.0)
 
     resp = await client.get(
         "/api/timeline",
-        params={"camera": "test-cam", "start": 1700000000.0, "end": 1700000210.0},
+        params={"camera": "cameras-test-cam", "start": 1700000000.0, "end": 1700000210.0},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -187,18 +171,6 @@ async def test_timeline_empty_camera_no_segments(client):
     assert data["coverage_pct"] == pytest.approx(0.0)
 
 
-def _insert_event(db_path, camera, start_ts, end_ts=None, label="person"):
-    """Insert a test event row directly into the DB."""
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """INSERT INTO events (id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at)
-           VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)""",
-        (f"evt-{start_ts}", camera, start_ts, end_ts, label, 0.9, start_ts),
-    )
-    conn.commit()
-    conn.close()
-
-
 async def test_timeline_events_within_requested_range(client):
     """Events with start_ts inside the query range are returned; events entirely
     outside are not.
@@ -214,19 +186,19 @@ async def test_timeline_events_within_requested_range(client):
     range_end   = 1700060000.0  # 10 000-second window
 
     # Event fully inside the range
-    _insert_event(db_path, "evt-range-cam", range_start + 100, range_start + 200)
+    _insert_event(db_path, "timeline-evt-range-cam", range_start + 100, range_start + 200)
     # Event fully outside the range (ended before range_start)
-    _insert_event(db_path, "evt-range-cam", range_start - 5000, range_start - 4000)
+    _insert_event(db_path, "timeline-evt-range-cam", range_start - 5000, range_start - 4000)
     # Open event (end_ts IS NULL) that started >24h before range_start (~50h ago).
     # Must be EXCLUDED by the backend's 24h cutoff.
-    _insert_event(db_path, "evt-range-cam", range_start - 180000, end_ts=None)
+    _insert_event(db_path, "timeline-evt-range-cam", range_start - 180000, end_ts=None)
     # Open event (end_ts IS NULL) that started within 24h of range_start (~1h ago).
     # Must be INCLUDED because it may still be ongoing at the window start.
-    _insert_event(db_path, "evt-range-cam", range_start - 3600, end_ts=None)
+    _insert_event(db_path, "timeline-evt-range-cam", range_start - 3600, end_ts=None)
 
     resp = await client.get(
         "/api/timeline",
-        params={"camera": "evt-range-cam", "start": range_start, "end": range_end},
+        params={"camera": "timeline-evt-range-cam", "start": range_start, "end": range_end},
     )
     assert resp.status_code == 200
     events = resp.json()["events"]
@@ -463,21 +435,6 @@ async def test_timeline_buckets_has_preview_from_db_not_filesystem(client, monke
 # ---------------------------------------------------------------------------
 # Density endpoint
 # ---------------------------------------------------------------------------
-
-def _insert_event(db_path, camera, start_ts, end_ts, label="person", zones=None):
-    """Insert a test event row directly into the DB."""
-    import json
-    conn = sqlite3.connect(str(db_path))
-    conn.execute(
-        """INSERT INTO events
-               (id, camera, start_ts, end_ts, label, score, has_clip, has_snapshot, synced_at, zones)
-               VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?)""",
-        (f"{camera}-{start_ts}", camera, start_ts, end_ts, label, 0.9, time.time(),
-         json.dumps(zones or [])),
-    )
-    conn.commit()
-    conn.close()
-
 
 async def test_density_endpoint_returns_correct_shape(client):
     """GET /api/timeline/density returns DensityResponse shape."""
