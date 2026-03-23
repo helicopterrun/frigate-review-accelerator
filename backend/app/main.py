@@ -1,6 +1,7 @@
 """Frigate Review Accelerator — FastAPI application entry point."""
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,7 +11,7 @@ from app.config import settings
 from app.models.database import init_db_sync
 from app.routers import timeline, preview
 from app.routers.admin import router as admin_router
-from app.services.worker import start_worker, stop_worker
+from app.services.worker import start_worker, stop_worker, set_preview_executor
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +35,14 @@ async def lifespan(app: FastAPI):
     settings.ensure_dirs()
     init_db_sync()
 
+    # Create bounded executor for preview generation (preview_workers from config)
+    executor = ThreadPoolExecutor(
+        max_workers=settings.preview_workers,
+        thread_name_prefix="preview-worker",
+    )
+    log.info("Preview executor: %d worker thread(s)", settings.preview_workers)
+    set_preview_executor(executor)
+
     # Start background indexer + preview generator
     start_worker()
 
@@ -41,6 +50,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     await stop_worker()
+    executor.shutdown(wait=False)
     log.info("Shutdown complete")
 
 
