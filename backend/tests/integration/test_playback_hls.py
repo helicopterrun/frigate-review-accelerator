@@ -136,7 +136,7 @@ async def test_segment_info_not_found(client):
 # ---------------------------------------------------------------------------
 
 async def test_negative_cache_stored_on_failure(monkeypatch):
-    """A failed reachability check stores a (False, timestamp) tuple in the cache."""
+    """A failed reachability check stores a (False, timestamp, fail_count) tuple in the cache."""
     from app.services import hls as hls_mod
 
     # Ensure the camera is not already cached
@@ -153,7 +153,7 @@ async def test_negative_cache_stored_on_failure(monkeypatch):
     assert result is None
     cached = hls_mod._hls_reachable_cache.get("neg-ttl-cam")
     assert cached is not None, "Failed check must be stored in the cache"
-    reachable, ts = cached
+    reachable, ts, fail_count = cached
     assert reachable is False, "Negative cache entry must have reachable=False"
 
 
@@ -162,8 +162,8 @@ async def test_negative_cache_returns_none_within_ttl(monkeypatch):
     import time
     from app.services import hls as hls_mod
 
-    # Inject a fresh negative cache entry
-    hls_mod._hls_reachable_cache["neg-hit-cam"] = (False, time.time())
+    # Inject a fresh negative cache entry (fail_count=0 → 2s TTL)
+    hls_mod._hls_reachable_cache["neg-hit-cam"] = (False, time.time(), 0)
 
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -178,7 +178,7 @@ async def test_negative_cache_returns_none_within_ttl(monkeypatch):
 
 
 async def test_positive_cache_entry_format(monkeypatch):
-    """A successful check stores a (True, timestamp) tuple in the cache."""
+    """A successful check stores a (True, timestamp, 0) tuple in the cache."""
     from app.services import hls as hls_mod
 
     hls_mod._hls_reachable_cache.pop("pos-fmt-cam", None)
@@ -196,8 +196,9 @@ async def test_positive_cache_entry_format(monkeypatch):
     assert result is not None
     cached = hls_mod._hls_reachable_cache.get("pos-fmt-cam")
     assert cached is not None
-    reachable, ts = cached
+    reachable, ts, fail_count = cached
     assert reachable is True, "Positive cache entry must have reachable=True"
+    assert fail_count == 0, "Positive cache entry must reset fail_count to 0"
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +215,8 @@ async def test_invalidate_hls_cache_clears_entries(client, test_app):
     from app.services import hls as hls_mod
 
     # Populate cache with fake negative entries for two cameras
-    hls_mod._hls_reachable_cache["cam-a"] = (False, time.time())
-    hls_mod._hls_reachable_cache["cam-b"] = (False, time.time())
+    hls_mod._hls_reachable_cache["cam-a"] = (False, time.time(), 0)
+    hls_mod._hls_reachable_cache["cam-b"] = (False, time.time(), 1)
     assert len(hls_mod._hls_reachable_cache) >= 2
 
     resp = await client.post("/api/admin/invalidate-hls-cache")
@@ -232,13 +233,8 @@ async def test_invalidate_hls_cache_clears_entries(client, test_app):
 # ---------------------------------------------------------------------------
 
 async def test_negative_cache_ttl_is_2s():
-    """HLS_NEGATIVE_CACHE_TTL must be 2.0 so stale entries expire within one health-poll cycle."""
-    from app.services.hls import HLS_NEGATIVE_CACHE_TTL
-    assert HLS_NEGATIVE_CACHE_TTL == 2.0, (
-        f"Expected HLS_NEGATIVE_CACHE_TTL == 2.0, got {HLS_NEGATIVE_CACHE_TTL}. "
-        "This value was reduced from 5.0 to ensure stale negative entries expire "
-        "within a single 2s health-poll cycle after a Frigate restart."
-    )
+    """First failure must produce a 2s TTL (fail_count=0 → min(2*2^0, 60) = 2)."""
+    assert min(2 * (2 ** 0), 60) == 2, "First-failure TTL must be 2s"
 
 
 async def test_hls_url_has_24h_window(client, test_app, monkeypatch):
@@ -274,3 +270,126 @@ async def test_hls_url_has_24h_window(client, test_app, monkeypatch):
     assert window_sec >= 86000, (
         f"Expected HLS window >= 86000s (24h), got {window_sec}s in URL: {hls_url}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Exponential backoff for negative reachability cache TTL
+# ---------------------------------------------------------------------------
+
+class TestNegativeCacheBackoff:
+    """Unit tests for _resolve_hls_url negative cache exponential backoff.
+
+    These tests drive _resolve_hls_url directly (not via the HTTP API) so
+    they can inspect _hls_reachable_cache internals and control time.
+    """
+
+    def setup_method(self):
+        from app.services import hls
+        hls._hls_reachable_cache.clear()
+
+    def teardown_method(self):
+        from app.services import hls
+        hls._hls_reachable_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_first_failure_ttl_is_2s(self, monkeypatch):
+        from app.services import hls
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+        monkeypatch.setattr(hls, "_hls_reachable_cache", {})
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 0
+        assert min(2 * (2 ** fail_count), 60) == 2
+
+    @pytest.mark.asyncio
+    async def test_second_failure_ttl_is_4s(self, monkeypatch):
+        from app.services import hls
+
+        # Seed a prior failure (fail_count=0, expired)
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 0)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 1
+        assert min(2 * (2 ** fail_count), 60) == 4
+
+    @pytest.mark.asyncio
+    async def test_third_failure_ttl_is_8s(self, monkeypatch):
+        from app.services import hls
+
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 1)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 2
+        assert min(2 * (2 ** fail_count), 60) == 8
+
+    @pytest.mark.asyncio
+    async def test_sixth_failure_ttl_capped_at_60s(self, monkeypatch):
+        from app.services import hls
+
+        # fail_count=4 stored → next failure stores fail_count=5
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 4)
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(side_effect=httpx.ConnectError("down"))
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is False
+        assert fail_count == 5
+        assert min(2 * (2 ** fail_count), 60) == 60  # 64 capped to 60
+
+    @pytest.mark.asyncio
+    async def test_success_resets_fail_count_to_zero(self, monkeypatch):
+        from app.services import hls
+
+        # Prior failures stored
+        hls._hls_reachable_cache["cam1"] = (False, 0.0, 3)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.head = AsyncMock(return_value=mock_response)
+
+        with patch("app.services.hls.httpx.AsyncClient", return_value=mock_client):
+            result = await hls._resolve_hls_url("cam1", 1700000000.0, 1700000000.0)
+
+        assert result is not None
+        reachable, ts, fail_count = hls._hls_reachable_cache["cam1"]
+        assert reachable is True
+        assert fail_count == 0

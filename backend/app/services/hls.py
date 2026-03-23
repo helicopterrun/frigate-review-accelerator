@@ -3,7 +3,11 @@
 Pure utilities shared by timeline.py and preview.py.
 _build_hls_url is a pure function — no DB calls, no async, no side effects.
 _resolve_hls_url does a HEAD request on first use per camera, then caches
-reachability for _HLS_CACHE_TTL_SEC seconds to avoid per-seek latency.
+reachability to avoid per-seek latency.
+
+Positive results are cached for _HLS_CACHE_TTL_SEC (30s).
+Negative results use exponential backoff: 2s, 4s, 8s … capped at 60s,
+so a sustained Frigate outage does not produce a HEAD request on every seek.
 """
 
 import time as _time
@@ -15,14 +19,10 @@ from app.config import settings
 # ---------------------------------------------------------------------------
 # Reachability cache
 # ---------------------------------------------------------------------------
-# Stores (reachable: bool, timestamp: float) tuples.
-# Positive entries (True) are kept for _HLS_CACHE_TTL_SEC seconds.
-# Negative entries (False) are kept for HLS_NEGATIVE_CACHE_TTL seconds so that
-# after a Frigate restart clients stop getting stale positive hits quickly,
-# without hammering the API on every seek.
-_hls_reachable_cache: dict[str, tuple[bool, float]] = {}
+# Cache entries: (reachable: bool, ts: float, fail_count: int)
+# fail_count is 0 on success and monotonically increments on each failure.
+_hls_reachable_cache: dict[str, tuple[bool, float, int]] = {}
 _HLS_CACHE_TTL_SEC = 30.0
-HLS_NEGATIVE_CACHE_TTL = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -63,31 +63,32 @@ async def _resolve_hls_url(camera: str, requested_ts: float, seg_start: float) -
     Returns the URL if Frigate responds 2xx, None otherwise.
     Never raises — any failure yields None so /api/playback never breaks.
 
-    Uses a per-camera reachability cache (_hls_reachable_cache) with a
-    _HLS_CACHE_TTL_SEC TTL to avoid a HEAD request on every seek.  Cache is
-    NOT invalidated on failure — a failed check simply lets the TTL expire
-    naturally, avoiding thrashing when Frigate is flapping.
+    Uses a per-camera reachability cache (_hls_reachable_cache).  Positive
+    results are cached for _HLS_CACHE_TTL_SEC (30s).  Negative results use
+    exponential backoff: ttl = min(2 * (2 ** fail_count), 60), giving
+    2s, 4s, 8s, 16s, 32s, 60s (capped) across successive failures.  This
+    keeps HEAD traffic low during extended Frigate outages.
     """
     if not settings.frigate_vod_enabled:
         return None
     now = _time.time()
     cached = _hls_reachable_cache.get(camera)
     if cached is not None:
-        reachable, ts = cached
-        ttl = _HLS_CACHE_TTL_SEC if reachable else HLS_NEGATIVE_CACHE_TTL
+        reachable, ts, fail_count = cached
+        ttl = _HLS_CACHE_TTL_SEC if reachable else min(2 * (2 ** fail_count), 60)
         if ts + ttl > now:
-            # Cache hit — return URL for positive entry, None for negative entry
             return _build_hls_url(camera, requested_ts, seg_start) if reachable else None
     url = _build_hls_url(camera, requested_ts, seg_start)
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.head(url)
             if r.status_code < 300:
-                _hls_reachable_cache[camera] = (True, now)
+                _hls_reachable_cache[camera] = (True, now, 0)
                 return url
     except Exception:
         pass
-    # Store negative result with short TTL so stale positive entries expire quickly
-    # after Frigate restarts or becomes temporarily unreachable.
-    _hls_reachable_cache[camera] = (False, now)
+    # Negative result: increment fail_count from prior negative entry, or start at 0
+    prior = _hls_reachable_cache.get(camera)
+    fail_count = (prior[2] + 1) if prior is not None and not prior[0] else 0
+    _hls_reachable_cache[camera] = (False, now, fail_count)
     return None
