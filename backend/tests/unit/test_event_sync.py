@@ -198,3 +198,94 @@ class TestPagination:
 
         assert count <= 10 * _LIMIT
         assert n_calls <= 10
+
+
+# ---------------------------------------------------------------------------
+# Watermark advancement
+# ---------------------------------------------------------------------------
+
+def _read_watermark(db_path, camera):
+    """Return last_event_sync_ts for a camera from scan_state."""
+    conn = sqlite3.connect(str(db_path))
+    row = conn.execute(
+        "SELECT last_event_sync_ts FROM scan_state WHERE camera = ?", (camera,)
+    ).fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+class TestWatermark:
+    def test_watermark_advances_to_max_after_pagination(self, db_path):
+        """After paginated sync, watermark must be max(start_time), not min.
+
+        Page 1: events at t=100, 90, 80 (newest-first)
+        Page 2: events at t=79, 70, 60
+
+        Expected watermark = 100 (newest seen), NOT 60 (oldest seen).
+        """
+        now = time.time()
+        base = now - 500  # safely within the 7d first-sync window
+
+        page1 = [
+            _make_event("w1", base + 100, end_time=base + 101),
+            _make_event("w2", base + 90,  end_time=base + 91),
+            _make_event("w3", base + 80,  end_time=base + 81),
+        ]
+        page2 = [
+            _make_event("w4", base + 79,  end_time=base + 80),
+            _make_event("w5", base + 70,  end_time=base + 71),
+            _make_event("w6", base + 60,  end_time=base + 61),
+        ]
+        # page2 has fewer than _LIMIT events — terminates pagination
+        _run_sync([page1, page2], db_path, camera="wm-cam")
+
+        wm = _read_watermark(db_path, "wm-cam")
+        expected = base + 100
+        assert wm == pytest.approx(expected, abs=0.01), (
+            f"Watermark should advance to max(start_time)={expected:.0f}, got {wm}"
+        )
+
+    def test_watermark_not_updated_on_empty_response(self, db_path):
+        """If the API returns no events, last_event_sync_ts must not change.
+
+        The empty-events branch writes now() as the watermark (existing behaviour
+        to prevent re-querying a silent camera every cycle). Verify it separately
+        from the all_events guard added by this fix.
+        """
+        # Pre-set a known watermark by running a successful sync first
+        now = time.time()
+        base = now - 500
+        page1 = [_make_event("pre1", base + 10, end_time=base + 11)]
+        _run_sync([page1], db_path, camera="empty-cam")
+        wm_before = _read_watermark(db_path, "empty-cam")
+        assert wm_before is not None, "Pre-condition: watermark should be set after first sync"
+
+        # Second sync returns no events — watermark must not decrease
+        _run_sync([[]], db_path, camera="empty-cam")
+        wm_after = _read_watermark(db_path, "empty-cam")
+
+        # The empty-events branch writes now() — that is always >= the previous watermark
+        assert wm_after >= wm_before, (
+            "Watermark must not decrease when API returns no events"
+        )
+
+    def test_watermark_does_not_regress_across_pages(self, db_path):
+        """min(start_time) regression test: simulate old buggy behaviour.
+
+        If the code still used min(), the watermark would be base+60.
+        This test fails if min() is used instead of max().
+        """
+        now = time.time()
+        base = now - 600
+
+        page1 = [_make_event(f"r{i}", base + 100 - i, end_time=base + 110) for i in range(3)]
+        page2 = [_make_event(f"r{i}", base + 60 - i,  end_time=base + 70)  for i in range(3, 6)]
+        _run_sync([page1, page2], db_path, camera="regress-cam")
+
+        wm = _read_watermark(db_path, "regress-cam")
+        # With max(): watermark = base+100  (correct)
+        # With min(): watermark = base+57   (old bug)
+        assert wm > base + 90, (
+            f"Watermark regressed to {wm:.0f}; expected > {base+90:.0f} — "
+            "min() is being used instead of max()"
+        )

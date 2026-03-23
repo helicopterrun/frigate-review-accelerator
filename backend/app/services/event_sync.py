@@ -167,14 +167,17 @@ def sync_frigate_events_sync(camera: str | None = None, db_path=None) -> int:
                     )
                     total_synced += len(rows_to_upsert)
 
-                # Use the earliest start_time from fetched events as the watermark so
-                # that events arriving with a backlog (start_time < now) are not skipped
-                # on the next sync cycle.  Fall back to now only when all_events is empty
-                # (handled above in the `if not events` branch).
-                watermark = min(float(e.get("start_time", now)) for e in all_events)
-                _write_last_sync_ts(conn, cam, watermark)
-                conn.commit()
-                log.debug("Synced %d events for camera %s (watermark=%.0f)", len(rows_to_upsert), cam, watermark)
+                # Advance the watermark to the newest event seen so we do not
+                # re-fetch events we already have on the next cycle.  Using min()
+                # would regress the watermark each time pagination fetches older
+                # pages, causing an ever-growing re-fetch window.
+                # min(start_time) is still used above as the pagination floor
+                # (oldest_ts guard) — that usage is correct and unchanged.
+                if all_events:
+                    watermark = max(float(e.get("start_time", now)) for e in all_events)
+                    _write_last_sync_ts(conn, cam, watermark)
+                    conn.commit()
+                    log.debug("Synced %d events for camera %s (watermark=%.0f)", len(rows_to_upsert), cam, watermark)
 
     finally:
         conn.close()
