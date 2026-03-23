@@ -266,16 +266,26 @@ class TimeIndex:
 
         bucket_sec = range_dur / resolution
 
-        # Build event density index keyed by bucket index
-        density = self.event_density(events, range_start, range_end, bucket_sec=bucket_sec)
-        density_map: dict[float, int] = {d["ts"]: d["count"] for d in density}
+        # Precompute event spans once.  Inline counting below uses b_start/b_end
+        # boundaries directly, so density keys are always aligned to the logical
+        # bucket series rather than the global floor(ts/bucket_sec) grid.
+        evt_spans: list[tuple[float, float]] = []
+        for evt in events:
+            if hasattr(evt, "start_ts"):
+                ts = evt.start_ts
+                te = getattr(evt, "end_ts", None)
+            else:
+                ts = evt["start_ts"]
+                te = evt.get("end_ts")
+            if te is None:
+                te = ts + 30
+            evt_spans.append((ts, te))
 
         # Walk buckets at preview_interval_sec resolution inside each logical bucket
         result = []
         for i in range(resolution):
             b_start = range_start + i * bucket_sec
             b_end = b_start + bucket_sec
-            bucket_label_ts = b_start
 
             # Check if any preview exists in this logical bucket.
             # Use DB-backed set when available; fall back to filesystem stat.
@@ -290,11 +300,9 @@ class TimeIndex:
                         has_preview = True
                         break
 
-            evt_count = density_map.get(
-                math.floor(b_start / bucket_sec) * bucket_sec, 0
-            )
+            evt_count = sum(1 for ts, te in evt_spans if ts < b_end and te > b_start)
             result.append({
-                "ts": bucket_label_ts,
+                "ts": b_start,
                 "has_preview": has_preview,
                 "event_density": evt_count,
             })
