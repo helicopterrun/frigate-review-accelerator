@@ -434,6 +434,16 @@ function DebugTab({
   const [queueStats, setQueueStats] = useState(null);
   const [, setTick] = useState(0); // 500ms refresh for readouts
 
+  // Track when autoplayActive first became true — used for the stalled-video warning.
+  const autoplayActiveSinceRef = useRef(null);
+  useEffect(() => {
+    if (debugState?.autoplayActive && autoplayActiveSinceRef.current == null) {
+      autoplayActiveSinceRef.current = Date.now();
+    } else if (!debugState?.autoplayActive) {
+      autoplayActiveSinceRef.current = null;
+    }
+  }, [debugState?.autoplayActive]);
+
   useEffect(() => {
     async function fetchStats() {
       try {
@@ -451,7 +461,9 @@ function DebugTab({
     return () => clearInterval(id);
   }, []);
 
-  function badge(val) {
+  // ── Helper renderers ────────────────────────────────────────────────────────
+
+  function boolBadge(val) {
     if (val == null) return <span style={{ color: '#555' }}>—</span>;
     return (
       <span style={{
@@ -464,152 +476,260 @@ function DebugTab({
     );
   }
 
-  function statusBadge(status) {
-    if (status == null) return <span style={{ color: '#555' }}>—</span>;
-    if (status === 'pending') return <span style={{ color: '#ffd93d', fontSize: 11 }}>pending…</span>;
-    return (
-      <span style={{
-        color: status === 200 ? '#6bcb77' : '#ff6b6b',
-        fontSize: 11,
-      }}>{status}</span>
-    );
+  function hint(text, color = '#555') {
+    return <span style={{ color, fontSize: 10, marginTop: 2, lineHeight: 1.4 }}>{text}</span>;
   }
+
+  function warn(text) {
+    return <span style={{ color: '#ffd93d', fontSize: 10, marginTop: 3, lineHeight: 1.4 }}>⚠ {text}</span>;
+  }
+
+  // ── Derived display values ──────────────────────────────────────────────────
 
   const st = debugState ?? {};
   const pt = st.playbackTarget;
   const pret = st.preloadTarget;
-  const scrubShort = st.scrubPreviewUrl ? st.scrubPreviewUrl.slice(-60) : 'none';
-  const dispShort = st.displayedPreviewUrl ? st.displayedPreviewUrl.slice(-60) : 'none';
+  const scrubShort = st.scrubPreviewUrl ? st.scrubPreviewUrl.slice(-60) : null;
+  const dispShort = st.displayedPreviewUrl ? st.displayedPreviewUrl.slice(-60) : null;
 
-  const overrideCheckbox = (key, label) => (
-    <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', marginBottom: 6 }}>
-      <input
-        type="checkbox"
-        checked={debugOverrides?.[key] ?? false}
-        onChange={e => setDebugOverrides(prev => ({ ...prev, [key]: e.target.checked }))}
-        style={{ accentColor: '#4ecdc4' }}
-      />
-      <span style={{ color: '#aaa', fontSize: 11, fontFamily: 'monospace' }}>{label}</span>
-    </label>
-  );
+  // Autoplay state text — derived from boolean since autoplayState string isn't
+  // separately plumbed through debugState. "approaching event" is indistinguishable
+  // from "advancing" at this level; both show as "advancing".
+  const autoplayStateText = st.autoplayActive ? 'advancing' : 'idle';
 
-  const debugBtn = (label, onClick, color = '#4ecdc4') => (
-    <button
-      onClick={onClick}
-      style={{
-        background: 'transparent', border: `1px solid ${color}`,
-        color, borderRadius: 4, padding: '4px 10px',
-        cursor: 'pointer', fontSize: 11, fontFamily: 'monospace',
-        marginRight: 6, marginBottom: 6,
-      }}
-    >{label}</button>
-  );
+  // Stalled-video warning: autoplay active but video not playing for >2s.
+  const autoplayStalled =
+    st.autoplayActive &&
+    !st.isPlaying &&
+    autoplayActiveSinceRef.current != null &&
+    Date.now() - autoplayActiveSinceRef.current > 2000;
+
+  // RAF guard divergence.
+  const rafDiverged = st.isPlaying !== st.videoPlayingRef;
+
+  // Preview status color and notes.
+  const previewStatus = st.scrubPreviewStatus;
+  const previewStatusColor =
+    previewStatus === 200 ? '#6bcb77' :
+    previewStatus === 404 ? '#ff6b6b' :
+    previewStatus === 'pending' ? '#ffd93d' : '#555';
+  const previewStatusText =
+    previewStatus === 200 ? '200 OK' :
+    previewStatus === 404 ? '404' :
+    previewStatus === 'pending' ? 'pending…' : '—';
+
+  // Queue stats display.
+  const queueDepth = queueStats?.scheduler_queue_depth ?? null;
+  const genRate = queueStats?.generation_rate_fps ?? null;
+  const queueDepthColor =
+    queueDepth == null ? '#555' :
+    queueDepth === 0 ? '#6bcb77' :
+    queueDepth > 1000 ? '#ff6b6b' : '#ffd93d';
+  const queueDepthText =
+    queueDepth == null ? 'polling…' :
+    queueDepth === 0 ? '0 — all caught up ✓' :
+    queueDepth > 1000
+      ? `${queueDepth.toLocaleString()} — large backlog`
+      : `${queueDepth.toLocaleString()} previews generating`;
+
+  // ── Sub-components ──────────────────────────────────────────────────────────
+
+  function OverrideCheckbox({ id, label, description }) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={debugOverrides?.[id] ?? false}
+            onChange={e => setDebugOverrides(prev => ({ ...prev, [id]: e.target.checked }))}
+            style={{ accentColor: '#4ecdc4', marginTop: 1, flexShrink: 0 }}
+          />
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <span style={{ color: '#ccc', fontSize: 11 }}>{label}</span>
+            <span style={{ color: '#555', fontSize: 10, lineHeight: 1.5 }}>{description}</span>
+          </div>
+        </label>
+      </div>
+    );
+  }
+
+  function ReadoutRow({ label, children }) {
+    return (
+      <div style={{ ...s.statusRow, flexDirection: 'column', gap: 2 }}>
+        <span style={s.statusLabel}>{label}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {children}
+        </div>
+      </div>
+    );
+  }
+
+  function ActionGroup({ purpose, children, color = '#4ecdc4' }) {
+    return (
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ color: '#555', fontSize: 10, marginBottom: 5, lineHeight: 1.5 }}>{purpose}</div>
+        {children}
+      </div>
+    );
+  }
+
+  function DebugBtn({ label, onClick, color = '#4ecdc4' }) {
+    return (
+      <button
+        onClick={onClick}
+        style={{
+          background: 'transparent', border: `1px solid ${color}`,
+          color, borderRadius: 4, padding: '4px 12px',
+          cursor: 'pointer', fontSize: 11, fontFamily: 'monospace',
+        }}
+      >{label}</button>
+    );
+  }
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ padding: 12, overflowY: 'auto', flex: 1, fontSize: 11, fontFamily: 'monospace' }}>
 
-      {/* Section 1: Layer overrides */}
+      {/* ── Section 1: Layer overrides ── */}
       <div style={sd.section}>
         <div style={sd.sectionTitle}>Layer overrides</div>
-        {overrideCheckbox('forceShowScrubOverlay', 'forceShowScrubOverlay — bypass !autoplayActive, always show scrub preview')}
-        {overrideCheckbox('forceHideVideo', 'forceHideVideo — visibility:hidden on <video> (playback continues)')}
-        {overrideCheckbox('forceShowPreloadVideo', 'forceShowPreloadVideo — show preload <video> at 200×112 (top-left)')}
+
+        <OverrideCheckbox
+          id="forceShowScrubOverlay"
+          label="Always show scrub preview"
+          description="Use this when the video player looks blank after clicking the timeline. If a preview image appears after enabling this, the overlay is working but being suppressed by the autoplay condition."
+        />
+        <OverrideCheckbox
+          id="forceHideVideo"
+          label="Hide video element"
+          description="Hides the <video> element without stopping playback. Use this to confirm what's behind the video — if you can see the scrub preview image underneath, the video was covering it."
+        />
+        <OverrideCheckbox
+          id="forceShowPreloadVideo"
+          label="Show preload buffer (top-left)"
+          description="Makes the hidden preload video element visible in the top-left corner. If it shows moving video, the idle preload is working and buffering ahead correctly."
+        />
       </div>
 
-      {/* Section 2: Live readouts */}
+      {/* ── Section 2: Live readouts ── */}
       <div style={sd.section}>
         <div style={sd.sectionTitle}>Live readouts</div>
 
-        <div style={s.statusRow}>
-          <span style={s.statusLabel}>autoplayActive</span>
-          <span style={s.statusValue}>{badge(st.autoplayActive)}</span>
-        </div>
-        <div style={s.statusRow}>
-          <span style={s.statusLabel}>isPlaying (VideoPlayer state)</span>
-          <span style={s.statusValue}>{badge(st.isPlaying)}</span>
-        </div>
-        <div style={s.statusRow}>
-          <span style={s.statusLabel}>videoPlayingRef (RAF guard)</span>
-          <span style={s.statusValue}>{badge(st.videoPlayingRef)}</span>
-        </div>
+        <ReadoutRow label="AUTOPLAY STATE">
+          <span style={{ color: st.autoplayActive ? '#6bcb77' : '#aaa', fontSize: 11 }}>
+            {autoplayStateText}
+          </span>
+          {hint('idle while scrubbing · advancing after 1.5s')}
+        </ReadoutRow>
 
-        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
-          <span style={s.statusLabel}>scrubPreviewUrl</span>
-          <span style={{ ...s.statusValue, color: '#aaa', wordBreak: 'break-all' }}>{scrubShort}</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
+        <ReadoutRow label="VIDEO PLAYING">
+          {boolBadge(st.isPlaying)}
+          {hint('true only during active HLS/MP4 playback')}
+          {autoplayStalled && warn('autoplay active but video not playing — check for stalled segment')}
+        </ReadoutRow>
+
+        <ReadoutRow label="RAF GUARD (videoPlayingRef)">
+          <span style={{ color: rafDiverged ? '#ffd93d' : '#aaa', fontSize: 11 }}>
+            {st.videoPlayingRef == null ? '—' : String(st.videoPlayingRef)}
+          </span>
+          {hint('should match VIDEO PLAYING — divergence causes cursor drift')}
+          {rafDiverged && warn('diverges from VIDEO PLAYING')}
+        </ReadoutRow>
+
+        <ReadoutRow label="CURRENT PREVIEW URL">
+          <span style={{ color: '#aaa', wordBreak: 'break-all' }}>{scrubShort ?? 'none'}</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <span style={{ color: '#555', fontSize: 10 }}>HTTP status:</span>
-            {statusBadge(st.scrubPreviewStatus)}
+            <span style={{ color: previewStatusColor, fontSize: 11 }}>{previewStatusText}</span>
           </span>
-        </div>
+          {previewStatus === 404 && hint('preview not yet generated — will retry after worker processes the on-demand queue', '#ff6b6b')}
+          {previewStatus === 200 && st.displayedPreviewUrl !== st.scrubPreviewUrl && hint('new frame loading…')}
+        </ReadoutRow>
 
-        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
-          <span style={s.statusLabel}>displayedPreviewUrl (last good frame)</span>
-          <span style={{ ...s.statusValue, color: '#aaa', wordBreak: 'break-all' }}>{dispShort}</span>
-        </div>
+        <ReadoutRow label="DISPLAYED PREVIEW (last good frame)">
+          <span style={{ color: '#aaa', wordBreak: 'break-all' }}>{dispShort ?? 'none'}</span>
+          {hint('updates only on successful load — intentional to prevent black flashes')}
+        </ReadoutRow>
 
-        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
-          <span style={s.statusLabel}>playbackTarget.requested_ts</span>
-          <span style={s.statusValue}>
-            {pt ? (
-              <>
-                <span style={{ color: '#4ecdc4' }}>{pt.requested_ts}</span>
-                {' — '}
-                <span style={{ color: '#888' }}>{formatDateTime(pt.requested_ts)}</span>
-              </>
-            ) : <span style={{ color: '#555' }}>none</span>}
-          </span>
-        </div>
+        <ReadoutRow label="PLAYBACK TARGET">
+          {pt ? (
+            <>
+              <span style={{ color: '#4ecdc4' }}>
+                {pt.requested_ts} — {formatDateTime(pt.requested_ts)}
+              </span>
+              <span style={{ color: '#888', fontSize: 10 }}>
+                offset: {pt.offset_sec != null ? `${pt.offset_sec.toFixed(1)}s into segment` : 'unknown'}
+              </span>
+            </>
+          ) : hint('none — player in placeholder state')}
+        </ReadoutRow>
 
-        <div style={{ ...s.statusRow, flexDirection: 'column', gap: 3 }}>
-          <span style={s.statusLabel}>preloadTarget.requested_ts</span>
-          <span style={s.statusValue}>
-            {pret ? (
-              <>
-                <span style={{ color: '#c77dff' }}>{pret.requested_ts}</span>
-                {' — '}
-                <span style={{ color: '#888' }}>{formatDateTime(pret.requested_ts)}</span>
-              </>
-            ) : <span style={{ color: '#555' }}>none</span>}
-          </span>
-        </div>
+        <ReadoutRow label="PRELOAD TARGET">
+          {pret ? (
+            <>
+              <span style={{ color: '#c77dff' }}>
+                {pret.requested_ts} — {formatDateTime(pret.requested_ts)}
+              </span>
+              <span style={{ color: '#ffd93d', fontSize: 10 }}>buffering…</span>
+            </>
+          ) : hint('none — will fetch at 400ms idle')}
+        </ReadoutRow>
 
-        <div style={s.statusRow}>
-          <span style={s.statusLabel}>preloadTarget.hls_url</span>
-          <span style={s.statusValue}>
-            {pret?.hls_url
-              ? <span style={{ color: '#6bcb77' }}>ready</span>
-              : <span style={{ color: '#555' }}>none</span>}
-          </span>
-        </div>
+        <ReadoutRow label="PRELOAD HLS URL">
+          {pret?.hls_url
+            ? <span style={{ color: '#6bcb77' }}>ready ✓</span>
+            : <span style={{ color: '#555' }}>none</span>}
+        </ReadoutRow>
 
-        {queueStats && (
-          <>
-            <div style={s.statusRow}>
-              <span style={s.statusLabel}>scheduler_queue_depth</span>
-              <span style={{ ...s.statusValue, color: '#ffd93d' }}>{queueStats.scheduler_queue_depth ?? '—'}</span>
-            </div>
-            <div style={s.statusRow}>
-              <span style={s.statusLabel}>generation_rate_fps</span>
-              <span style={{ ...s.statusValue, color: '#4ecdc4' }}>{queueStats.generation_rate_fps ?? '—'}</span>
-            </div>
-          </>
-        )}
-        {!queueStats && (
-          <div style={{ color: '#555', fontSize: 10, marginTop: 4 }}>/api/debug/stats not available</div>
+        <ReadoutRow label="PREVIEW QUEUE DEPTH">
+          {queueStats == null
+            ? <span style={{ color: '#555' }}>polling…</span>
+            : <span style={{ color: queueDepthColor }}>{queueDepthText}</span>
+          }
+          {queueDepth > 1000 && hint('scrub previews may 404 until backlog drains', '#ff6b6b')}
+        </ReadoutRow>
+
+        <ReadoutRow label="PREVIEW GENERATION RATE">
+          {genRate == null
+            ? <span style={{ color: '#555' }}>polling…</span>
+            : genRate > 0
+              ? <span style={{ color: '#6bcb77' }}>{genRate.toFixed(1)} frames/sec</span>
+              : <span style={{ color: queueDepth > 0 ? '#ffd93d' : '#aaa' }}>
+                  {genRate.toFixed(1)} frames/sec
+                </span>
+          }
+          {genRate === 0 && queueDepth > 0 && warn('queue not draining')}
+        </ReadoutRow>
+
+        {queueStats == null && (
+          <div style={{ color: '#444', fontSize: 10, marginTop: 4 }}>/api/debug/stats not available</div>
         )}
       </div>
 
-      {/* Section 3: Actions */}
+      {/* ── Section 3: Actions ── */}
       <div style={sd.section}>
         <div style={sd.sectionTitle}>Actions</div>
-        {debugBtn('Trigger autoplay now', onDebugTriggerAutoplay, '#4ecdc4')}
-        {debugBtn('Force preload → playback', onDebugPromotePreload, '#c77dff')}
-        {debugBtn('Clear playback target', onDebugClearPlayback, '#ff6b6b')}
-        {debugBtn('Reset all overrides', () => setDebugOverrides({
-          forceShowScrubOverlay: false,
-          forceHideVideo: false,
-          forceShowPreloadVideo: false,
-        }), '#ffd93d')}
+
+        <ActionGroup purpose="Skip the 1.5s idle wait and start video immediately">
+          <DebugBtn label="Trigger autoplay now" onClick={onDebugTriggerAutoplay} color="#4ecdc4" />
+        </ActionGroup>
+
+        <ActionGroup purpose="Promote the buffered preload to the main player — use to test if preload is working without waiting for autoplay">
+          <DebugBtn label="Force preload → playback" onClick={onDebugPromotePreload} color="#c77dff" />
+        </ActionGroup>
+
+        <ActionGroup purpose="Reset the player to blank state — use to test the placeholder and scrub preview overlay from scratch">
+          <DebugBtn label="Clear playback target" onClick={onDebugClearPlayback} color="#ff6b6b" />
+        </ActionGroup>
+
+        <ActionGroup purpose="Turn off all layer overrides above">
+          <DebugBtn
+            label="Reset all overrides"
+            onClick={() => setDebugOverrides({ forceShowScrubOverlay: false, forceHideVideo: false, forceShowPreloadVideo: false })}
+            color="#ffd93d"
+          />
+        </ActionGroup>
       </div>
     </div>
   );
