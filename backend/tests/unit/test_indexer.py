@@ -160,7 +160,7 @@ class TestPerCameraScanState:
             assert "cam-b" not in cameras_found, "cam-b should be skipped (dir mtime < cutoff - 60)"
 
     def test_none_scan_state_does_full_scan(self):
-        """scan_state=None → full rglob, all cameras returned."""
+        """scan_state=None → mtime walk with global_since=0, all cameras returned."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._make_segment(root, "cam-x")
@@ -170,3 +170,42 @@ class TestPerCameraScanState:
             cameras_found = {s["camera"] for s in segments}
             assert "cam-x" in cameras_found
             assert "cam-y" in cameras_found
+
+    def test_none_scan_state_does_not_call_rglob(self, monkeypatch):
+        """scan_state=None must NOT trigger Path.rglob (O(n_files) on cold start)."""
+        def _rglob_should_not_be_called(self_path, *args, **kwargs):
+            raise AssertionError("rglob was called — cold-start must use mtime walk, not rglob")
+
+        monkeypatch.setattr(Path, "rglob", _rglob_should_not_be_called)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_segment(root, "cam-a")
+            self._make_segment(root, "cam-b")
+            self._make_segment(root, "cam-b", filename="05.00.mp4")
+
+            # Must not raise even though rglob is patched to raise
+            segments = scan_recordings_dir(root, scan_state=None)
+            cameras_found = {s["camera"] for s in segments}
+            assert "cam-a" in cameras_found
+            assert "cam-b" in cameras_found
+            assert len(segments) == 3
+
+    def test_empty_scan_state_indexes_all_cameras(self, monkeypatch):
+        """scan_state={} (explicit empty) behaves identically to scan_state=None."""
+        def _rglob_should_not_be_called(self_path, *args, **kwargs):
+            raise AssertionError("rglob was called — cold-start must use mtime walk, not rglob")
+
+        monkeypatch.setattr(Path, "rglob", _rglob_should_not_be_called)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._make_segment(root, "cam-1")
+            self._make_segment(root, "cam-2")
+            self._make_segment(root, "cam-2", filename="10.00.mp4")
+
+            segments = scan_recordings_dir(root, scan_state={})
+            cameras_found = {s["camera"] for s in segments}
+            assert "cam-1" in cameras_found
+            assert "cam-2" in cameras_found
+            assert len(segments) == 3
