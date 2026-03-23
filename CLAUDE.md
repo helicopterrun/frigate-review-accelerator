@@ -386,9 +386,10 @@ frigate-review-accelerator/
         preview_generator.py  # ffmpeg frame extractor (timestamp-based, not segment-based)
         worker.py             # Background task: index -> on-demand (timestamp-driven) -> recency -> background
         event_sync.py         # Frigate event poller -> events table
-                              # Sync watermark: uses min(start_time) of fetched events,
-                              # not wall-clock now(). Falls back to now() when no events
-                              # fetched. This prevents skipping backlogged events.
+                              # Sync watermark: uses max(start_time) of fetched events
+                              # to advance the cursor forward. Falls back to now() when
+                              # no events fetched (empty-response branch). min(start_time)
+                              # is used only as the pagination floor (oldest_ts guard).
         hls.py                # Frigate VOD URL construction + reachability cache
     requirements.txt
     .env                      # Not in git — copy from .env.example
