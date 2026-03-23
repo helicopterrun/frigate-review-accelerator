@@ -473,11 +473,19 @@ export default function VideoPlayer({
               });
           };
 
+          // Attach first to close the TOCTOU window, then call immediately if ready.
+          // If readyState drops from >= 1 to 0 between the check and listener
+          // attachment (concurrent destroyHls), doSeekAndPlay would never fire.
+          // Attaching unconditionally guarantees exactly-once delivery.
+          video.addEventListener('loadedmetadata', doSeekAndPlay, { once: true });
           if (video.readyState >= 1) {
+            // Already have metadata — fire now; remove the { once } listener first
+            // so it does not double-fire if a loadedmetadata event follows.
+            video.removeEventListener('loadedmetadata', doSeekAndPlay);
             doSeekAndPlay();
-          } else {
-            video.addEventListener('loadedmetadata', doSeekAndPlay, { once: true });
           }
+          // TODO: Vitest test — preload swap calls doSeekAndPlay when readyState
+          // drops to 0 after the conditional check (requires fake MediaElement).
 
           return () => { destroyHls(); };
         }
