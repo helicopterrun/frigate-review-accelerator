@@ -746,7 +746,11 @@ export default function App() {
     }
     if (autoplayPromotedRef.current) return;
     autoplayPromotedRef.current = true;
-    const existing = preloadTargetRef.current;
+    // Read preloadTarget state directly — preloadTargetRef lags by one render
+    // (it's updated via useEffect after render), so reading the ref here would
+    // see null even when state already holds a fetched target, causing the
+    // fallback fetch path to fire on every autoplay activation.
+    const existing = preloadTarget;
     if (existing) {
       console.log('[APP] autoplay: promoting preload target', existing);
       setPlaybackTarget(existing);
@@ -769,7 +773,7 @@ export default function App() {
         })
         .catch((e) => { console.warn('[APP] autoplay: fallback fetch failed:', e.message); });
     }
-  }, [autoplayRunning]);
+  }, [autoplayRunning, preloadTarget]);
 
   // ─── Preload hint: communicated from VerticalTimeline during slow scrub ───
   const handlePreloadHint = useCallback((ts) => {
