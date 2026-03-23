@@ -66,6 +66,7 @@ export default function VideoPlayer({
   onScrubPreviewStatus = null,
   onDebugIsPlaying = null,
   onDebugDisplayedUrl = null,
+  onDebugEvent = null,
 }) {
   const videoRef = useRef(null);
   const preloadRef = useRef(null);
@@ -85,6 +86,15 @@ export default function VideoPlayer({
   const preloadRequestIdRef = useRef(0);  // cancels stale preload fetches
 
   const displayTimeRef = useRef(null);
+
+  // DEV-only: stable ref to onDebugEvent so stable effects/callbacks can call it
+  // without listing it as a dependency. Updated whenever the prop changes.
+  const onDebugEventRef = useRef(onDebugEvent);
+  useEffect(() => { onDebugEventRef.current = onDebugEvent; }, [onDebugEvent]);
+
+  // Local ref mirror of playbackTarget for use in stable closures ([] effects).
+  const playbackTargetLocalRef = useRef(playbackTarget);
+  useEffect(() => { playbackTargetLocalRef.current = playbackTarget; }, [playbackTarget]);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [displayTime, setDisplayTime] = useState(null);
@@ -135,11 +145,16 @@ export default function VideoPlayer({
       loadingImgRef.current = null;
       if (onScrubPreviewStatus) onScrubPreviewStatus(200);
       if (onDebugDisplayedUrl) onDebugDisplayedUrl(scrubPreviewUrl);
+      if (import.meta.env.DEV) {
+        onDebugEventRef.current?.('preview 200', scrubPreviewUrl.slice(-30));
+        onDebugEventRef.current?.('preview displayed', scrubPreviewUrl.slice(-30));
+      }
     };
     img.onerror = () => {
       // Keep last good frame rather than going blank
       loadingImgRef.current = null;
       if (onScrubPreviewStatus) onScrubPreviewStatus(404);
+      if (import.meta.env.DEV) onDebugEventRef.current?.('preview 404', scrubPreviewUrl.slice(-30));
     };
 
     img.src = scrubPreviewUrl;
@@ -201,6 +216,7 @@ export default function VideoPlayer({
           video.currentTime = seekOffset;
         }
         hlsStartOffset.current = video.currentTime;
+        if (import.meta.env.DEV) onDebugEventRef.current?.('HLS manifest parsed', `seekOffset=${seekOffset}s`);
         console.log('[VIDEO] muted?', video.muted);
         video.play().then(() => {
           console.log('[VIDEO] play() success');
@@ -212,6 +228,7 @@ export default function VideoPlayer({
       hls.on(Hls.Events.ERROR, (_evt, data) => {
         console.warn('[HLS] error', data);
         if (data.fatal) {
+          if (import.meta.env.DEV) onDebugEventRef.current?.('HLS error (fatal)', `${data.type}/${data.details}`);
           setError('HLS playback error — trying fallback');
           destroyHls();
           setHlsMode(false);
@@ -352,8 +369,17 @@ export default function VideoPlayer({
     if (!video) return;
     const onPause   = () => console.log('[VIDEO] pause event');
     const onWaiting = () => console.log('[VIDEO] waiting');
-    const onStalled = () => console.log('[VIDEO] stalled');
-    const onEnded   = () => console.log('[VIDEO] ended');
+    const onStalled = () => {
+      console.log('[VIDEO] stalled');
+      if (import.meta.env.DEV) onDebugEventRef.current?.('video stalled', `src=${videoRef.current?.src?.slice(-40) ?? ''}`);
+    };
+    const onEnded = () => {
+      console.log('[VIDEO] ended');
+      if (import.meta.env.DEV) {
+        const nextId = playbackTargetLocalRef.current?.next_segment_id;
+        onDebugEventRef.current?.('video ended', `nextSegmentId=${nextId ?? 'none'}`);
+      }
+    };
     const onError   = (e) => console.log('[VIDEO] error', e);
     video.addEventListener('pause',   onPause);
     video.addEventListener('waiting', onWaiting);
@@ -407,6 +433,7 @@ export default function VideoPlayer({
           Math.abs(playbackTarget.requested_ts - preloadTargetTsRef.current) < 5
         ) {
           console.log('[HLS] preload swap — instant play');
+          if (import.meta.env.DEV) onDebugEventRef.current?.('preload swap', `ts=${playbackTarget.requested_ts}`);
 
           // Capture the preload instance BEFORE nulling refs and before destroyHls.
           // Order matters: null the preload refs first so destroyHls cannot
@@ -710,11 +737,13 @@ export default function VideoPlayer({
             if (onPlaybackStart) onPlaybackStart();
             if (onPlaybackStateChange) onPlaybackStateChange(true);
             if (onDebugIsPlaying) onDebugIsPlaying(true);
+            if (import.meta.env.DEV && onDebugEvent) onDebugEvent('video play', `absoluteTs=${displayTimeRef.current ?? 'unknown'}`);
           }}
           onPause={() => {
             setIsPlaying(false);
             if (onPlaybackStateChange) onPlaybackStateChange(false);
             if (onDebugIsPlaying) onDebugIsPlaying(false);
+            if (import.meta.env.DEV && onDebugEvent) onDebugEvent('video pause', '');
           }}
           playsInline
         />
