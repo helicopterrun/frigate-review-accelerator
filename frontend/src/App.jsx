@@ -22,7 +22,7 @@ function useIsMobile(breakpoint = 768) {
   return isMobile;
 }
 import CameraSelector from './components/CameraSelector.jsx';
-import VerticalTimeline from './components/VerticalTimeline.jsx';
+import VerticalTimeline from './components/VerticalTimelinePixi.jsx';
 import VideoPlayer from './components/VideoPlayer.jsx';
 import AdminPanel from './components/AdminPanel.jsx';
 import { ErrorBoundary } from './components/ErrorBoundary.jsx';
