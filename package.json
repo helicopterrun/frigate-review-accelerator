@@ -1,0 +1,14 @@
+{
+  "name": "frigate-review-accelerator",
+  "private": true,
+  "workspaces": [
+    "apps/frontend",
+    "apps/core-server",
+    "packages/shared-types"
+  ],
+  "scripts": {
+    "dev:frontend": "npm --workspace apps/frontend run dev",
+    "dev:core": "npm --workspace apps/core-server run dev",
+    "build": "npm --workspace packages/shared-types run build && npm --workspace apps/core-server run build && npm --workspace apps/frontend run build"
+  }
+}

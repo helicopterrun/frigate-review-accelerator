@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+*.tsbuildinfo
+.env
+.env.local
+data/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+apps/media-service/media_cache/
