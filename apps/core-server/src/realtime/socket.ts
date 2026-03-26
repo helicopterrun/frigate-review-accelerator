@@ -115,7 +115,6 @@ export function registerSocket(server: any) {
         uncachedSlots,
         semanticIndex,
         session.cache,
-        10,
       );
 
       if (session.currentGeneration() !== gen) return;
@@ -175,7 +174,6 @@ async function resolveAndEmitBatch(socket: any, session: ViewportSession): Promi
     session.slots,
     semanticIndex,
     session.cache,
-    10,
   );
 
   if (session.currentGeneration() !== gen) return;
