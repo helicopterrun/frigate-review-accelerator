@@ -47,6 +47,71 @@ const MIGRATIONS = [
       );
     `,
   },
+  {
+    version: 2,
+    name: "semantic_entities",
+    sql: `
+      CREATE TABLE IF NOT EXISTS semantic_entities (
+        id TEXT PRIMARY KEY,
+        camera TEXT NOT NULL,
+        label TEXT NOT NULL,
+        sub_label TEXT,
+        start_time REAL NOT NULL,
+        end_time REAL,
+        top_score REAL,
+        score REAL,
+        area REAL,
+        stationary INTEGER,
+        position_changes INTEGER,
+        current_zones_json TEXT NOT NULL DEFAULT '[]',
+        entered_zones_json TEXT NOT NULL DEFAULT '[]',
+        attributes_json TEXT,
+        snapshot_available INTEGER NOT NULL DEFAULT 0,
+        snapshot_frame_time REAL,
+        snapshot_score REAL,
+        snapshot_path TEXT,
+        review_id TEXT,
+        review_severity TEXT,
+        review_reviewed INTEGER,
+        last_updated REAL NOT NULL,
+        created_at REAL NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_semantic_camera_time
+        ON semantic_entities(camera, start_time, end_time);
+
+      CREATE INDEX IF NOT EXISTS idx_semantic_label
+        ON semantic_entities(label);
+
+      CREATE TABLE IF NOT EXISTS entity_enrichments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_id TEXT NOT NULL,
+        enrichment_type TEXT NOT NULL,
+        value TEXT,
+        confidence REAL,
+        updated_at REAL NOT NULL,
+        FOREIGN KEY (entity_id) REFERENCES semantic_entities(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_enrichment_entity
+        ON entity_enrichments(entity_id);
+
+      CREATE TABLE IF NOT EXISTS review_items (
+        review_id TEXT PRIMARY KEY,
+        camera TEXT NOT NULL,
+        severity TEXT,
+        reviewed INTEGER,
+        start_time REAL NOT NULL,
+        end_time REAL,
+        data_json TEXT,
+        last_updated REAL NOT NULL,
+        created_at REAL NOT NULL DEFAULT (unixepoch())
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_review_camera_time
+        ON review_items(camera, start_time);
+    `,
+  },
 ];
 
 export function bootstrapSqlite(dbPath: string): SqliteInstance {

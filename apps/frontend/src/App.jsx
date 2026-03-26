@@ -73,7 +73,10 @@ export default function App() {
             <h3>Resolved Slots</h3>
             <div className="slot-grid">
               {tl.resolvedSlots.map((slot) => (
-                <div key={slot.slotIndex} className="slot-thumb">
+                <div
+                  key={slot.slotIndex}
+                  className={`slot-thumb ${slot.resolvedStrategy === 'B' ? 'slot-type-b' : ''}`}
+                >
                   {slot.mediaUrl ? (
                     <img
                       src={slot.mediaUrl}
@@ -83,9 +86,15 @@ export default function App() {
                   ) : (
                     <div className="slot-empty">{slot.slotIndex}</div>
                   )}
-                  <span className="slot-label">
-                    {slot.slotIndex} {'\u00B7'} {slot.resolvedStrategy}
+                  <span className={`slot-label ${slot.resolvedStrategy === 'B' ? 'slot-label-b' : ''}`}>
+                    {slot.slotIndex} {slot.resolvedStrategy}
+                    {slot.score != null ? ` ${(slot.score * 100).toFixed(0)}%` : ''}
                   </span>
+                  {slot.winnerEntityId && (
+                    <span className="slot-entity-badge">
+                      {slot.winnerEntityId.split('-')[0]?.slice(-4)}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

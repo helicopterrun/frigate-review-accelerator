@@ -301,6 +301,11 @@ html, body, #root {
   background: #1a1d24;
   border-radius: 3px;
   overflow: hidden;
+  border: 1px solid transparent;
+}
+
+.slot-type-b {
+  border-color: #4CAF50;
 }
 
 .slot-thumb img {
@@ -329,4 +334,20 @@ html, body, #root {
   background: rgba(0, 0, 0, 0.7);
   padding: 1px 3px;
   text-align: center;
+}
+
+.slot-label-b {
+  color: #4CAF50;
+  font-weight: 600;
+}
+
+.slot-entity-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  font-size: 7px;
+  color: #fff;
+  background: rgba(76, 175, 80, 0.8);
+  padding: 0 3px;
+  border-radius: 2px;
 }

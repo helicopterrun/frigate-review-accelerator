@@ -6,9 +6,17 @@ import type {
   SlotResolvedEvent,
 } from "@frigate-review/shared-types";
 import { ViewportSession } from "./viewport-session.js";
-import { resolveTypeABatch } from "../timeline/type-a-resolver.js";
+import { resolveSlotBatch } from "../timeline/slot-resolver.js";
+import { SemanticIndex } from "../semantic/semantic-index.js";
+import { backfillViewportRange } from "../services/http-backfill.js";
 
+// Global semantic index — shared across all viewport sessions
+const semanticIndex = new SemanticIndex();
 const sessions = new Map<string, Map<string, ViewportSession>>();
+
+export function getSemanticIndex(): SemanticIndex {
+  return semanticIndex;
+}
 
 export function registerSocket(server: any) {
   const io = new SocketIOServer(server, {
@@ -36,7 +44,23 @@ export function registerSocket(server: any) {
 
       socket.emit("viewport:subscribed", subscribed);
 
-      // Full resolve on subscribe
+      // HTTP backfill for semantic data before resolution
+      try {
+        const { eventsLoaded, reviewsLoaded } = await backfillViewportRange(
+          semanticIndex,
+          session.viewport.cameraIds,
+          session.viewport.tViewStart,
+          session.viewport.tViewEnd,
+          session.viewport.tWheel,
+        );
+        console.log(
+          `[socket] Backfilled ${eventsLoaded} events, ${reviewsLoaded} reviews. Index size: ${semanticIndex.size()}`,
+        );
+      } catch (err) {
+        console.warn("[socket] Backfill failed, continuing with Type A:", err);
+      }
+
+      // Resolve all slots (Type B with A fallback)
       await resolveAndEmitBatch(socket, session);
     });
 
@@ -47,7 +71,6 @@ export function registerSocket(server: any) {
       session.update(payload);
       const gen = session.nextGeneration();
 
-      // Build the full slot array — use cache hits where possible
       const camera = session.viewport.cameraIds[0];
       const cachedSlots: SlotResolvedEvent[] = [];
       const uncachedSlots = [];
@@ -61,16 +84,7 @@ export function registerSocket(server: any) {
         }
       }
 
-      // If everything is cached, emit immediately
-      if (uncachedSlots.length === 0) {
-        socket.emit("slots:batch_resolved", {
-          viewportId: session.viewport.viewportId,
-          slots: cachedSlots,
-        });
-        return;
-      }
-
-      // Emit cached slots first so the UI updates immediately
+      // Emit cached slots immediately
       if (cachedSlots.length > 0) {
         socket.emit("slots:batch_resolved", {
           viewportId: session.viewport.viewportId,
@@ -78,18 +92,19 @@ export function registerSocket(server: any) {
         });
       }
 
+      if (uncachedSlots.length === 0) return;
+
       // Resolve uncached slots
-      const newResults = await resolveTypeABatch(
+      const newResults = await resolveSlotBatch(
         session.viewport,
         uncachedSlots,
+        semanticIndex,
         session.cache,
         10,
       );
 
-      // Check generation — skip if viewport moved again
       if (session.currentGeneration() !== gen) return;
 
-      // Emit newly resolved slots incrementally
       if (newResults.length > 0) {
         socket.emit("slots:batch_resolved", {
           viewportId: session.viewport.viewportId,
@@ -109,9 +124,10 @@ export function registerSocket(server: any) {
 async function resolveAndEmitBatch(socket: any, session: ViewportSession): Promise<void> {
   const gen = session.nextGeneration();
 
-  const results = await resolveTypeABatch(
+  const results = await resolveSlotBatch(
     session.viewport,
     session.slots,
+    semanticIndex,
     session.cache,
     10,
   );

@@ -146,6 +146,71 @@ export interface TimelineSlot {
   tSlotCenter: number;
 }
 
+// ── Semantic entity model ────────────────────────────────────────────────────
+
+export interface SemanticEntity {
+  id: EventId;
+  camera: CameraName;
+  label: string;
+  subLabel?: string | null;
+
+  startTime: TimestampSec;
+  endTime?: TimestampSec | null;
+
+  score?: number | null;
+  topScore?: number | null;
+  area?: number | null;
+
+  stationary?: boolean | null;
+  positionChanges?: number | null;
+
+  currentZones: string[];
+  enteredZones: string[];
+
+  snapshot?: {
+    available: boolean;
+    frameTime?: TimestampSec | null;
+    score?: number | null;
+    path?: string | null;
+  };
+
+  review?: {
+    reviewId?: string | null;
+    severity?: "alert" | "detection" | "info" | null;
+    reviewed?: boolean | null;
+  };
+
+  enrichments?: {
+    face?: string | null;
+    licensePlate?: string | null;
+    classification?: string | null;
+    description?: string | null;
+  };
+
+  lastUpdated: TimestampSec;
+}
+
+export interface TypeBRequest {
+  cameraFilter: string[];
+  objectFilter?: string[];
+  zoneFilter?: string[];
+  confidenceMin?: number;
+  includeStationary?: boolean;
+  slotStart: TimestampSec;
+  slotEnd: TimestampSec;
+  slotCenter: TimestampSec;
+}
+
+export interface TypeBResult {
+  ok: boolean;
+  eventId?: EventId;
+  score?: number;
+  reason?: string;
+  snapshotTime?: TimestampSec;
+  mediaRef?: string;
+  label?: string;
+}
+
 // ── Media service types ─────────────────────────────────────────────────────
 
 export interface FrameExtractRequest {
