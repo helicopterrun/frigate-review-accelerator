@@ -413,6 +413,15 @@ export default function Timeline({
     // Snap: the center angle is exactly at the center slot index (no fractional)
     const centerAngle = centerSlotIdx * angleStep;
 
+    // Dynamic display radius — proportional to canvas height so ~15 rows are visible
+    const displayRadius = Math.round(h * 0.37);
+
+    // Slot time interval — if < 60s, show seconds in labels
+    const tDivSec = slotDefs.length >= 2
+      ? (slotDefs[1].tSlotStart - slotDefs[0].tSlotStart) / 1000
+      : 60;
+    const showSeconds = tDivSec < 60;
+
     // Icon zone — right portion of canvas
     const iconZoneLeft = Math.round(w * 0.58);
     const iconZoneRight = w - paddingRight;
@@ -426,7 +435,7 @@ export default function Timeline({
       const slotAngle = i * angleStep;
       const angle = shortestAngleDiff(slotAngle, centerAngle);
 
-      const y = Math.sin(angle) * WHEEL.displayRadius;
+      const y = Math.sin(angle) * displayRadius;
       const z = Math.cos(angle);
       const front = Math.max(0, z);
       const shaped = Math.pow(front, WHEEL.depthPower);
@@ -471,7 +480,16 @@ export default function Timeline({
       row.centerReadout.visible = isCenter;
 
       if (!isCenter) {
-        row.simpleText.text = formatHHMM(slotCenterSec, timeFormat);
+        if (showSeconds) {
+          const d = new Date(slotCenterSec * 1000);
+          let hh = d.getHours();
+          const mm = String(d.getMinutes()).padStart(2, '0');
+          const ss = String(d.getSeconds()).padStart(2, '0');
+          if (timeFormat === '12h') { hh = hh % 12 || 12; }
+          row.simpleText.text = `${String(hh).padStart(2, '0')}:${mm}:${ss}`;
+        } else {
+          row.simpleText.text = formatHHMM(slotCenterSec, timeFormat);
+        }
         row.simpleText.x = w * 0.25 + textOffset;
         row.simpleText.y = WHEEL.rowHeight / 2;
         row.simpleText.scale.set(scale, yScale);
