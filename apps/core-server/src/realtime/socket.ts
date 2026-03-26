@@ -31,20 +31,8 @@ export function registerSocket(server: any) {
       const session = new ViewportSession(payload);
       socketSessions.set(payload.viewportId, session);
 
-      const subscribed: ViewportSubscribedEvent = {
-        viewportId: session.viewport.viewportId,
-        cameraIds: session.viewport.cameraIds,
-        tCursor: session.viewport.tCursor,
-        tWheel: session.viewport.tWheel,
-        cSlots: session.viewport.cSlots,
-        serverTime: Date.now() / 1000,
-        playbackState: "SCRUB_REVIEW",
-        semanticFreshness: "recovering",
-      };
-
-      socket.emit("viewport:subscribed", subscribed);
-
       // HTTP backfill for semantic data before resolution
+      let freshness: "live" | "recovering" | "stale" = "recovering";
       try {
         const { eventsLoaded, reviewsLoaded } = await backfillViewportRange(
           semanticIndex,
@@ -56,9 +44,24 @@ export function registerSocket(server: any) {
         console.log(
           `[socket] Backfilled ${eventsLoaded} events, ${reviewsLoaded} reviews. Index size: ${semanticIndex.size()}`,
         );
+        freshness = eventsLoaded > 0 ? "live" : "recovering";
       } catch (err) {
         console.warn("[socket] Backfill failed, continuing with Type A:", err);
+        freshness = "stale";
       }
+
+      const subscribed: ViewportSubscribedEvent = {
+        viewportId: session.viewport.viewportId,
+        cameraIds: session.viewport.cameraIds,
+        tCursor: session.viewport.tCursor,
+        tWheel: session.viewport.tWheel,
+        cSlots: session.viewport.cSlots,
+        serverTime: Date.now() / 1000,
+        playbackState: "SCRUB_REVIEW",
+        semanticFreshness: freshness,
+      };
+
+      socket.emit("viewport:subscribed", subscribed);
 
       // Resolve all slots (Type B with A fallback)
       await resolveAndEmitBatch(socket, session);

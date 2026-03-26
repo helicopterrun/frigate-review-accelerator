@@ -6,8 +6,13 @@ import { useSocket } from './hooks/useSocket.js';
 import { useTimelineAccelerator } from './hooks/useTimelineAccelerator.js';
 import './App.css';
 
+const CAMERAS = [
+  'street-doorbell','street-overview','street-west','street-east',
+  'rooftop-west','street-package','alley-west','alley-east','alley-overview',
+];
+
 export default function App() {
-  const [camera, setCamera] = useState('front_door');
+  const [camera, setCamera] = useState(CAMERAS[0]);
   const { socket, status } = useSocket();
   const tl = useTimelineAccelerator(camera, socket);
 
@@ -16,11 +21,24 @@ export default function App() {
     tl.seek(ts);
   }, [tl.onSeek, tl.seek]);
 
+  const cameraSelector = (
+    <select
+      className="camera-select"
+      value={camera}
+      onChange={e => setCamera(e.target.value)}
+    >
+      {CAMERAS.map(c => <option key={c} value={c}>{c}</option>)}
+    </select>
+  );
+
+  const typeBCount = tl.resolvedSlots.filter(s => s.resolvedStrategy === 'B').length;
+
   if (tl.startTs == null || tl.endTs == null) {
     return (
       <div className="app">
         <header className="app-header">
           <h1>Frigate Review Accelerator</h1>
+          {cameraSelector}
           <span className="socket-status" data-status={status}>
             {status}
           </span>
@@ -36,11 +54,12 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>Frigate Review Accelerator</h1>
+        {cameraSelector}
         <span className="socket-status" data-status={status}>
           {status}
         </span>
         <span className="slot-count">
-          {tl.resolvedSlots.length} / 60 slots
+          {tl.resolvedSlots.length}/60 {'\u00B7'} {typeBCount}B {tl.resolvedSlots.length - typeBCount}A
         </span>
       </header>
       <div className="app-body">

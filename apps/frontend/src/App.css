@@ -245,6 +245,17 @@ html, body, #root {
 
 /* ── Socket status ────────────────────────────────────────────────── */
 
+.camera-select {
+  font-size: 11px;
+  font-family: inherit;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid #333;
+  background: #1a1d27;
+  color: #90c8f0;
+  cursor: pointer;
+}
+
 .socket-status {
   font-size: 11px;
   padding: 2px 8px;
