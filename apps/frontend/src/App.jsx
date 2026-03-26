@@ -61,6 +61,9 @@ export default function App() {
         <span className="slot-count">
           {tl.resolvedSlots.length}/60 {'\u00B7'} {typeBCount}B {tl.resolvedSlots.length - typeBCount}A
         </span>
+        <span className="freshness-badge" data-freshness={tl.semanticFreshness}>
+          {tl.semanticFreshness}
+        </span>
       </header>
       <div className="app-body">
         <aside className="timeline-panel">
@@ -94,7 +97,7 @@ export default function App() {
               {tl.resolvedSlots.map((slot) => (
                 <div
                   key={slot.slotIndex}
-                  className={`slot-thumb ${slot.resolvedStrategy === 'B' ? 'slot-type-b' : ''}`}
+                  className={`slot-thumb ${slot.resolvedStrategy === 'B' ? 'slot-type-b' : ''} ${slot.status === 'dirty' ? 'slot-dirty' : ''}`}
                 >
                   {slot.mediaUrl ? (
                     <img

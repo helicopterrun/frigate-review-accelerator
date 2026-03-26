@@ -18,6 +18,10 @@ export function getSemanticIndex(): SemanticIndex {
   return semanticIndex;
 }
 
+export function getActiveSessions(): Map<string, Map<string, ViewportSession>> {
+  return sessions;
+}
+
 export function registerSocket(server: any) {
   const io = new SocketIOServer(server, {
     cors: { origin: "*" },

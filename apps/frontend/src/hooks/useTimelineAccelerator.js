@@ -21,6 +21,7 @@ export function useTimelineAccelerator(camera, socket) {
   const [rangeSec, setRangeSec] = useState(3600);
   const [resolvedSlots, setResolvedSlots] = useState([]);
   const [subscribed, setSubscribed] = useState(false);
+  const [semanticFreshness, setSemanticFreshness] = useState('recovering');
   const [playbackUrl, setPlaybackUrl] = useState(null);
   const [previewSrc, setPreviewSrc] = useState(null);
   const [playing, setPlaying] = useState(false);
@@ -72,6 +73,23 @@ export function useTimelineAccelerator(camera, socket) {
 
     const handleSubscribed = (payload) => {
       setSubscribed(true);
+      if (payload.semanticFreshness) {
+        setSemanticFreshness(payload.semanticFreshness);
+      }
+    };
+
+    const handleFreshness = (payload) => {
+      if (payload.status) setSemanticFreshness(payload.status);
+    };
+
+    const handleSlotsDirty = (payload) => {
+      if (payload.viewportId !== VIEWPORT_ID) return;
+      // Mark dirty slots visually — they'll be replaced by batch_resolved shortly
+      setResolvedSlots(prev => prev.map(s =>
+        payload.slotIndices?.includes(s.slotIndex)
+          ? { ...s, status: 'dirty' }
+          : s
+      ));
     };
 
     const handleBatchResolved = (payload) => {
@@ -100,6 +118,8 @@ export function useTimelineAccelerator(camera, socket) {
     socket.on('viewport:subscribed', handleSubscribed);
     socket.on('slots:batch_resolved', handleBatchResolved);
     socket.on('slot:resolved', handleSlotResolved);
+    socket.on('slots:dirty', handleSlotsDirty);
+    socket.on('semantic:freshness', handleFreshness);
 
     // Send initial subscription
     socket.emit('viewport:subscribe', {
@@ -118,6 +138,8 @@ export function useTimelineAccelerator(camera, socket) {
       socket.off('viewport:subscribed', handleSubscribed);
       socket.off('slots:batch_resolved', handleBatchResolved);
       socket.off('slot:resolved', handleSlotResolved);
+      socket.off('slots:dirty', handleSlotsDirty);
+      socket.off('semantic:freshness', handleFreshness);
     };
   }, [socket, camera]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -181,6 +203,7 @@ export function useTimelineAccelerator(camera, socket) {
     density,
     resolvedSlots,
     playbackState: 'SCRUB_REVIEW',
+    semanticFreshness,
     playbackUrl,
     preview: previewSrc,
     playing,

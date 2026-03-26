@@ -50,4 +50,10 @@ export class SlotCache {
       }
     }
   }
+
+  /** Invalidate all cached results for a specific (camera, time) pair. */
+  invalidateForTime(camera: string, tSlotCenter: number): void {
+    this.frames.delete(timeKey(camera, tSlotCenter, "A"));
+    this.frames.delete(timeKey(camera, tSlotCenter, "B"));
+  }
 }
