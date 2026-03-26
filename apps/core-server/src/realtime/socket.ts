@@ -9,6 +9,7 @@ import { ViewportSession } from "./viewport-session.js";
 import { resolveSlotBatch } from "../timeline/slot-resolver.js";
 import { SemanticIndex } from "../semantic/semantic-index.js";
 import { backfillViewportRange } from "../services/http-backfill.js";
+import { getMqttStatus } from "../adapters/frigate-mqtt-ingestor.js";
 
 // Global semantic index — shared across all viewport sessions
 const semanticIndex = new SemanticIndex();
@@ -49,6 +50,11 @@ export function registerSocket(server: any) {
           `[socket] Backfilled ${eventsLoaded} events, ${reviewsLoaded} reviews. Index size: ${semanticIndex.size()}`,
         );
         freshness = eventsLoaded > 0 ? "live" : "recovering";
+        // Promote to "live" if MQTT is connected even when no events in range
+        const mqttState = getMqttStatus();
+        if (mqttState.connected && freshness === "recovering") {
+          freshness = "live";
+        }
       } catch (err) {
         console.warn("[socket] Backfill failed, continuing with Type A:", err);
         freshness = "stale";
