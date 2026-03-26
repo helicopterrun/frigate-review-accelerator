@@ -388,3 +388,161 @@ html, body, #root {
   padding: 0 3px;
   border-radius: 2px;
 }
+
+.slot-thumb {
+  cursor: pointer;
+}
+
+.slot-thumb:hover {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* ── Playback controls ───────────────────────────────────────────── */
+
+.playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.pb-btn {
+  font-size: 11px;
+  font-family: inherit;
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid #333;
+  background: #1a1d27;
+  color: #aaa;
+  cursor: pointer;
+}
+
+.pb-btn:hover {
+  background: #252838;
+  color: #ccc;
+}
+
+.pb-play {
+  background: #1e3a5c;
+  color: #90c8f0;
+  border-color: #3a6a9c;
+}
+
+.pb-time {
+  font-size: 12px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.pb-scrubbing {
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Playback state badge ────────────────────────────────────────── */
+
+.playback-badge {
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #888;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.playback-badge[data-state="LIVE_STREAM"] {
+  color: #f44336;
+  background: rgba(244, 67, 54, 0.1);
+}
+
+.playback-badge[data-state="SCRUBBING"] {
+  color: var(--accent);
+  background: rgba(255, 89, 46, 0.1);
+}
+
+.playback-badge[data-state="PLAYBACK_RECORDING"] {
+  color: #4a90d9;
+  background: rgba(74, 144, 217, 0.1);
+}
+
+/* ── Debug toggle ────────────────────────────────────────────────── */
+
+.debug-toggle {
+  font-size: 10px;
+  font-family: inherit;
+  padding: 2px 8px;
+  border-radius: 3px;
+  border: 1px solid #333;
+  background: #1a1d27;
+  color: #666;
+  cursor: pointer;
+}
+
+.debug-toggle:hover {
+  color: #aaa;
+  background: #252838;
+}
+
+/* ── Debug overlay ───────────────────────────────────────────────── */
+
+.debug-overlay {
+  padding: 12px;
+  border-top: 1px solid var(--border);
+  background: #0a0d12;
+  overflow-y: auto;
+  max-height: 300px;
+  font-size: 11px;
+}
+
+.debug-overlay h3 {
+  font-size: 12px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.debug-overlay h4 {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin: 8px 0 4px;
+}
+
+.debug-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.debug-table td,
+.debug-table th {
+  padding: 2px 8px 2px 0;
+  text-align: left;
+  border-bottom: 1px solid #1a1d24;
+}
+
+.debug-table td:first-child,
+.debug-table th:first-child {
+  color: var(--text-dim);
+  white-space: nowrap;
+  width: 100px;
+}
+
+.debug-url {
+  word-break: break-all;
+  font-size: 9px;
+  color: #666;
+}
+
+.debug-b {
+  color: #4CAF50;
+  font-weight: 600;
+}
+
+.debug-slot-table th {
+  font-size: 10px;
+  color: var(--text-dim);
+}

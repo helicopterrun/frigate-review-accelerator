@@ -15,6 +15,7 @@ import { ZOOM_STOPS } from '../utils/constants.js';
 const SLOT_COUNT = 60;
 const VIEWPORT_ID = 'vp_main';
 const DEBOUNCE_MS = 50;
+const SETTLE_DELAY_MS = 400;
 
 export function useTimelineAccelerator(camera, socket) {
   const [cursorTs, setCursorTs] = useState(null);
@@ -22,13 +23,16 @@ export function useTimelineAccelerator(camera, socket) {
   const [resolvedSlots, setResolvedSlots] = useState([]);
   const [subscribed, setSubscribed] = useState(false);
   const [semanticFreshness, setSemanticFreshness] = useState('recovering');
+  const [playbackState, setPlaybackState] = useState('SCRUB_REVIEW');
   const [playbackUrl, setPlaybackUrl] = useState(null);
   const [previewSrc, setPreviewSrc] = useState(null);
   const [playing, setPlaying] = useState(false);
+  const [isScrubbing, setIsScrubbing] = useState(false);
   const [timeline, setTimeline] = useState(null);
   const [density, setDensity] = useState(null);
 
   const updateTimerRef = useRef(null);
+  const settleTimerRef = useRef(null);
   const lastEmitRef = useRef({ tCursor: 0, tWheel: 0 });
 
   // Derived viewport (millisecond units)
@@ -65,6 +69,7 @@ export function useTimelineAccelerator(camera, socket) {
     setPlaybackUrl(null);
     setPreviewSrc(null);
     setPlaying(false);
+    setPlaybackState('SCRUB_REVIEW');
   }, [camera]);
 
   // Subscribe when camera + socket are ready
@@ -73,9 +78,8 @@ export function useTimelineAccelerator(camera, socket) {
 
     const handleSubscribed = (payload) => {
       setSubscribed(true);
-      if (payload.semanticFreshness) {
-        setSemanticFreshness(payload.semanticFreshness);
-      }
+      if (payload.semanticFreshness) setSemanticFreshness(payload.semanticFreshness);
+      if (payload.playbackState) setPlaybackState(payload.playbackState);
     };
 
     const handleFreshness = (payload) => {
@@ -84,7 +88,6 @@ export function useTimelineAccelerator(camera, socket) {
 
     const handleSlotsDirty = (payload) => {
       if (payload.viewportId !== VIEWPORT_ID) return;
-      // Mark dirty slots visually — they'll be replaced by batch_resolved shortly
       setResolvedSlots(prev => prev.map(s =>
         payload.slotIndices?.includes(s.slotIndex)
           ? { ...s, status: 'dirty' }
@@ -95,7 +98,6 @@ export function useTimelineAccelerator(camera, socket) {
     const handleBatchResolved = (payload) => {
       if (payload.viewportId !== VIEWPORT_ID) return;
       setResolvedSlots(prev => {
-        // Merge incoming slots by slotIndex — new results overwrite old
         const map = new Map(prev.map(s => [s.slotIndex, s]));
         for (const slot of payload.slots) {
           map.set(slot.slotIndex, slot);
@@ -115,11 +117,24 @@ export function useTimelineAccelerator(camera, socket) {
       });
     };
 
+    const handlePlaybackState = (payload) => {
+      if (payload.viewportId !== VIEWPORT_ID) return;
+      setPlaybackState(payload.state);
+      if (payload.vodUrl) {
+        setPlaybackUrl(payload.vodUrl);
+        setPlaying(true);
+      }
+      if (payload.state === 'SCRUB_REVIEW') {
+        setPlaying(false);
+      }
+    };
+
     socket.on('viewport:subscribed', handleSubscribed);
     socket.on('slots:batch_resolved', handleBatchResolved);
     socket.on('slot:resolved', handleSlotResolved);
     socket.on('slots:dirty', handleSlotsDirty);
     socket.on('semantic:freshness', handleFreshness);
+    socket.on('playback:state', handlePlaybackState);
 
     // Send initial subscription
     socket.emit('viewport:subscribe', {
@@ -140,6 +155,7 @@ export function useTimelineAccelerator(camera, socket) {
       socket.off('slot:resolved', handleSlotResolved);
       socket.off('slots:dirty', handleSlotsDirty);
       socket.off('semantic:freshness', handleFreshness);
+      socket.off('playback:state', handlePlaybackState);
     };
   }, [socket, camera]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -157,7 +173,7 @@ export function useTimelineAccelerator(camera, socket) {
         viewportId: VIEWPORT_ID,
         tCursor: cursorTs,
         tWheel: rangeSec,
-        clientState: { isScrubbing: false },
+        clientState: { isScrubbing },
       });
       lastEmitRef.current = { tCursor: cursorTs, tWheel: rangeSec };
     }, DEBOUNCE_MS);
@@ -165,7 +181,7 @@ export function useTimelineAccelerator(camera, socket) {
     return () => {
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
     };
-  }, [socket, subscribed, cursorTs, rangeSec]);
+  }, [socket, subscribed, cursorTs, rangeSec, isScrubbing]);
 
   // User actions
   const onSeek = useCallback((ts) => {
@@ -176,6 +192,10 @@ export function useTimelineAccelerator(camera, socket) {
 
   const onPan = useCallback((deltaSec) => {
     setCursorTs(prev => prev != null ? prev + deltaSec : prev);
+    setIsScrubbing(true);
+    // Auto-settle after pause
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = setTimeout(() => setIsScrubbing(false), SETTLE_DELAY_MS);
   }, []);
 
   const onZoomChange = useCallback((newRangeSec) => {
@@ -184,15 +204,43 @@ export function useTimelineAccelerator(camera, socket) {
   }, []);
 
   const onPreviewRequest = useCallback((ts) => {
-    // Preview requests will be handled via media-service in later milestones
-  }, []);
+    // Show the nearest resolved slot's image as preview
+    if (!resolvedSlots.length) return;
+    const nearest = resolvedSlots.reduce((best, slot) =>
+      Math.abs(slot.sourceTimestamp - ts) < Math.abs(best.sourceTimestamp - ts) ? slot : best
+    );
+    if (nearest?.mediaUrl) {
+      setPreviewSrc(nearest.mediaUrl);
+    }
+  }, [resolvedSlots]);
+
+  const onSlotClick = useCallback((slot) => {
+    if (!socket || !slot) return;
+    // Set preview to this slot's image
+    if (slot.mediaUrl) setPreviewSrc(slot.mediaUrl);
+    // Seek cursor to slot center
+    setCursorTs(slot.sourceTimestamp);
+  }, [socket]);
 
   const seek = useCallback((ts) => {
     setCursorTs(ts);
   }, []);
 
-  const play = useCallback(() => setPlaying(true), []);
-  const pause = useCallback(() => setPlaying(false), []);
+  const play = useCallback(() => {
+    if (!socket || cursorTs == null) return;
+    setPlaying(true);
+    socket.emit('playback:request', {
+      viewportId: VIEWPORT_ID,
+      mode: 'play',
+      startTime: cursorTs,
+    });
+  }, [socket, cursorTs]);
+
+  const pause = useCallback(() => {
+    if (!socket) return;
+    setPlaying(false);
+    socket.emit('playback:stop', { viewportId: VIEWPORT_ID });
+  }, [socket]);
 
   return {
     cursorTs,
@@ -202,16 +250,18 @@ export function useTimelineAccelerator(camera, socket) {
     timeline,
     density,
     resolvedSlots,
-    playbackState: 'SCRUB_REVIEW',
+    playbackState,
     semanticFreshness,
     playbackUrl,
     preview: previewSrc,
     playing,
+    isScrubbing,
     subscribed,
     onSeek,
     onPan,
     onZoomChange,
     onPreviewRequest,
+    onSlotClick,
     seek,
     play,
     pause,

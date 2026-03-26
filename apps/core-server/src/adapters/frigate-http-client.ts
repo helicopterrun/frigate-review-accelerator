@@ -100,4 +100,12 @@ export function getMediaServiceSnapshotUrl(eventId: string): string {
   return `/media/snapshot/${encodeURIComponent(eventId)}`;
 }
 
+/**
+ * Build a Frigate VOD (HLS) URL for recording playback.
+ * Frigate 0.17 serves HLS at /vod/{camera}/start/{ts}/end/{ts}/index.m3u8
+ */
+export function getVodUrl(camera: string, startTime: number, endTime: number): string {
+  return `${FRIGATE_URL}/vod/${encodeURIComponent(camera)}/start/${startTime}/end/${endTime}/index.m3u8`;
+}
+
 export { FRIGATE_URL };

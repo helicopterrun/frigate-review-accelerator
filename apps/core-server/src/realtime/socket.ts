@@ -10,6 +10,8 @@ import { resolveSlotBatch } from "../timeline/slot-resolver.js";
 import { SemanticIndex } from "../semantic/semantic-index.js";
 import { backfillViewportRange } from "../services/http-backfill.js";
 import { getMqttStatus } from "../adapters/frigate-mqtt-ingestor.js";
+import { getVodUrl } from "../adapters/frigate-http-client.js";
+import { nextPlaybackState, isCursorNearNow } from "../timeline/playback-state-machine.js";
 
 // Global semantic index — shared across all viewport sessions
 const semanticIndex = new SemanticIndex();
@@ -124,6 +126,37 @@ export function registerSocket(server: any) {
           slots: newResults,
         });
       }
+    });
+
+    socket.on("playback:request", (payload: { viewportId: string; mode: string; startTime: number }) => {
+      const session = socketSessions.get(payload.viewportId);
+      if (!session) return;
+
+      const camera = session.viewport.cameraIds[0];
+      const startTime = payload.startTime;
+      const endTime = startTime + 300; // 5-minute playback window
+
+      const vodUrl = getVodUrl(camera, startTime, endTime);
+
+      socket.emit("playback:state", {
+        viewportId: payload.viewportId,
+        state: "PLAYBACK_RECORDING" as const,
+        tCursor: startTime,
+        recordingReady: true,
+        vodUrl,
+      });
+    });
+
+    socket.on("playback:stop", (payload: { viewportId: string }) => {
+      const session = socketSessions.get(payload.viewportId);
+      if (!session) return;
+
+      socket.emit("playback:state", {
+        viewportId: payload.viewportId,
+        state: "SCRUB_REVIEW" as const,
+        tCursor: session.viewport.tCursor,
+        recordingReady: false,
+      });
     });
 
     socket.on("disconnect", () => {
