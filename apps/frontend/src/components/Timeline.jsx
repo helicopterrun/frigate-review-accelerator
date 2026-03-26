@@ -414,7 +414,10 @@ export default function Timeline({
     const centerAngle = centerSlotIdx * angleStep;
 
     // Dynamic display radius — proportional to canvas height so ~15 rows are visible
-    const displayRadius = Math.round(h * 0.37);
+    const displayRadius = Math.round(h * 0.50);
+
+    // Row pitch = actual pixel distance between adjacent slot dividers
+    const rowPitch = Math.round(Math.sin(angleStep) * displayRadius);
 
     // Slot time interval — if < 60s, show seconds in labels
     const tDivSec = slotDefs.length >= 2
@@ -450,9 +453,9 @@ export default function Timeline({
 
       // Position: center slot's bottom edge aligns with reticle
       if (isCenter) {
-        row.y = reticleY - WHEEL.rowHeight;
+        row.y = reticleY - rowPitch;
       } else {
-        row.y = reticleY + y - WHEEL.rowHeight;
+        row.y = reticleY + y - rowPitch;
       }
       row.visible = true;
 
@@ -467,7 +470,7 @@ export default function Timeline({
       // Divider line — bottom edge of each row
       row.divider.clear();
       const divAlpha = WHEEL.dividerMinAlpha + shaped * WHEEL.dividerFrontAlpha;
-      row.divider.moveTo(0, WHEEL.rowHeight).lineTo(w, WHEEL.rowHeight).stroke({
+      row.divider.moveTo(0, rowPitch).lineTo(w, rowPitch).stroke({
         color: isCenter ? 0xffffff : 0x3a3f4a,
         alpha: isCenter ? 0.9 : divAlpha,
         width: isCenter ? 2 : 1,
@@ -491,7 +494,7 @@ export default function Timeline({
           row.simpleText.text = formatHHMM(slotCenterSec, timeFormat);
         }
         row.simpleText.x = w * 0.25 + textOffset;
-        row.simpleText.y = WHEEL.rowHeight / 2;
+        row.simpleText.y = rowPitch / 2;
         row.simpleText.scale.set(scale, yScale);
         const colorBlend = Math.pow(shaped, 0.5);
         const dimR = 0x40, dimG = 0x44, dimB = 0x4c;
@@ -505,7 +508,7 @@ export default function Timeline({
         const parts = formatParts(cursorTs, timeFormat);
         buildCenterReadout(row.centerReadout, parts, fontFamily);
         row.centerReadout.x = 8;
-        row.centerReadout.y = WHEEL.rowHeight / 2;
+        row.centerReadout.y = rowPitch / 2;
       }
 
       // Detection icons — driven by resolved slot data
@@ -523,7 +526,7 @@ export default function Timeline({
         const icon = createEventIcon(label, tint, 1);
         if (icon) {
           icon.x = iconZoneMid - 15 - sideOffset;
-          icon.y = WHEEL.rowHeight / 2;
+          icon.y = rowPitch / 2;
           icon.scale.set(scale * 1.2);
           row.leftIconSlot.addChild(icon);
         }
@@ -534,7 +537,7 @@ export default function Timeline({
         const dotR = Math.max(2, 6 * scale);
         confDot.circle(0, 0, dotR).fill({ color: tint, alpha: 0.8 });
         confDot.x = iconZoneMid + 15 + sideOffset;
-        confDot.y = WHEEL.rowHeight / 2;
+        confDot.y = rowPitch / 2;
         row.rightIconSlot.addChild(confDot);
       }
 
