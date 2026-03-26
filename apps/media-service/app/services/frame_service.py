@@ -1,6 +1,6 @@
 from app.models.frame import FrameExtractRequest, FrameExtractResponse
 from app.services import cache_manager
-from app.services.frigate_client import fetch_snapshot
+from app.services.ffmpeg_extractor import extract_frame_from_recording
 from app.services.mock_frames import generate_mock_frame
 from app.config import MOCK_MODE
 
@@ -21,24 +21,26 @@ class FrameService:
                 resolved_timestamp=req.timestamp,
             )
 
-        # 2. Try Frigate (unless in mock mode)
+        # 2. Extract frame from Frigate recording via FFmpeg (unless mock mode)
         if not MOCK_MODE:
-            snapshot_data = await fetch_snapshot(req.camera, req.timestamp)
-            if snapshot_data:
+            frame_data = await extract_frame_from_recording(
+                req.camera, req.timestamp, req.width or 320, req.format
+            )
+            if frame_data:
                 media_url = cache_manager.store_cached(
                     req.camera, req.timestamp, req.mode, req.format, req.width,
-                    snapshot_data,
+                    frame_data,
                 )
                 return FrameExtractResponse(
                     ok=True,
                     cache_hit=False,
                     media_url=media_url,
-                    source="frigate_snapshot_api",
+                    source="ffmpeg_recording",
                     requested_timestamp=req.timestamp,
                     resolved_timestamp=req.timestamp,
                 )
 
-        # 3. Mock mode or Frigate unavailable — generate placeholder
+        # 3. Mock mode or extraction failed — generate placeholder
         mock_data = generate_mock_frame(
             req.camera, req.timestamp, req.width or 320, req.format
         )
