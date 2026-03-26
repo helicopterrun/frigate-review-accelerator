@@ -450,13 +450,21 @@ export default function Timeline({
 
       const isCenter = i === centerSlotIdx;
 
+      // Center row gets extra height so its big readout doesn't cover adjacent rows
+      const centerHeight = Math.max(rowPitch * 2.5, 70);
+      const centerExtra = centerHeight - rowPitch;
+
       const row = createWheelRow(fontFamily);
 
       // Position: center slot's bottom edge aligns with reticle
       if (isCenter) {
-        row.y = reticleY - rowPitch;
-      } else {
+        row.y = reticleY - centerHeight;
+      } else if (i > centerSlotIdx) {
+        // Below center: normal position (y is positive, pushes down from reticle)
         row.y = reticleY + y - rowPitch;
+      } else {
+        // Above center: shift up by centerExtra so they don't overlap the taller center
+        row.y = reticleY + y - rowPitch - centerExtra;
       }
       row.visible = true;
 
@@ -469,9 +477,10 @@ export default function Timeline({
       const textOffset = -Math.sin(angle) * WHEEL.textParallax;
 
       // Divider line — bottom edge of each row
+      const thisRowHeight = isCenter ? centerHeight : rowPitch;
       row.divider.clear();
       const divAlpha = WHEEL.dividerMinAlpha + shaped * WHEEL.dividerFrontAlpha;
-      row.divider.moveTo(0, rowPitch).lineTo(w, rowPitch).stroke({
+      row.divider.moveTo(0, thisRowHeight).lineTo(w, thisRowHeight).stroke({
         color: isCenter ? 0xffffff : 0x3a3f4a,
         alpha: isCenter ? 0.9 : divAlpha,
         width: isCenter ? 2 : 1,
@@ -509,7 +518,7 @@ export default function Timeline({
         const parts = formatParts(cursorTs, timeFormat);
         buildCenterReadout(row.centerReadout, parts, fontFamily);
         row.centerReadout.x = 8;
-        row.centerReadout.y = rowPitch / 2;
+        row.centerReadout.y = centerHeight / 2;
       }
 
       // Detection icons — driven by resolved slot data
