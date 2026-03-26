@@ -49,6 +49,7 @@ export async function resolveSlot(
         sourceTimestamp: typeBResult.snapshotTime ?? slot.tSlotCenter,
         winnerEntityId: typeBResult.eventId,
         score: typeBResult.score,
+        label: typeBResult.label,
         cacheHit: false,
         status: "clean",
       };

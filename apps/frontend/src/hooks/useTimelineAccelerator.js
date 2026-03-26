@@ -250,6 +250,7 @@ export function useTimelineAccelerator(camera, socket) {
     timeline,
     density,
     resolvedSlots,
+    slotDefs: slots,
     playbackState,
     semanticFreshness,
     playbackUrl,

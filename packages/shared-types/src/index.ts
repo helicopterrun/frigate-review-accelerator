@@ -84,6 +84,7 @@ export interface SlotResolvedEvent {
   sourceTimestamp: number;
   winnerEntityId?: string;
   score?: number;
+  label?: string;
   cacheHit: boolean;
   status: SlotStatus;
 }

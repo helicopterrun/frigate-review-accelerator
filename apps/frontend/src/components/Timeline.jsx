@@ -241,6 +241,8 @@ export default function Timeline({
   densityData = null,
   activeLabels = null,
   cursorTs,
+  resolvedSlots = [],
+  slotDefs = [],
   onSeek,
   onPan,
   onPreviewRequest = null,
@@ -375,6 +377,13 @@ export default function Timeline({
 
   const drawAllRef = useRef(null);
 
+  // Build a lookup map from slotIndex → resolved slot data
+  const resolvedMap = useMemo(() => {
+    const m = new Map();
+    for (const s of resolvedSlots) m.set(s.slotIndex, s);
+    return m;
+  }, [resolvedSlots]);
+
   const drawAll = useCallback(() => {
     if (!appReadyRef.current) return;
 
@@ -388,44 +397,55 @@ export default function Timeline({
 
     wheelC.removeChildren();
 
-    const tickSec = pickTickInterval(range, h);
-    const currentTickFloat = cursorTs / tickSec;
-    const angleStep = (Math.PI * 2) / 60;
-    const currentAngle = currentTickFloat * angleStep;
-    const baseIndex = Math.floor(currentTickFloat);
-    const halfPool = Math.floor(WHEEL.rowPoolSize / 2);
+    const SLOT_COUNT = slotDefs.length || 60;
+    const angleStep = (Math.PI * 2) / SLOT_COUNT;
+
+    // Find which slot the cursor is in (slot times are in ms, cursorTs is in sec)
+    let centerSlotIdx = 0;
+    for (let i = 0; i < slotDefs.length; i++) {
+      const s = slotDefs[i];
+      if (cursorTs >= s.tSlotStart / 1000 && cursorTs < s.tSlotEnd / 1000) {
+        centerSlotIdx = i;
+        break;
+      }
+    }
+
+    // Snap: the center angle is exactly at the center slot index (no fractional)
+    const centerAngle = centerSlotIdx * angleStep;
 
     // Icon zone — right portion of canvas
     const iconZoneLeft = Math.round(w * 0.58);
     const iconZoneRight = w - paddingRight;
     const iconZoneMid = (iconZoneLeft + iconZoneRight) / 2;
 
-    for (let slot = 0; slot < WHEEL.rowPoolSize; slot++) {
-      const row = createWheelRow(fontFamily);
-      const logicalIndex = baseIndex + (slot - halfPool);
-      const tickTs = logicalIndex * tickSec;
+    for (let i = 0; i < SLOT_COUNT; i++) {
+      const slotDef = slotDefs[i];
+      if (!slotDef) continue;
 
-      if (tickTs < startTs - tickSec * 2 || tickTs > endTs + tickSec * 2) continue;
-
-      const rowAngle = logicalIndex * angleStep;
-      const angle = shortestAngleDiff(rowAngle, currentAngle);
+      const resolved = resolvedMap.get(i);
+      const slotAngle = i * angleStep;
+      const angle = shortestAngleDiff(slotAngle, centerAngle);
 
       const y = Math.sin(angle) * WHEEL.displayRadius;
       const z = Math.cos(angle);
       const front = Math.max(0, z);
       const shaped = Math.pow(front, WHEEL.depthPower);
-      // Alpha drops even faster than scale — use a steeper curve
       const alphaShape = Math.pow(front, WHEEL.depthPower * 1.5);
 
-      const isCenter = Math.abs(angle) < angleStep * 0.5;
+      // Skip rows that are behind the wheel
+      if (z <= WHEEL.visibleBackCutoff) continue;
 
-      // Pin the center row to the reticle line; other rows float on the wheel
+      const isCenter = i === centerSlotIdx;
+
+      const row = createWheelRow(fontFamily);
+
+      // Position: center slot's bottom edge aligns with reticle
       if (isCenter) {
-        row.y = reticleY - WHEEL.rowHeight / 2;
+        row.y = reticleY - WHEEL.rowHeight;
       } else {
-        row.y = reticleY + y - WHEEL.rowHeight / 2;
+        row.y = reticleY + y - WHEEL.rowHeight;
       }
-      row.visible = z > WHEEL.visibleBackCutoff;
+      row.visible = true;
 
       const rowAlpha = WHEEL.minAlpha + alphaShape * (WHEEL.maxAlpha - WHEEL.minAlpha);
       row.alpha = rowAlpha;
@@ -435,25 +455,26 @@ export default function Timeline({
       const sideOffset = (1 - front) * WHEEL.sideParallax;
       const textOffset = -Math.sin(angle) * WHEEL.textParallax;
 
-      // Divider line — full canvas width, fades with row
+      // Divider line — bottom edge of each row
       row.divider.clear();
       const divAlpha = WHEEL.dividerMinAlpha + shaped * WHEEL.dividerFrontAlpha;
       row.divider.moveTo(0, WHEEL.rowHeight).lineTo(w, WHEEL.rowHeight).stroke({
-        color: 0x3a3f4a,
-        alpha: divAlpha,
-        width: 1,
+        color: isCenter ? 0xffffff : 0x3a3f4a,
+        alpha: isCenter ? 0.9 : divAlpha,
+        width: isCenter ? 2 : 1,
       });
+
+      // Time label from slot center
+      const slotCenterSec = slotDef.tSlotCenter / 1000;
 
       row.simpleText.visible = !isCenter;
       row.centerReadout.visible = isCenter;
 
       if (!isCenter) {
-        row.simpleText.text = formatHHMM(tickTs, timeFormat);
-        // Center the text horizontally in the left half of the canvas
+        row.simpleText.text = formatHHMM(slotCenterSec, timeFormat);
         row.simpleText.x = w * 0.25 + textOffset;
         row.simpleText.y = WHEEL.rowHeight / 2;
         row.simpleText.scale.set(scale, yScale);
-        // Blend text color toward dim based on distance from center
         const colorBlend = Math.pow(shaped, 0.5);
         const dimR = 0x40, dimG = 0x44, dimB = 0x4c;
         const brightR = 0xa7, brightG = 0xaf, brightB = 0xbc;
@@ -469,47 +490,34 @@ export default function Timeline({
         row.centerReadout.y = WHEEL.rowHeight / 2;
       }
 
-      // Event icons — placed in right zone, scaled with the row
+      // Detection icons — driven by resolved slot data
       row.leftIconSlot.removeChildren();
       row.rightIconSlot.removeChildren();
 
-      const nearbyEvents = events.filter(evt => {
-        const ts = evt.start_ts ?? evt.start_time ?? evt.timestamp;
-        if (ts == null) return false;
-        return Math.abs(ts - tickTs) < tickSec * 0.5;
-      });
+      if (resolved && resolved.resolvedStrategy === 'B' && resolved.label) {
+        // Type B: show detection icon based on entity label
+        const label = resolved.label;
+        const isPerson = PERSON_LABELS.has(label);
+        const isAnimal = ANIMAL_LABELS.has(label);
+        const col = EVENT_COLORS[label] ?? EVENT_COLORS.default;
+        const tint = isCenter ? RETICLE_COLOR : col;
 
-      const leftEvent =
-        nearbyEvents.find(evt => PERSON_LABELS.has(evt.label)) ??
-        nearbyEvents[0] ??
-        null;
-
-      const rightEvent =
-        nearbyEvents.find(evt => ANIMAL_LABELS.has(evt.label)) ??
-        nearbyEvents[1] ??
-        nearbyEvents[0] ??
-        null;
-
-      if (leftEvent) {
-        const col = EVENT_COLORS[leftEvent.label] ?? EVENT_COLORS.default;
-        const icon = createEventIcon(leftEvent.label, isCenter ? RETICLE_COLOR : col, 1);
+        const icon = createEventIcon(label, tint, 1);
         if (icon) {
-          icon.x = iconZoneMid - 30 - sideOffset;
+          icon.x = iconZoneMid - 15 - sideOffset;
           icon.y = WHEEL.rowHeight / 2;
           icon.scale.set(scale * 1.2);
           row.leftIconSlot.addChild(icon);
         }
-      }
 
-      if (rightEvent) {
-        const col = EVENT_COLORS[rightEvent.label] ?? EVENT_COLORS.default;
-        const icon = createEventIcon(rightEvent.label, isCenter ? RETICLE_COLOR : col, 1);
-        if (icon) {
-          icon.x = iconZoneMid + 30 + sideOffset;
-          icon.y = WHEEL.rowHeight / 2;
-          icon.scale.set(scale * 1.2);
-          row.rightIconSlot.addChild(icon);
-        }
+        // Add a second icon slot for variety (e.g., if there's a secondary detection)
+        // For now, show a filled circle as a confidence indicator
+        const confDot = new PIXI.Graphics();
+        const dotR = Math.max(2, 6 * scale);
+        confDot.circle(0, 0, dotR).fill({ color: tint, alpha: 0.8 });
+        confDot.x = iconZoneMid + 15 + sideOffset;
+        confDot.y = WHEEL.rowHeight / 2;
+        row.rightIconSlot.addChild(confDot);
       }
 
       wheelC.addChild(row);
@@ -530,6 +538,8 @@ export default function Timeline({
     paddingLeft,
     paddingRight,
     createEventIcon,
+    slotDefs,
+    resolvedMap,
   ]);
 
   // Keep drawAllRef in sync so the init effect can call it without a dep cycle

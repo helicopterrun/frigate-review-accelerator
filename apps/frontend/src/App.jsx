@@ -81,6 +81,8 @@ export default function App() {
             events={tl.timeline?.events ?? []}
             densityData={tl.density}
             cursorTs={tl.cursorTs}
+            resolvedSlots={tl.resolvedSlots}
+            slotDefs={tl.slotDefs}
             onSeek={handleSeek}
             onPan={tl.onPan}
             onPreviewRequest={tl.onPreviewRequest}
