@@ -250,6 +250,7 @@ export default function Timeline({
   paddingLeft = 10,
   paddingRight = 8,
 }) {
+  const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const appRef = useRef(null);
   const appReadyRef = useRef(false);
@@ -263,7 +264,7 @@ export default function Timeline({
   const touchPannedRef = useRef(false);
   const animRef = useRef(null);
 
-  const [dims, setDims] = useState({ w: 215, h: 600 });
+  const [dims, setDims] = useState({ w: 420, h: 700 });
 
   const range = endTs - startTs;
   const secondsPerPixel = useMemo(() => (dims.h > 0 ? range / dims.h : 1), [range, dims.h]);
@@ -627,7 +628,7 @@ export default function Timeline({
   }, [dims.w, dims.h]);
 
   useEffect(() => {
-    const el = canvasRef.current;
+    const el = containerRef.current;
     if (!el) return;
     const obs = new ResizeObserver(entries => {
       for (const e of entries) {
@@ -736,7 +737,7 @@ export default function Timeline({
 
   return (
     <div className="timeline-wrapper">
-      <div className="timeline-canvas-container">
+      <div className="timeline-canvas-container" ref={containerRef}>
         <canvas
           ref={canvasRef}
           className="timeline-canvas"
