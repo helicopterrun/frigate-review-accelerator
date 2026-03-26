@@ -76,7 +76,14 @@ export function useTimelineAccelerator(camera, socket) {
 
     const handleBatchResolved = (payload) => {
       if (payload.viewportId !== VIEWPORT_ID) return;
-      setResolvedSlots(payload.slots);
+      setResolvedSlots(prev => {
+        // Merge incoming slots by slotIndex — new results overwrite old
+        const map = new Map(prev.map(s => [s.slotIndex, s]));
+        for (const slot of payload.slots) {
+          map.set(slot.slotIndex, slot);
+        }
+        return Array.from(map.values()).sort((a, b) => a.slotIndex - b.slotIndex);
+      });
     };
 
     const handleSlotResolved = (payload) => {

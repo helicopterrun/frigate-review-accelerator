@@ -7,14 +7,14 @@ export async function resolveTypeASlot(
   slot: TimelineSlot,
   cache: SlotCache,
 ): Promise<SlotResolvedEvent> {
-  // Check cache first
-  const cached = cache.get(slot.index, "A");
-  if (cached) {
-    return { ...cached, cacheHit: true };
-  }
-
   const camera = viewport.cameraIds[0];
   const timestamp = slot.tSlotCenter;
+
+  // Check cache by time
+  const cached = cache.getBestForTime(camera, timestamp);
+  if (cached) {
+    return { ...cached, slotIndex: slot.index, cacheHit: true };
+  }
 
   try {
     const result = await extractFrame({
@@ -35,10 +35,9 @@ export async function resolveTypeASlot(
       status: "clean",
     };
 
-    cache.put(resolved);
+    cache.put(camera, timestamp, resolved);
     return resolved;
-  } catch (err) {
-    // Return a placeholder on failure — don't block the pipeline
+  } catch {
     return {
       viewportId: viewport.viewportId,
       slotIndex: slot.index,
@@ -59,7 +58,6 @@ export async function resolveTypeABatch(
 ): Promise<SlotResolvedEvent[]> {
   const results: SlotResolvedEvent[] = [];
 
-  // Process in batches to avoid overwhelming the media service
   for (let i = 0; i < slots.length; i += concurrency) {
     const batch = slots.slice(i, i + concurrency);
     const batchResults = await Promise.all(

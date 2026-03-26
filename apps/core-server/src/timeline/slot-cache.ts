@@ -1,7 +1,13 @@
 import type { SlotResolvedEvent } from "@frigate-review/shared-types";
 
-function slotKey(slotIndex: number, strategy: string): string {
-  return `${slotIndex}:${strategy}`;
+/**
+ * Server-side frame cache keyed by (camera, tSlotCenter, strategy).
+ * This survives viewport shifts — if a slot center timestamp was already
+ * resolved, we reuse it even at a different slot index.
+ */
+function timeKey(camera: string, tSlotCenter: number, strategy: string): string {
+  // Round to 2 decimal places to avoid floating point key mismatches
+  return `${camera}:${tSlotCenter.toFixed(2)}:${strategy}`;
 }
 
 export class SlotCache {
@@ -12,25 +18,25 @@ export class SlotCache {
     this.maxEntries = maxEntries;
   }
 
-  has(slotIndex: number, strategy: string): boolean {
-    return this.frames.has(slotKey(slotIndex, strategy));
+  hasForTime(camera: string, tSlotCenter: number, strategy: string): boolean {
+    return this.frames.has(timeKey(camera, tSlotCenter, strategy));
   }
 
-  get(slotIndex: number, strategy: string): SlotResolvedEvent | undefined {
-    return this.frames.get(slotKey(slotIndex, strategy));
+  getForTime(camera: string, tSlotCenter: number, strategy: string): SlotResolvedEvent | undefined {
+    return this.frames.get(timeKey(camera, tSlotCenter, strategy));
   }
 
-  getBest(slotIndex: number): SlotResolvedEvent | undefined {
-    return this.get(slotIndex, "B") ?? this.get(slotIndex, "A");
+  getBestForTime(camera: string, tSlotCenter: number): SlotResolvedEvent | undefined {
+    return this.getForTime(camera, tSlotCenter, "B") ?? this.getForTime(camera, tSlotCenter, "A");
   }
 
-  put(frame: SlotResolvedEvent): void {
+  put(camera: string, tSlotCenter: number, frame: SlotResolvedEvent): void {
     if (this.frames.size >= this.maxEntries) {
       // Evict oldest entry
       const firstKey = this.frames.keys().next().value;
       if (firstKey !== undefined) this.frames.delete(firstKey);
     }
-    this.frames.set(slotKey(frame.slotIndex, frame.resolvedStrategy), frame);
+    this.frames.set(timeKey(camera, tSlotCenter, frame.resolvedStrategy), frame);
   }
 
   clear(): void {

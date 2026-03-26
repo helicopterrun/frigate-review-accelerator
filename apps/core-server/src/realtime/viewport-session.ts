@@ -15,28 +15,19 @@ export class ViewportSession {
   }
 
   update(event: ViewportUpdateEvent): { slotsChanged: boolean } {
-    const prevStart = this.viewport.tViewStart;
-    const prevEnd = this.viewport.tViewEnd;
     const prevWheel = this.viewport.tWheel;
 
     this.viewport = updateViewport(this.viewport, event);
     this.slots = computeSlots(this.viewport);
 
-    // If zoom changed, invalidate cache
+    // If zoom changed, invalidate cache since slot boundaries changed
     if (this.viewport.tWheel !== prevWheel) {
       this.cache.clear();
-      return { slotsChanged: true };
     }
 
-    // If viewport shifted, slots changed
-    const slotsChanged =
-      this.viewport.tViewStart !== prevStart ||
-      this.viewport.tViewEnd !== prevEnd;
-
-    return { slotsChanged };
+    return { slotsChanged: true };
   }
 
-  /** Returns an incrementing generation number to detect stale resolution results. */
   nextGeneration(): number {
     return ++this.resolveGeneration;
   }
@@ -45,8 +36,11 @@ export class ViewportSession {
     return this.resolveGeneration;
   }
 
-  /** Get slots that don't have cached Type A results. */
+  /** Get slots that don't have cached Type A results (by time, not index). */
   getUncachedSlots(): TimelineSlot[] {
-    return this.slots.filter((slot) => !this.cache.has(slot.index, "A"));
+    const camera = this.viewport.cameraIds[0];
+    return this.slots.filter(
+      (slot) => !this.cache.hasForTime(camera, slot.tSlotCenter, "A"),
+    );
   }
 }

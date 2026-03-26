@@ -84,7 +84,7 @@ export default function App() {
                     <div className="slot-empty">{slot.slotIndex}</div>
                   )}
                   <span className="slot-label">
-                    {slot.slotIndex} · {slot.resolvedStrategy}
+                    {slot.slotIndex} {'\u00B7'} {slot.resolvedStrategy}
                   </span>
                 </div>
               ))}

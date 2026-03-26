@@ -373,6 +373,8 @@ export default function Timeline({
     placeHintColumn(w - edgeInset, 'NOW', false);
   }
 
+  const drawAllRef = useRef(null);
+
   const drawAll = useCallback(() => {
     if (!appReadyRef.current) return;
 
@@ -530,6 +532,10 @@ export default function Timeline({
     createEventIcon,
   ]);
 
+  // Keep drawAllRef in sync so the init effect can call it without a dep cycle
+  useEffect(() => { drawAllRef.current = drawAll; }, [drawAll]);
+
+  // Init PixiJS app — only re-runs on canvas size change, NOT on drawAll identity
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -565,7 +571,7 @@ export default function Timeline({
       layersRef.current = { bg, wheelC, hintC, reticleC };
 
       appReadyRef.current = true;
-      if (!dead) drawAll();
+      if (!dead) drawAllRef.current?.();
     })();
 
     return () => {
@@ -574,13 +580,20 @@ export default function Timeline({
       appRef.current?.destroy(false);
       appRef.current = null;
     };
-  }, [dims.w, dims.h, drawAll]);
+  }, [dims.w, dims.h]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Redraw when drawAll changes (cursor, zoom, data, etc.)
   useEffect(() => {
     if (!appReadyRef.current) return;
-    appRef.current.renderer.resize(dims.w, dims.h);
     drawAll();
-  }, [dims, drawAll]);
+  }, [drawAll]);
+
+  // Resize renderer when canvas dimensions change
+  useEffect(() => {
+    if (!appReadyRef.current) return;
+    appRef.current?.renderer.resize(dims.w, dims.h);
+    drawAllRef.current?.();
+  }, [dims.w, dims.h]);
 
   useEffect(() => {
     const el = canvasRef.current;
