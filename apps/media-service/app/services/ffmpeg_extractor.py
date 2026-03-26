@@ -1,12 +1,77 @@
-"""Extract multiple frames from a single Frigate recording clip using one FFmpeg process."""
+"""Extract multiple frames from Frigate recordings using FFmpeg.
+
+For efficiency, timestamps are grouped into segments. Each segment
+downloads one short clip from Frigate (covering just the timestamps
+in that group) and runs FFmpeg seeks within it.
+"""
 
 import asyncio
 import tempfile
 import os
 from pathlib import Path
-from typing import List, Tuple
+from typing import List
 
 from app.config import FRIGATE_URL
+
+# Max seconds per clip segment — keeps downloads fast
+MAX_SEGMENT_SEC = 120
+
+
+def _group_timestamps(timestamps: List[float]) -> List[List[float]]:
+    """Group sorted timestamps into segments where each segment spans <= MAX_SEGMENT_SEC."""
+    if not timestamps:
+        return []
+
+    sorted_ts = sorted(timestamps)
+    groups: List[List[float]] = [[sorted_ts[0]]]
+
+    for ts in sorted_ts[1:]:
+        if ts - groups[-1][0] <= MAX_SEGMENT_SEC:
+            groups[-1].append(ts)
+        else:
+            groups.append([ts])
+
+    return groups
+
+
+async def _download_clip(camera: str, start: int, end: int, dest: str) -> bool:
+    """Download a clip from Frigate's recording API."""
+    clip_url = f"{FRIGATE_URL}/api/{camera}/start/{start}/end/{end}/clip.mp4"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "curl", "-s", "-f", "-o", dest, clip_url,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=15)
+        return proc.returncode == 0 and os.path.exists(dest) and os.path.getsize(dest) > 1000
+    except (asyncio.TimeoutError, Exception):
+        return False
+
+
+async def _extract_frame(clip_path: str, offset: float, out_path: str, width: int) -> bool:
+    """Extract a single frame from a clip at the given offset."""
+    ffmpeg_args = [
+        "ffmpeg", "-y",
+        "-ss", f"{max(0, offset):.3f}",
+        "-i", clip_path,
+        "-frames:v", "1",
+        "-q:v", "3",
+    ]
+    if width:
+        ffmpeg_args.extend(["-vf", f"scale={width}:-1"])
+    ffmpeg_args.extend(["-update", "1", out_path])
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *ffmpeg_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=5)
+        return proc.returncode == 0 and os.path.exists(out_path)
+    except (asyncio.TimeoutError, Exception):
+        return False
 
 
 async def extract_frames_batch(
@@ -16,79 +81,40 @@ async def extract_frames_batch(
     fmt: str = "jpg",
 ) -> dict[float, bytes]:
     """
-    Fetch one clip spanning all requested timestamps from Frigate,
-    then use a single FFmpeg process to extract a frame at each timestamp.
-
-    Returns a dict mapping timestamp → frame bytes.
+    Extract frames from Frigate recordings. Timestamps are grouped into
+    segments of <= 2 minutes. Each segment downloads one short clip and
+    runs FFmpeg seeks within it. Much more efficient than one giant clip.
     """
     if not timestamps:
         return {}
 
-    sorted_ts = sorted(timestamps)
-    clip_start = int(sorted_ts[0]) - 1  # 1s margin before first frame
-    clip_end = int(sorted_ts[-1]) + 2    # 1s margin after last frame
-
-    clip_url = f"{FRIGATE_URL}/api/{camera}/start/{clip_start}/end/{clip_end}/clip.mp4"
+    groups = _group_timestamps(timestamps)
+    results: dict[float, bytes] = {}
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        clip_path = os.path.join(tmpdir, "clip.mp4")
+        # Process segments concurrently (up to 4 at a time)
+        sem = asyncio.Semaphore(4)
 
-        # Download the full clip from Frigate
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "curl", "-s", "-f", "-o", clip_path, clip_url,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=30)
+        async def process_segment(group: List[float], seg_idx: int):
+            async with sem:
+                clip_start = int(min(group)) - 1
+                clip_end = int(max(group)) + 2
+                clip_path = os.path.join(tmpdir, f"seg_{seg_idx}.mp4")
 
-            if proc.returncode != 0 or not os.path.exists(clip_path):
-                return {}
+                if not await _download_clip(camera, clip_start, clip_end, clip_path):
+                    return
 
-            if os.path.getsize(clip_path) < 1000:
-                return {}
-        except (asyncio.TimeoutError, Exception):
-            return {}
+                for ts in group:
+                    offset = ts - clip_start
+                    frame_path = os.path.join(tmpdir, f"frame_{ts:.2f}.{fmt}")
+                    if await _extract_frame(clip_path, offset, frame_path, width):
+                        results[ts] = Path(frame_path).read_bytes()
 
-        # Build a single FFmpeg command that extracts all frames using select filter.
-        # Each frame is output at the timestamp's offset from clip start.
-        # We use the select filter with exact PTS matching.
-        results: dict[float, bytes] = {}
+        await asyncio.gather(
+            *(process_segment(group, i) for i, group in enumerate(groups))
+        )
 
-        # FFmpeg select filter: pick frames nearest to each target time
-        # Offset each timestamp relative to clip start
-        offsets = [(ts, ts - clip_start) for ts in sorted_ts]
-
-        # Use FFmpeg with -ss for each frame — sequential seeks within one input.
-        # For efficiency, extract all at once using the fps filter with frame output.
-        # Simplest reliable approach: one -ss seek per frame, but reuse the downloaded clip.
-        for ts, offset in offsets:
-            frame_path = os.path.join(tmpdir, f"frame_{ts:.2f}.{fmt}")
-            try:
-                ffmpeg_args = [
-                    "ffmpeg", "-y",
-                    "-ss", f"{max(0, offset):.3f}",
-                    "-i", clip_path,
-                    "-frames:v", "1",
-                    "-q:v", "3",
-                ]
-                if width:
-                    ffmpeg_args.extend(["-vf", f"scale={width}:-1"])
-                ffmpeg_args.extend(["-update", "1", frame_path])
-
-                proc = await asyncio.create_subprocess_exec(
-                    *ffmpeg_args,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                await asyncio.wait_for(proc.wait(), timeout=5)
-
-                if proc.returncode == 0 and os.path.exists(frame_path):
-                    results[ts] = Path(frame_path).read_bytes()
-            except (asyncio.TimeoutError, Exception):
-                continue
-
-        return results
+    return results
 
 
 async def extract_single_frame(
