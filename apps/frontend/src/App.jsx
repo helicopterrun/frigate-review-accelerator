@@ -94,9 +94,12 @@ export default function App() {
         </aside>
         <main className="video-panel">
           <VideoPlayer
+            camera={camera}
             playback={{ hls_url: tl.playbackUrl }}
             preview={tl.preview}
             playing={tl.playing}
+            liveMode={tl.liveMode}
+            loading={tl.loading}
             onPlay={tl.play}
             onPause={tl.pause}
           />

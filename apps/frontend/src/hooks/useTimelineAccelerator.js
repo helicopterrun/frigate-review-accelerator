@@ -28,6 +28,8 @@ export function useTimelineAccelerator(camera, socket) {
   const [previewSrc, setPreviewSrc] = useState(null);
   const [playing, setPlaying] = useState(false);
   const [isScrubbing, setIsScrubbing] = useState(false);
+  const [liveMode, setLiveMode] = useState(true); // Start in live mode
+  const [loading, setLoading] = useState(true);
   const [timeline, setTimeline] = useState(null);
   const [density, setDensity] = useState(null);
 
@@ -97,12 +99,19 @@ export function useTimelineAccelerator(camera, socket) {
 
     const handleBatchResolved = (payload) => {
       if (payload.viewportId !== VIEWPORT_ID) return;
+      setLoading(false);
       setResolvedSlots(prev => {
         const map = new Map(prev.map(s => [s.slotIndex, s]));
         for (const slot of payload.slots) {
           map.set(slot.slotIndex, slot);
         }
-        return Array.from(map.values()).sort((a, b) => a.slotIndex - b.slotIndex);
+        const sorted = Array.from(map.values()).sort((a, b) => a.slotIndex - b.slotIndex);
+        // Auto-show center slot preview if no preview set yet
+        if (!previewSrc && sorted.length > 0) {
+          const center = sorted[Math.floor(sorted.length / 2)];
+          if (center?.mediaUrl) setPreviewSrc(center.mediaUrl);
+        }
+        return sorted;
       });
     };
 
@@ -201,13 +210,22 @@ export function useTimelineAccelerator(camera, socket) {
     return best.tSlotCenter / 1000;
   }, [slots]);
 
+  // Live mode timer — return to live after 5s of no interaction
+  const liveModeTimerRef = useRef(null);
+  const exitLiveMode = useCallback(() => {
+    setLiveMode(false);
+    if (liveModeTimerRef.current) clearTimeout(liveModeTimerRef.current);
+    liveModeTimerRef.current = setTimeout(() => setLiveMode(true), 5000);
+  }, []);
+
   // User actions
   const onSeek = useCallback((ts) => {
     if (startTs != null && endTs != null) {
       const clamped = clampTs(ts, startTs, endTs);
       setCursorTs(snapToSlot(clamped));
+      exitLiveMode();
     }
-  }, [startTs, endTs, snapToSlot]);
+  }, [startTs, endTs, snapToSlot, exitLiveMode]);
 
   /** Move the cursor by N slots (positive = forward/down toward NOW, negative = back/up toward PAST). */
   const onStepSlots = useCallback((slotDelta) => {
@@ -220,6 +238,7 @@ export function useTimelineAccelerator(camera, socket) {
       return newTs;
     });
     setIsScrubbing(true);
+    exitLiveMode();
     if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
     settleTimerRef.current = setTimeout(() => setIsScrubbing(false), SETTLE_DELAY_MS);
   }, [slotDurationSec, startTs, endTs]);
@@ -241,7 +260,8 @@ export function useTimelineAccelerator(camera, socket) {
   }, [resolvedSlots]);
 
   const onSlotClick = useCallback((slot) => {
-    if (!socket || !slot) return;
+    if (!slot) return;
+    exitLiveMode();
     // Set preview to this slot's image
     if (slot.mediaUrl) setPreviewSrc(slot.mediaUrl);
     // Seek cursor to slot center
@@ -283,6 +303,8 @@ export function useTimelineAccelerator(camera, socket) {
     preview: previewSrc,
     playing,
     isScrubbing,
+    liveMode,
+    loading,
     subscribed,
     onSeek,
     onStepSlots,

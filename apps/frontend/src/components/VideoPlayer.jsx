@@ -1,11 +1,45 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 
-export default function VideoPlayer({ playback, preview, playing, onPlay, onPause, onTimeUpdate }) {
+const FRIGATE_URL = 'http://192.168.50.207:5000';
+const LIVE_REFRESH_MS = 1000;
+
+export default function VideoPlayer({
+  camera,
+  playback,
+  preview,
+  playing,
+  liveMode,
+  loading,
+  onPlay,
+  onPause,
+  onTimeUpdate,
+}) {
   const videoRef = useRef(null);
+  const [liveSrc, setLiveSrc] = useState(null);
+  const liveTimerRef = useRef(null);
 
-  // Use HLS URL if available, fallback to stream_url
   const videoSrc = playback?.hls_url || playback?.stream_url || null;
 
+  // Live view: poll latest.jpg every second
+  useEffect(() => {
+    if (!liveMode || !camera) {
+      setLiveSrc(null);
+      if (liveTimerRef.current) clearInterval(liveTimerRef.current);
+      return;
+    }
+
+    const refresh = () => {
+      setLiveSrc(`${FRIGATE_URL}/api/${camera}/latest.jpg?t=${Date.now()}`);
+    };
+    refresh();
+    liveTimerRef.current = setInterval(refresh, LIVE_REFRESH_MS);
+
+    return () => {
+      if (liveTimerRef.current) clearInterval(liveTimerRef.current);
+    };
+  }, [liveMode, camera]);
+
+  // HLS/VOD playback
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid || !videoSrc) return;
@@ -25,9 +59,23 @@ export default function VideoPlayer({ playback, preview, playing, onPlay, onPaus
     }
   }, [playing]);
 
+  // Determine what to show
+  const showLive = liveMode && liveSrc && !playing;
+  const showPreview = !showLive && preview && !playing;
+  const showVideo = playing && videoSrc;
+  const showLoading = loading && !showLive && !showPreview && !showVideo;
+  const showPlaceholder = !showLive && !showPreview && !showVideo && !showLoading;
+
   return (
     <div className="video-player">
-      {preview && !playing && (
+      {showLive && (
+        <div className="live-view">
+          <img src={liveSrc} alt="Live" className="live-img" />
+          <span className="live-badge">LIVE</span>
+        </div>
+      )}
+
+      {showPreview && (
         <img
           src={preview}
           alt="Preview"
@@ -35,19 +83,28 @@ export default function VideoPlayer({ playback, preview, playing, onPlay, onPaus
           onClick={onPlay}
         />
       )}
+
       <video
         ref={videoRef}
         className="video-el"
-        style={{ display: playing && videoSrc ? 'block' : 'none' }}
+        style={{ display: showVideo ? 'block' : 'none' }}
         onPause={onPause}
         onPlay={onPlay}
         onTimeUpdate={(e) => onTimeUpdate?.(e.target.currentTime)}
         playsInline
         controls
       />
-      {!preview && !videoSrc && (
+
+      {showLoading && (
         <div className="video-placeholder">
-          Select a point on the timeline
+          <div className="loading-spinner" />
+          <span>Loading frames...</span>
+        </div>
+      )}
+
+      {showPlaceholder && (
+        <div className="video-placeholder">
+          Scroll the timeline to browse recordings
         </div>
       )}
     </div>
