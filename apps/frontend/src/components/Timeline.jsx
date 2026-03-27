@@ -9,6 +9,31 @@ import {
   DAMPING, K, K_TOUCH,
 } from '../utils/constants.js';
 
+// Static Lucide SVG imports — Vite resolves these at build time
+import lucideUser from 'lucide-static/icons/user.svg?url';
+import lucideScanFace from 'lucide-static/icons/scan-face.svg?url';
+import lucideCar from 'lucide-static/icons/car.svg?url';
+import lucideBike from 'lucide-static/icons/bike.svg?url';
+import lucideTruck from 'lucide-static/icons/truck.svg?url';
+import lucideMail from 'lucide-static/icons/mail.svg?url';
+import lucideBone from 'lucide-static/icons/bone.svg?url';
+import lucidePawPrint from 'lucide-static/icons/paw-print.svg?url';
+import lucidePackage from 'lucide-static/icons/package.svg?url';
+import lucideBird from 'lucide-static/icons/bird.svg?url';
+
+const LUCIDE_SVG_URLS = {
+  'user': lucideUser,
+  'scan-face': lucideScanFace,
+  'car': lucideCar,
+  'bike': lucideBike,
+  'truck': lucideTruck,
+  'mail': lucideMail,
+  'bone': lucideBone,
+  'paw-print': lucidePawPrint,
+  'package': lucidePackage,
+  'bird': lucideBird,
+};
+
 const WHEEL = {
   rowHeight: 112,
   displayRadius: 900,
@@ -44,6 +69,17 @@ async function createApp(canvas, w, h) {
     preference: 'webgpu',
   });
   return app;
+}
+
+function makeSprite(tex, { w, h, ax = 0.5, ay = 0.5, tint = 0xFFFFFF, alpha = 1 } = {}) {
+  if (!tex) return null;
+  const s = new PIXI.Sprite(tex);
+  s.anchor.set(ax, ay);
+  if (w != null) s.width = w;
+  if (h != null) s.height = h;
+  s.tint = tint;
+  s.alpha = alpha;
+  return s;
 }
 
 // ── Lucide icon mapping (label → lucide icon name) ──────────────────────────
@@ -592,15 +628,11 @@ export default function Timeline({
         tex.rtclDot = await PIXI.Assets.load(ASSET_PATHS.rtclDot);
         tex.arrow = await PIXI.Assets.load(ASSET_PATHS.arrow);
 
-        // Load Lucide icons as PIXI textures
+        // Load Lucide icons as PIXI textures (static imports resolved by Vite)
         tex.lucide = {};
-        for (const name of LUCIDE_ICONS_TO_LOAD) {
+        for (const [name, url] of Object.entries(LUCIDE_SVG_URLS)) {
           try {
-            const svgUrl = new URL(
-              `../../node_modules/lucide-static/icons/${name}.svg`,
-              import.meta.url,
-            ).href;
-            tex.lucide[name] = await PIXI.Assets.load(svgUrl);
+            tex.lucide[name] = await PIXI.Assets.load(url);
           } catch {
             console.warn(`[Timeline] Failed to load lucide icon: ${name}`);
           }
