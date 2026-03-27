@@ -84,7 +84,7 @@ export default function App() {
             resolvedSlots={tl.resolvedSlots}
             slotDefs={tl.slotDefs}
             onSeek={handleSeek}
-            onPan={tl.onPan}
+            onStepSlots={tl.onStepSlots}
             onPreviewRequest={tl.onPreviewRequest}
           />
           <ZoomControls

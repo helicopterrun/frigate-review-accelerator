@@ -244,7 +244,7 @@ export default function Timeline({
   resolvedSlots = [],
   slotDefs = [],
   onSeek,
-  onPan,
+  onStepSlots,
   onPreviewRequest = null,
   timeFormat = '12h',
   paddingLeft = 10,
@@ -653,96 +653,82 @@ export default function Timeline({
     if (animRef.current?.rafId) cancelAnimationFrame(animRef.current.rafId);
   }, []);
 
-  const decayScroll = useCallback(() => {
-    const DEAD = secondsPerPixel * 0.002;
-    const rs = endTs - startTs;
-    const zf = Math.min(1.0, rs / 3600);
+  // ── Slot-step scroll handling ──────────────────────────────────────────────
+  // Mouse wheel and touch gestures advance by whole slots, no velocity/momentum.
 
-    scrollVelocityRef.current *= 0.88 + (DAMPING - 0.88) * zf;
-
-    if (Math.abs(scrollVelocityRef.current) < DEAD) {
-      scrollVelocityRef.current = 0;
-      scrollRafRef.current = null;
-      return;
-    }
-
-    onPan(scrollVelocityRef.current);
-    scrollRafRef.current = requestAnimationFrame(decayScroll);
-  }, [onPan, secondsPerPixel, endTs, startTs]);
+  // Accumulate scroll delta to trigger slot steps at a threshold
+  const scrollAccumRef = useRef(0);
+  const SCROLL_THRESHOLD = 40; // pixels of scroll delta to trigger one slot step
 
   const handleWheel = useCallback((e) => {
-    if (!onPan) return;
+    if (!onStepSlots) return;
     e.preventDefault();
 
-    if (scrollRafRef.current) {
-      cancelAnimationFrame(scrollRafRef.current);
-      scrollRafRef.current = null;
+    scrollAccumRef.current += e.deltaY;
+
+    // Each threshold crossing = one slot step
+    while (Math.abs(scrollAccumRef.current) >= SCROLL_THRESHOLD) {
+      const dir = scrollAccumRef.current > 0 ? -1 : 1; // scroll down = toward PAST (earlier), up = toward NOW
+      onStepSlots(dir);
+      scrollAccumRef.current -= Math.sign(scrollAccumRef.current) * SCROLL_THRESHOLD;
     }
-
-    const nd = Math.sign(e.deltaY) * Math.min(Math.abs(e.deltaY), 15);
-    const curved = Math.sign(nd) * (nd / 15) ** 2 * 15;
-    const zf = Math.min(1.0, (endTs - startTs) / 3600);
-
-    scrollVelocityRef.current += curved * secondsPerPixel * K * (0.3 + 0.7 * zf);
-    onPan(scrollVelocityRef.current);
-
-    const maxV = Math.min((endTs - startTs) * 0.10, 3600);
-    scrollVelocityRef.current = Math.max(-maxV, Math.min(maxV, scrollVelocityRef.current));
-
-    scrollRafRef.current = requestAnimationFrame(decayScroll);
-  }, [onPan, secondsPerPixel, endTs, startTs, decayScroll]);
+  }, [onStepSlots]);
 
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
-
     c.addEventListener('wheel', handleWheel, { passive: false });
-    return () => {
-      c.removeEventListener('wheel', handleWheel);
-      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-    };
+    return () => c.removeEventListener('wheel', handleWheel);
   }, [handleWheel]);
 
-  const getTs = useCallback(e => {
+  // Click on canvas → snap to nearest slot at that Y position
+  const handleClick = useCallback((e) => {
     const r = canvasRef.current?.getBoundingClientRect();
-    return r ? yToTs(e.clientY - r.top) : null;
-  }, [yToTs]);
+    if (!r) return;
+    const ts = yToTs(e.clientY - r.top);
+    if (ts != null) onSeek?.(ts);
+  }, [yToTs, onSeek]);
 
-  const handleMouseDown = useCallback(() => {
-    isDragging.current = true;
+  // Touch: track drag distance, step by slots
+  const touchAccumRef = useRef(0);
+  const TOUCH_THRESHOLD = 30;
+
+  const handleTouchStart = useCallback((e) => {
+    e.preventDefault();
+    touchPannedRef.current = false;
+    touchAccumRef.current = 0;
+    touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
   }, []);
 
-  const handleMouseUp = useCallback((e) => {
-    if (!isDragging.current) return;
-    isDragging.current = false;
+  const handleTouchMove = useCallback((e) => {
+    e.preventDefault();
+    if (!onStepSlots) return;
+    const t = e.touches[0];
+    const dy = t.clientY - (touchStartRef.current?.y ?? t.clientY);
 
-    const ts = getTs(e);
-    if (ts == null) return;
+    touchAccumRef.current += dy;
+    touchStartRef.current = { x: t.clientX, y: t.clientY };
 
-    const from = cursorTs;
-    const t0 = performance.now();
-
-    if (animRef.current?.rafId) cancelAnimationFrame(animRef.current.rafId);
-
-    function tick(now) {
-      const p = Math.min((now - t0) / 250, 1);
-      const interp = from + (ts - from) * (1 - (1 - p) ** 3);
-      onSeek?.(interp);
-      if (p < 1) animRef.current = { rafId: requestAnimationFrame(tick) };
-      else animRef.current = null;
+    while (Math.abs(touchAccumRef.current) >= TOUCH_THRESHOLD) {
+      const dir = touchAccumRef.current > 0 ? -1 : 1;
+      onStepSlots(dir);
+      touchAccumRef.current -= Math.sign(touchAccumRef.current) * TOUCH_THRESHOLD;
+      touchPannedRef.current = true;
     }
+  }, [onStepSlots]);
 
-    animRef.current = { rafId: requestAnimationFrame(tick) };
-  }, [getTs, onSeek, cursorTs]);
-
-  const handleMouseLeave = useCallback(() => {
-    scrollVelocityRef.current = 0;
-    if (scrollRafRef.current) {
-      cancelAnimationFrame(scrollRafRef.current);
-      scrollRafRef.current = null;
+  const handleTouchEnd = useCallback((e) => {
+    e.preventDefault();
+    if (!touchPannedRef.current) {
+      // Tap (no pan) → seek to tapped position
+      const t = e.changedTouches[0];
+      const r = canvasRef.current?.getBoundingClientRect();
+      if (r) {
+        const ts = yToTs(t.clientY - r.top);
+        if (ts != null) onSeek?.(ts);
+      }
     }
-    isDragging.current = false;
-  }, []);
+  }, [yToTs, onSeek]);
 
   return (
     <div className="timeline-wrapper">
@@ -750,62 +736,10 @@ export default function Timeline({
         <canvas
           ref={canvasRef}
           className="timeline-canvas"
-          onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseLeave}
-          onMouseMove={e => {
-            if (!onPreviewRequest) return;
-            const ts = getTs(e);
-            if (ts != null) onPreviewRequest(ts);
-          }}
-          onTouchStart={e => {
-            scrollVelocityRef.current = 0;
-            touchPannedRef.current = false;
-            if (scrollRafRef.current) {
-              cancelAnimationFrame(scrollRafRef.current);
-              scrollRafRef.current = null;
-            }
-            e.preventDefault();
-            e.stopPropagation();
-            const t = e.touches[0];
-            touchStartRef.current = { x: t.clientX, y: t.clientY };
-            handleMouseDown();
-          }}
-          onTouchMove={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            const t = e.touches[0];
-            const dy = t.clientY - (touchStartRef.current?.y ?? t.clientY);
-
-            if (Math.abs(dy) > 5 && onPan) {
-              touchPannedRef.current = true;
-              if (scrollRafRef.current) {
-                cancelAnimationFrame(scrollRafRef.current);
-                scrollRafRef.current = null;
-              }
-              const nd = Math.sign(dy) * Math.min(Math.abs(dy), 60);
-              const curved = Math.sign(nd) * (nd / 60) ** 2 * 60;
-              const zf = Math.min(1.0, (endTs - startTs) / 3600);
-              scrollVelocityRef.current = curved * secondsPerPixel * K_TOUCH * (0.3 + 0.7 * zf);
-              onPan(scrollVelocityRef.current);
-              touchStartRef.current = { x: t.clientX, y: t.clientY };
-            }
-          }}
-          onTouchEnd={e => {
-            e.preventDefault();
-            e.stopPropagation();
-            const t = e.changedTouches[0];
-
-            if (touchPannedRef.current) {
-              if (Math.abs(scrollVelocityRef.current) > secondsPerPixel * 0.002) {
-                if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current);
-                scrollRafRef.current = requestAnimationFrame(decayScroll);
-              }
-              isDragging.current = false;
-            } else {
-              handleMouseUp({ clientX: t.clientX, clientY: t.clientY });
-            }
-          }}
+          onClick={handleClick}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         />
       </div>
     </div>

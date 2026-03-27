@@ -183,20 +183,46 @@ export function useTimelineAccelerator(camera, socket) {
     };
   }, [socket, subscribed, cursorTs, rangeSec, isScrubbing]);
 
+  // Slot duration in seconds (derived from viewport)
+  const slotDurationSec = useMemo(() => {
+    if (slots.length < 2) return rangeSec / SLOT_COUNT;
+    return (slots[1].tSlotStart - slots[0].tSlotStart) / 1000;
+  }, [slots, rangeSec]);
+
+  // Snap a timestamp to the nearest slot center
+  const snapToSlot = useCallback((ts) => {
+    if (slots.length === 0) return ts;
+    let best = slots[0];
+    let bestDist = Math.abs(ts - best.tSlotCenter / 1000);
+    for (const s of slots) {
+      const dist = Math.abs(ts - s.tSlotCenter / 1000);
+      if (dist < bestDist) { best = s; bestDist = dist; }
+    }
+    return best.tSlotCenter / 1000;
+  }, [slots]);
+
   // User actions
   const onSeek = useCallback((ts) => {
     if (startTs != null && endTs != null) {
-      setCursorTs(clampTs(ts, startTs, endTs));
+      const clamped = clampTs(ts, startTs, endTs);
+      setCursorTs(snapToSlot(clamped));
     }
-  }, [startTs, endTs]);
+  }, [startTs, endTs, snapToSlot]);
 
-  const onPan = useCallback((deltaSec) => {
-    setCursorTs(prev => prev != null ? prev + deltaSec : prev);
+  /** Move the cursor by N slots (positive = forward/down toward NOW, negative = back/up toward PAST). */
+  const onStepSlots = useCallback((slotDelta) => {
+    setCursorTs(prev => {
+      if (prev == null) return prev;
+      const newTs = prev + slotDelta * slotDurationSec;
+      if (startTs != null && endTs != null) {
+        return clampTs(newTs, startTs, endTs);
+      }
+      return newTs;
+    });
     setIsScrubbing(true);
-    // Auto-settle after pause
     if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
     settleTimerRef.current = setTimeout(() => setIsScrubbing(false), SETTLE_DELAY_MS);
-  }, []);
+  }, [slotDurationSec, startTs, endTs]);
 
   const onZoomChange = useCallback((newRangeSec) => {
     const clamped = Math.max(ZOOM_STOPS[0], Math.min(ZOOM_STOPS[ZOOM_STOPS.length - 1], newRangeSec));
@@ -259,7 +285,7 @@ export function useTimelineAccelerator(camera, socket) {
     isScrubbing,
     subscribed,
     onSeek,
-    onPan,
+    onStepSlots,
     onZoomChange,
     onPreviewRequest,
     onSlotClick,
