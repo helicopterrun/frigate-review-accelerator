@@ -46,22 +46,24 @@ async function createApp(canvas, w, h) {
   return app;
 }
 
-function makeSprite(tex, { w, h, ax = 0.5, ay = 0.5, tint = 0xFFFFFF, alpha = 1 } = {}) {
-  if (!tex) return null;
-  const s = new PIXI.Sprite(tex);
-  s.anchor.set(ax, ay);
-  if (w != null) s.width = w;
-  if (h != null) s.height = h;
-  s.tint = tint;
-  s.alpha = alpha;
-  return s;
-}
+// ── Lucide icon mapping (label → lucide icon name) ──────────────────────────
 
-function makeFallbackCircle(color, alpha = 1) {
-  const g = new PIXI.Graphics();
-  g.circle(0, 0, ICON_FALLBACK_R).fill({ color, alpha });
-  return g;
-}
+const LABEL_TO_LUCIDE = {
+  person: 'user', face: 'scan-face',
+  car: 'car', motorcycle: 'bike', bicycle: 'bike',
+  licence_plate: 'car',
+  amazon: 'truck', fedex: 'truck', ups: 'truck', dhl: 'truck',
+  usps: 'mail',
+  dog: 'bone', cat: 'paw-print', deer: 'paw-print', raccoon: 'paw-print',
+  squirrel: 'paw-print', rabbit: 'paw-print',
+  package: 'package', bird: 'bird',
+};
+
+// All unique lucide icon names we need to preload
+const LUCIDE_ICONS_TO_LOAD = [
+  'user', 'scan-face', 'car', 'bike', 'truck', 'mail',
+  'bone', 'paw-print', 'package', 'bird',
+];
 
 function shortestAngleDiff(a, b) {
   const TAU = Math.PI * 2;
@@ -109,7 +111,7 @@ function createWheelRow(fontFamily) {
     text: '12:00',
     style: new PIXI.TextStyle({
       fontFamily,
-      fontSize: 48,
+      fontSize: 30,
       fontWeight: '500',
       fill: '#a7afbc',
     }),
@@ -172,7 +174,7 @@ function buildCenterReadout(container, parts, fontFamily) {
     text,
     style: new PIXI.TextStyle({
       fontFamily,
-      fontSize: 36,
+      fontSize: 44,
       fontWeight: '700',
       fill: color,
       letterSpacing: -1,
@@ -275,19 +277,6 @@ export default function Timeline({
   );
 
   const fontFamily = 'IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, monospace';
-
-  const createEventIcon = useCallback((label, tint, alpha = 1) => {
-    const isPerson = PERSON_LABELS.has(label);
-    const isAnimal = ANIMAL_LABELS.has(label);
-    const tex = isPerson ? texRef.current.person : isAnimal ? texRef.current.animal : null;
-
-    if (tex) {
-      const dim = isPerson ? ICON_SIZE_PERSON : ICON_SIZE_ANIMAL;
-      return makeSprite(tex, { w: dim.w, h: dim.h, tint, alpha });
-    }
-
-    return makeFallbackCircle(tint, alpha);
-  }, []);
 
   // Reticle bar — the rtcl-bar SVG already has triangular endpoints built in,
   // so we just stretch it from the midpoint to the right edge. No dots needed.
@@ -521,34 +510,40 @@ export default function Timeline({
         row.centerReadout.y = centerHeight / 2;
       }
 
-      // Detection icons — driven by resolved slot data
+      // Detection icons — driven by resolved slot data, using Lucide textures
       row.leftIconSlot.removeChildren();
       row.rightIconSlot.removeChildren();
 
       if (resolved && resolved.resolvedStrategy === 'B' && resolved.label) {
-        // Type B: show detection icon based on entity label
         const label = resolved.label;
-        const isPerson = PERSON_LABELS.has(label);
-        const isAnimal = ANIMAL_LABELS.has(label);
+        const lucideName = LABEL_TO_LUCIDE[label] ?? 'user';
         const col = EVENT_COLORS[label] ?? EVENT_COLORS.default;
         const tint = isCenter ? RETICLE_COLOR : col;
+        const iconY = isCenter ? centerHeight / 2 : rowPitch / 2;
 
-        const icon = createEventIcon(label, tint, 1);
-        if (icon) {
-          icon.x = iconZoneMid - 15 - sideOffset;
-          icon.y = rowPitch / 2;
-          icon.scale.set(scale * 1.2);
-          row.leftIconSlot.addChild(icon);
+        // Target icon size scales with wheel depth
+        const baseSize = 18;
+        const iconSize = Math.max(6, baseSize * scale);
+
+        const lucideTex = texRef.current?.lucide?.[lucideName];
+        if (lucideTex) {
+          const sprite = new PIXI.Sprite(lucideTex);
+          sprite.anchor.set(0.5, 0.5);
+          sprite.width = iconSize;
+          sprite.height = iconSize;
+          sprite.tint = tint;
+          sprite.x = iconZoneMid - 10;
+          sprite.y = iconY;
+          row.leftIconSlot.addChild(sprite);
         }
 
-        // Add a second icon slot for variety (e.g., if there's a secondary detection)
-        // For now, show a filled circle as a confidence indicator
-        const confDot = new PIXI.Graphics();
-        const dotR = Math.max(2, 6 * scale);
-        confDot.circle(0, 0, dotR).fill({ color: tint, alpha: 0.8 });
-        confDot.x = iconZoneMid + 15 + sideOffset;
-        confDot.y = rowPitch / 2;
-        row.rightIconSlot.addChild(confDot);
+        // Confidence dot next to the icon
+        const dotR = Math.max(2, 4 * scale);
+        const dot = new PIXI.Graphics();
+        dot.circle(0, 0, dotR).fill({ color: tint });
+        dot.x = iconZoneMid + 10;
+        dot.y = iconY;
+        row.rightIconSlot.addChild(dot);
       }
 
       wheelC.addChild(row);
@@ -568,7 +563,6 @@ export default function Timeline({
     timeFormat,
     paddingLeft,
     paddingRight,
-    createEventIcon,
     slotDefs,
     resolvedMap,
   ]);
@@ -593,14 +587,28 @@ export default function Timeline({
 
       try {
         const tex = {};
+        // Load reticle/hint assets
         tex.rtclBar = await PIXI.Assets.load(ASSET_PATHS.rtclBar);
         tex.rtclDot = await PIXI.Assets.load(ASSET_PATHS.rtclDot);
-        tex.person = await PIXI.Assets.load(ASSET_PATHS.person);
-        tex.animal = await PIXI.Assets.load(ASSET_PATHS.animal);
         tex.arrow = await PIXI.Assets.load(ASSET_PATHS.arrow);
+
+        // Load Lucide icons as PIXI textures
+        tex.lucide = {};
+        for (const name of LUCIDE_ICONS_TO_LOAD) {
+          try {
+            const svgUrl = new URL(
+              `../../node_modules/lucide-static/icons/${name}.svg`,
+              import.meta.url,
+            ).href;
+            tex.lucide[name] = await PIXI.Assets.load(svgUrl);
+          } catch {
+            console.warn(`[Timeline] Failed to load lucide icon: ${name}`);
+          }
+        }
+
         texRef.current = tex;
       } catch (e) {
-        console.warn('[Timeline] SVG load failed:', e.message);
+        console.warn('[Timeline] Asset load failed:', e.message);
       }
 
       const bg = new PIXI.Graphics();

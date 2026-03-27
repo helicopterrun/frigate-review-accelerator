@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@frigate-review/shared-types": "0.0.1",
+    "lucide-static": "^1.7.0",
     "pixi.js": "^8.6.6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
