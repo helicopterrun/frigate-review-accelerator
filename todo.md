@@ -38,12 +38,13 @@
 - [x] MQTT reconnect gap-fill: back-fills missed events using ingest_state window + 60s buffer
 
 ### M3 — MQTT Freshness + Dirty Slots
-- [ ] MQTT ingest: frigate/events, frigate/tracked_object_update, frigate/reviews
-- [ ] Normalize MQTT payloads → SemanticIndex upsert
-- [ ] Range-based dirty slot invalidation on MQTT event
-- [ ] semantic:freshness events (live / recovering / stale)
-- [ ] Reconnect recovery: detect gap, HTTP backfill missed range, resume MQTT
-- [ ] ingest_state checkpoint tracking in SQLite
+- [x] MQTT ingest: frigate/events, frigate/tracked_object_update, frigate/reviews
+- [x] Normalize MQTT payloads → SemanticIndex upsert (extractEnrichments, applyEnrichmentUpdate)
+- [x] Range-based dirty slot invalidation on MQTT event (invalidateRangeForAllSessions)
+- [x] semantic:freshness events (live / recovering / stale) — including silence-based staleness timer
+- [x] Reconnect recovery: gap-fill using ingest_state window + 60s buffer
+- [x] ingest_state checkpoint tracking in SQLite per source+camera
+- [x] enrichments_json persisted and hydrated (migration 3)
 
 ### M4 — Playback + Polish
 - [ ] Full playback state machine (LIVE_STREAM, SCRUBBING, SCRUB_REVIEW, PLAYBACK_RECORDING, FOLLOW_NOW_IDLE)
