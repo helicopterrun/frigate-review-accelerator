@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.frame import router as frame_router
@@ -9,6 +10,13 @@ from app.services.cache_manager import ensure_cache_dir
 from app.config import CACHE_DIR, MOCK_MODE, FRIGATE_URL
 
 app = FastAPI(title="Frigate Review Accelerator Media Service")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 ensure_cache_dir()
 

@@ -1,5 +1,18 @@
 const FRIGATE_URL = process.env.FRIGATE_URL ?? "http://192.168.50.207:5000";
 
+// URL used in links sent to the browser. In production behind nginx, set
+// FRIGATE_PUBLIC_URL to the proxy prefix (e.g. /frigate or
+// https://your-domain.com/frigate). Defaults to FRIGATE_URL for local dev.
+const FRIGATE_CLIENT_URL = process.env.FRIGATE_PUBLIC_URL ?? FRIGATE_URL;
+
+const FETCH_TIMEOUT_MS = 5000;
+
+function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 // ── Raw Frigate API response types ──────────────────────────────────────────
 
 export interface FrigateRawEvent {
@@ -67,7 +80,7 @@ export async function fetchEvents(params: {
     url.searchParams.set("camera", params.cameras[0]);
   }
 
-  const res = await fetch(url.toString());
+  const res = await fetchWithTimeout(url.toString());
   if (!res.ok) {
     throw new Error(`Frigate /api/events failed: ${res.status}`);
   }
@@ -86,7 +99,7 @@ export async function fetchReviews(params: {
   if (params.camera) url.searchParams.set("camera", params.camera);
   if (params.limit) url.searchParams.set("limit", String(params.limit));
 
-  const res = await fetch(url.toString());
+  const res = await fetchWithTimeout(url.toString());
   if (!res.ok) {
     throw new Error(`Frigate /api/review failed: ${res.status}`);
   }
@@ -106,7 +119,7 @@ export function getMediaServiceSnapshotUrl(eventId: string): string {
  * Frigate 0.17 serves HLS at /vod/{camera}/start/{ts}/end/{ts}/index.m3u8
  */
 export function getVodUrl(camera: string, startTime: number, endTime: number): string {
-  return `${FRIGATE_URL}/vod/${encodeURIComponent(camera)}/start/${startTime}/end/${endTime}/index.m3u8`;
+  return `${FRIGATE_CLIENT_URL}/vod/${encodeURIComponent(camera)}/start/${startTime}/end/${endTime}/index.m3u8`;
 }
 
 export { FRIGATE_URL };

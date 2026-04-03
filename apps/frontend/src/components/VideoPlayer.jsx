@@ -2,8 +2,12 @@ import { useRef, useEffect, useState } from 'react';
 import Hls from 'hls.js';
 
 // VITE_FRIGATE_URL lets nginx proxy Frigate's API over HTTPS.
-// Falls back to the direct port for local dev.
-const FRIGATE_URL = import.meta.env.VITE_FRIGATE_URL ?? `http://${window.location.hostname}:5000`;
+// On HTTPS without an explicit override, default to /frigate so the browser
+// request stays on the same origin and nginx can proxy it.
+// On plain HTTP (local dev), fall back to the direct Frigate port.
+const FRIGATE_URL = import.meta.env.VITE_FRIGATE_URL ?? (
+  window.location.protocol === 'https:' ? '/frigate' : `http://${window.location.hostname}:5000`
+);
 const LIVE_REFRESH_MS = 1000;
 
 export default function VideoPlayer({
