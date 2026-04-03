@@ -145,7 +145,7 @@ async def _http_clip_fallback(
     clip_start = int(timestamp) - 1
     clip_end   = clip_start + 11
     clip_url   = f"{FRIGATE_URL}/api/{camera}/start/{clip_start}/end/{clip_end}/clip.mp4"
-    clip_path  = os.path.join(tmpdir, f"clip_{timestamp:.0f}.mp4")
+    clip_path  = os.path.join(tmpdir, f"clip_{timestamp:.3f}.mp4")
     out_path   = os.path.join(tmpdir, f"fb_{timestamp:.3f}.{fmt}")
 
     try:

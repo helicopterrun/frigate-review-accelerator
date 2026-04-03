@@ -6,7 +6,8 @@ import type {
   SlotResolvedEvent,
 } from "@frigate-review/shared-types";
 import { ViewportSession } from "./viewport-session.js";
-import { resolveSlotBatch, resolveSlotBatchProgressive } from "../timeline/slot-resolver.js";
+import { resolveSlotBatch, resolveSlotBatchProgressive, prefetchSlots } from "../timeline/slot-resolver.js";
+import { computePrefetchSlots } from "../timeline/slot-scheduler.js";
 import { SemanticIndex } from "../semantic/semantic-index.js";
 import { backfillViewportRange } from "../services/http-backfill.js";
 import { getMqttStatus } from "../adapters/frigate-mqtt-ingestor.js";
@@ -182,6 +183,22 @@ async function resolveAndEmitBatch(socket: any, session: ViewportSession): Promi
       });
     },
   );
+
+  if (session.currentGeneration() !== gen) return;
+
+  // Background prefetch: resolve adjacent slots into cache so scroll interactions
+  // get immediate cache hits. Priority order: PREFETCH_FORWARD before PREFETCH_BACKWARD.
+  // Cancelled automatically when the viewport changes (generation check).
+  const prefetch = computePrefetchSlots(session.viewport);
+  const camera = session.viewport.cameraIds[0];
+
+  socket.emit("prefetch:state", {
+    viewportId: session.viewport.viewportId,
+    totalQueued: prefetch.length,
+    strategy: "active",
+  });
+
+  await prefetchSlots(camera, prefetch, session.cache, () => session.currentGeneration() !== gen);
 
   if (session.currentGeneration() === gen) {
     socket.emit("prefetch:state", {

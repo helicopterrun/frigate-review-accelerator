@@ -65,7 +65,7 @@ export function normalizeFrigateEvent(raw: FrigateRawEvent): SemanticEntity {
     stationary,
     positionChanges: null,
     currentZones: raw.zones ?? [],
-    enteredZones: raw.zones ?? [],
+    enteredZones: raw.entered_zones ?? raw.zones ?? [],
     snapshot: {
       available: raw.has_snapshot,
       frameTime: raw.start_time,
