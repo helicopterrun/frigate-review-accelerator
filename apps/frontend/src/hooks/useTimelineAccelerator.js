@@ -37,6 +37,9 @@ export function useTimelineAccelerator(camera, socket) {
   const settleTimerRef = useRef(null);
   const lastEmitRef = useRef({ tCursor: 0, tWheel: 0 });
   const initialPreviewSetRef = useRef(false);
+  // Tracks the wall-clock time at which the current playback session started.
+  // Set on play(), cleared on pause(). onVideoTimeUpdate uses it to advance cursorTs.
+  const playbackStartTsRef = useRef(null);
 
   // Derived viewport (millisecond units)
   const tWheelMs = rangeSec * 1000;
@@ -272,6 +275,7 @@ export function useTimelineAccelerator(camera, socket) {
 
   const play = useCallback(() => {
     if (!socket || cursorTs == null) return;
+    playbackStartTsRef.current = cursorTs;
     setPlaying(true);
     socket.emit('playback:request', {
       viewportId: VIEWPORT_ID,
@@ -282,9 +286,20 @@ export function useTimelineAccelerator(camera, socket) {
 
   const pause = useCallback(() => {
     if (!socket) return;
+    playbackStartTsRef.current = null;
     setPlaying(false);
     socket.emit('playback:stop', { viewportId: VIEWPORT_ID });
   }, [socket]);
+
+  /**
+   * Called by VideoPlayer on each timeupdate event.
+   * offsetSec is the video element's currentTime — seconds elapsed since
+   * the HLS stream start, which corresponds to (tCursor at play time + offsetSec).
+   */
+  const onVideoTimeUpdate = useCallback((offsetSec) => {
+    if (playbackStartTsRef.current == null) return;
+    setCursorTs(playbackStartTsRef.current + offsetSec);
+  }, []);
 
   return {
     cursorTs,
@@ -312,5 +327,6 @@ export function useTimelineAccelerator(camera, socket) {
     seek,
     play,
     pause,
+    onVideoTimeUpdate,
   };
 }

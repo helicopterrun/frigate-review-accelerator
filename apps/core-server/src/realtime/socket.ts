@@ -182,4 +182,12 @@ async function resolveAndEmitBatch(socket: any, session: ViewportSession): Promi
       });
     },
   );
+
+  if (session.currentGeneration() === gen) {
+    socket.emit("prefetch:state", {
+      viewportId: session.viewport.viewportId,
+      totalQueued: 0,
+      strategy: "idle",
+    });
+  }
 }

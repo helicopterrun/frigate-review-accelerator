@@ -3,6 +3,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.frame import router as frame_router
 from app.api.snapshot import router as snapshot_router
+from app.api.preview import router as preview_router
+from app.api.clip import router as clip_router
 from app.services.cache_manager import ensure_cache_dir
 from app.config import CACHE_DIR, MOCK_MODE, FRIGATE_URL
 
@@ -35,3 +37,5 @@ async def health():
 
 
 app.include_router(frame_router)
+app.include_router(preview_router)
+app.include_router(clip_router)

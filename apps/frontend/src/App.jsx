@@ -153,6 +153,7 @@ export default function App() {
             loading={tl.loading}
             onPlay={tl.play}
             onPause={tl.pause}
+            onTimeUpdate={tl.onVideoTimeUpdate}
           />
 
           {/* Playback controls */}
