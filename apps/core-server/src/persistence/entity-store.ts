@@ -27,6 +27,7 @@ function entityToRow(e: SemanticEntity): Record<string, unknown> {
     review_severity: e.review?.severity ?? null,
     review_reviewed:
       e.review?.reviewed != null ? (e.review.reviewed ? 1 : 0) : null,
+    enrichments_json: e.enrichments ? JSON.stringify(e.enrichments) : null,
     last_updated: e.lastUpdated,
   };
 }
@@ -69,6 +70,9 @@ function rowToEntity(row: Record<string, unknown>): SemanticEntity {
               : null,
         }
       : undefined,
+    enrichments: row.enrichments_json
+      ? JSON.parse(row.enrichments_json as string)
+      : undefined,
     lastUpdated: row.last_updated as number,
   };
 }
@@ -81,13 +85,13 @@ const UPSERT_SQL = `
     top_score, score, area, stationary, position_changes,
     current_zones_json, entered_zones_json,
     snapshot_available, snapshot_frame_time, snapshot_score, snapshot_path,
-    review_id, review_severity, review_reviewed, last_updated
+    review_id, review_severity, review_reviewed, enrichments_json, last_updated
   ) VALUES (
     @id, @camera, @label, @sub_label, @start_time, @end_time,
     @top_score, @score, @area, @stationary, @position_changes,
     @current_zones_json, @entered_zones_json,
     @snapshot_available, @snapshot_frame_time, @snapshot_score, @snapshot_path,
-    @review_id, @review_severity, @review_reviewed, @last_updated
+    @review_id, @review_severity, @review_reviewed, @enrichments_json, @last_updated
   )
   ON CONFLICT(id) DO UPDATE SET
     label            = excluded.label,
@@ -107,6 +111,7 @@ const UPSERT_SQL = `
     review_id        = excluded.review_id,
     review_severity  = excluded.review_severity,
     review_reviewed  = excluded.review_reviewed,
+    enrichments_json = COALESCE(excluded.enrichments_json, semantic_entities.enrichments_json),
     last_updated     = excluded.last_updated
   WHERE excluded.last_updated >= semantic_entities.last_updated
 `;

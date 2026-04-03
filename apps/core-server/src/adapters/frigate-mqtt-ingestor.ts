@@ -2,7 +2,11 @@ import mqtt from "mqtt";
 import type { Server as SocketIOServer } from "socket.io";
 import type { SemanticEntity } from "@frigate-review/shared-types";
 import { SemanticIndex } from "../semantic/semantic-index.js";
-import { normalizeFrigateEvent, attachReviewToEntity } from "./frigate-entity-normalizer.js";
+import {
+  normalizeFrigateEvent,
+  attachReviewToEntity,
+  applyEnrichmentUpdate,
+} from "./frigate-entity-normalizer.js";
 import type { FrigateRawEvent, FrigateRawReview } from "./frigate-http-client.js";
 import { invalidateRangeForAllSessions } from "../realtime/slot-invalidator.js";
 import {
@@ -16,6 +20,11 @@ const TOPIC_PREFIX = process.env.MQTT_TOPIC_PREFIX ?? "frigate";
 
 let mqttClient: mqtt.MqttClient | null = null;
 let _hadPreviousConnect = false; // distinguish initial connect from reconnect
+let _stalenessTimer: ReturnType<typeof setInterval> | null = null;
+let _isStale = false; // true when we've emitted "stale" due to silence
+const STALE_THRESHOLD_SEC = 60; // emit stale if no message for this long
+const STALE_CHECK_INTERVAL_MS = 15_000;
+
 let mqttStatus: {
   connected: boolean;
   lastMessageTime: number | null;
@@ -63,6 +72,8 @@ export function startMqttIngestor(index: SemanticIndex, io: SocketIOServer): voi
       `${TOPIC_PREFIX}/events`,
       `${TOPIC_PREFIX}/reviews`,
       `${TOPIC_PREFIX}/available`,
+      `${TOPIC_PREFIX}/tracked_object_update`,
+      `${TOPIC_PREFIX}/stats`,
     ];
 
     mqttClient!.subscribe(topics, { qos: 0 }, (err) => {
@@ -72,6 +83,11 @@ export function startMqttIngestor(index: SemanticIndex, io: SocketIOServer): voi
         console.log(`[mqtt] Subscribed to: ${topics.join(", ")}`);
       }
     });
+
+    // Start staleness detection timer on first connect
+    if (!_stalenessTimer) {
+      _stalenessTimer = setInterval(() => checkStaleness(io), STALE_CHECK_INTERVAL_MS);
+    }
 
     if (_hadPreviousConnect) {
       // Reconnect: back-fill any events missed during the disconnect gap
@@ -100,6 +116,7 @@ export function startMqttIngestor(index: SemanticIndex, io: SocketIOServer): voi
 
   mqttClient.on("disconnect", () => {
     mqttStatus.connected = false;
+    _isStale = false; // reset so reconnect → live transition works cleanly
     console.warn("[mqtt] Disconnected from MQTT broker");
     io.emit("semantic:freshness", { status: "stale" });
   });
@@ -120,11 +137,20 @@ function handleMessage(
   index: SemanticIndex,
   io: SocketIOServer,
 ): void {
+  // Any message from Frigate means it's alive — recover from stale if needed
+  if (_isStale) {
+    _isStale = false;
+    io.emit("semantic:freshness", { status: "live" });
+  }
+
   if (topic === `${TOPIC_PREFIX}/events`) {
     handleEventMessage(data, index, io);
   } else if (topic === `${TOPIC_PREFIX}/reviews`) {
     handleReviewMessage(data, index, io);
+  } else if (topic === `${TOPIC_PREFIX}/tracked_object_update`) {
+    handleTrackedObjectUpdate(data, index, io);
   }
+  // frigate/stats and frigate/available are heartbeat signals only — handled above
 }
 
 function handleEventMessage(data: any, index: SemanticIndex, io: SocketIOServer): void {
@@ -202,6 +228,89 @@ function handleReviewMessage(data: any, index: SemanticIndex, io: SocketIOServer
         index,
       );
     }
+  }
+}
+
+/**
+ * Handle frigate/tracked_object_update messages.
+ *
+ * These fire during active tracking and carry enrichment data (face matches,
+ * sub-labels, LPR results) that improves Type B scoring. We merge enrichments
+ * onto the existing entity without overwriting clean snapshot/score data.
+ */
+function handleTrackedObjectUpdate(
+  data: any,
+  index: SemanticIndex,
+  io: SocketIOServer,
+): void {
+  let raw: FrigateRawEvent;
+
+  if (data.after) {
+    raw = data.after as FrigateRawEvent;
+  } else if (data.id && data.camera) {
+    raw = data as FrigateRawEvent;
+  } else {
+    return;
+  }
+
+  if (!raw.id || !raw.camera) return;
+
+  const existing = index.get(raw.id);
+  if (!existing) {
+    // Entity not yet in index — normalize as a full event (will be enriched later)
+    const entity = normalizeFrigateEvent(raw);
+    index.upsert(entity);
+    upsertEntityToDb(entity);
+    return;
+  }
+
+  const updated = applyEnrichmentUpdate(existing, raw);
+
+  // Skip write if nothing actually changed
+  if (
+    updated.enrichments === existing.enrichments &&
+    updated.subLabel === existing.subLabel &&
+    updated.topScore === existing.topScore
+  ) {
+    return;
+  }
+
+  index.upsert(updated);
+  upsertEntityToDb(updated);
+  updateIngestState("mqtt", updated.camera, {
+    lastMqttMessageTime: Date.now() / 1000,
+  });
+  mqttStatus.entitiesUpdated++;
+
+  // Invalidate affected slots so Type B re-scores with enrichment bonus
+  invalidateRangeForAllSessions(
+    io,
+    updated.camera,
+    updated.startTime,
+    updated.endTime ?? updated.startTime + 10,
+    "enrichment_update",
+    index,
+  );
+}
+
+/**
+ * Periodic staleness check: if MQTT is connected but Frigate has been silent
+ * for STALE_THRESHOLD_SEC, emit stale. Recover automatically on next message.
+ */
+function checkStaleness(io: SocketIOServer): void {
+  if (!mqttStatus.connected) return;
+  if (_isStale) return; // already emitted stale, waiting for recovery
+
+  const lastMsg = mqttStatus.lastMessageTime;
+  if (lastMsg == null) return; // never received a message yet
+
+  const silenceSec = Date.now() / 1000 - lastMsg;
+  if (silenceSec >= STALE_THRESHOLD_SEC) {
+    _isStale = true;
+    console.warn(
+      `[mqtt] No messages for ${Math.round(silenceSec)}s — marking stale`,
+    );
+    io.emit("semantic:freshness", { status: "stale" });
   }
 }
 

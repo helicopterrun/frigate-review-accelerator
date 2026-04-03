@@ -120,6 +120,13 @@ const MIGRATIONS = [
         ON review_items(camera, start_time);
     `,
   },
+  {
+    version: 3,
+    name: "enrichments_json",
+    sql: `
+      ALTER TABLE semantic_entities ADD COLUMN enrichments_json TEXT;
+    `,
+  },
 ];
 
 export function bootstrapSqlite(dbPath: string): SqliteInstance {

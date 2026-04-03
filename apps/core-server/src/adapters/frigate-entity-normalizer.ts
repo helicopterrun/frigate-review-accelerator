@@ -1,6 +1,46 @@
 import type { SemanticEntity } from "@frigate-review/shared-types";
 import type { FrigateRawEvent, FrigateRawReview } from "./frigate-http-client.js";
 
+/**
+ * Extract enrichments from a raw Frigate event.
+ *
+ * Frigate encodes enrichment data in two ways:
+ *   - sub_label: face match name (person), vehicle make/model (car), or plate text
+ *   - data.attributes: array of detected attribute labels (e.g. "license_plate")
+ *
+ * Returns undefined when no enrichment data is present.
+ */
+function extractEnrichments(
+  raw: FrigateRawEvent,
+): SemanticEntity["enrichments"] {
+  const enrichments: NonNullable<SemanticEntity["enrichments"]> = {};
+
+  if (raw.sub_label) {
+    if (raw.label === "person") {
+      enrichments.face = raw.sub_label;
+    } else if (raw.label === "license_plate") {
+      enrichments.licensePlate = raw.sub_label;
+    } else {
+      enrichments.classification = raw.sub_label;
+    }
+  }
+
+  // Attributes array can contain license_plate detections from LPR
+  if (raw.data?.attributes) {
+    for (const attr of raw.data.attributes) {
+      if (
+        (attr.label === "license_plate" || attr.label === "lpr") &&
+        !enrichments.licensePlate &&
+        raw.sub_label
+      ) {
+        enrichments.licensePlate = raw.sub_label;
+      }
+    }
+  }
+
+  return Object.keys(enrichments).length > 0 ? enrichments : undefined;
+}
+
 export function normalizeFrigateEvent(raw: FrigateRawEvent): SemanticEntity {
   const box = raw.data?.box;
   let area: number | null = null;
@@ -33,7 +73,35 @@ export function normalizeFrigateEvent(raw: FrigateRawEvent): SemanticEntity {
       path: raw.has_snapshot ? `/api/events/${raw.id}/snapshot.jpg` : null,
     },
     review: undefined,
-    enrichments: undefined,
+    enrichments: extractEnrichments(raw),
+    lastUpdated: Date.now() / 1000,
+  };
+}
+
+/**
+ * Apply a tracked_object_update enrichment patch to an existing entity.
+ * Merges new enrichment data without discarding existing fields.
+ */
+export function applyEnrichmentUpdate(
+  entity: SemanticEntity,
+  raw: FrigateRawEvent,
+): SemanticEntity {
+  const newEnrichments = extractEnrichments(raw);
+  if (!newEnrichments) return entity;
+
+  return {
+    ...entity,
+    subLabel: raw.sub_label ?? entity.subLabel,
+    enrichments: { ...entity.enrichments, ...newEnrichments },
+    // Also update score/topScore if the tracking update improves them
+    score:
+      raw.data?.score != null
+        ? Math.max(entity.score ?? 0, raw.data.score)
+        : entity.score,
+    topScore:
+      raw.data?.top_score != null
+        ? Math.max(entity.topScore ?? 0, raw.data.top_score)
+        : entity.topScore,
     lastUpdated: Date.now() / 1000,
   };
 }
