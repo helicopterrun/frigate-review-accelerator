@@ -110,22 +110,22 @@ export function registerSocket(server: any) {
 
       if (uncachedSlots.length === 0) return;
 
-      // Resolve uncached slots
-      const newResults = await resolveSlotBatch(
+      // Resolve uncached slots — wait for all, then check generation once before
+      // emitting. Progressive chunking is intentionally NOT used here: rapid
+      // viewport:update events increment the generation on every scroll tick,
+      // which would cause every intermediate chunk to fail its generation check
+      // and be dropped, leaving the user with no updates at all.
+      const resolved = await resolveSlotBatch(
         session.viewport,
         uncachedSlots,
         semanticIndex,
         session.cache,
       );
-
       if (session.currentGeneration() !== gen) return;
-
-      if (newResults.length > 0) {
-        socket.emit("slots:batch_resolved", {
-          viewportId: session.viewport.viewportId,
-          slots: newResults,
-        });
-      }
+      socket.emit("slots:batch_resolved", {
+        viewportId: session.viewport.viewportId,
+        slots: resolved,
+      });
     });
 
     socket.on("playback:request", (payload: { viewportId: string; mode: string; startTime: number }) => {

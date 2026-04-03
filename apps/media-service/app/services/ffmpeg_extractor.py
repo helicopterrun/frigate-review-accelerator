@@ -169,7 +169,10 @@ async def _http_clip_fallback(
 def _infer_tdiv(timestamps: List[float]) -> float:
     if len(timestamps) < 2:
         return 0.0
-    diffs = [timestamps[i + 1] - timestamps[i] for i in range(len(timestamps) - 1)]
+    # Sort before diffing — callers may send timestamps in center-out order
+    # (alternating positive/negative diffs), which would produce a wrong median.
+    sorted_ts = sorted(timestamps)
+    diffs = [sorted_ts[i + 1] - sorted_ts[i] for i in range(len(sorted_ts) - 1)]
     return statistics.median(diffs)
 
 
