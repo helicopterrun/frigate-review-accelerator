@@ -8,6 +8,14 @@ export interface SqliteInstance {
   status: "ready" | "error";
 }
 
+let _db: Database.Database | null = null;
+
+/** Returns the initialized DB. Throws if bootstrapSqlite hasn't been called yet. */
+export function getDb(): Database.Database {
+  if (!_db) throw new Error("SQLite not initialized — call bootstrapSqlite first");
+  return _db;
+}
+
 const MIGRATIONS = [
   {
     version: 1,
@@ -149,5 +157,6 @@ export function bootstrapSqlite(dbPath: string): SqliteInstance {
     }
   }
 
+  _db = db;
   return { db, dbPath, status: "ready" };
 }

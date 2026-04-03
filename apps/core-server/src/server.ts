@@ -9,6 +9,7 @@ config({ path: resolve(__dirname, "../../../.env") });
 import Fastify from "fastify";
 import { registerSocket, getSemanticIndex } from "./realtime/socket.js";
 import { bootstrapSqlite } from "./persistence/sqlite.js";
+import { loadEntitiesFromDb } from "./persistence/entity-store.js";
 import { checkMediaServiceHealth } from "./services/media-client.js";
 import { startMqttIngestor, getMqttStatus } from "./adapters/frigate-mqtt-ingestor.js";
 
@@ -30,8 +31,17 @@ const start = async () => {
   await app.listen({ port, host: "0.0.0.0" });
   const io = registerSocket(app.server);
 
-  // Start MQTT ingestor — connects to Frigate MQTT broker
+  // Hydrate the semantic index from SQLite before accepting MQTT/socket traffic
   const index = getSemanticIndex();
+  try {
+    const persisted = loadEntitiesFromDb();
+    index.hydrate(persisted);
+    app.log.info(`[startup] Hydrated ${persisted.length} entities from SQLite`);
+  } catch (err) {
+    app.log.warn({ err }, "[startup] Could not hydrate index from SQLite — continuing without");
+  }
+
+  // Start MQTT ingestor — connects to Frigate MQTT broker
   startMqttIngestor(index, io);
 
   app.log.info(`core-server listening on ${port}`);

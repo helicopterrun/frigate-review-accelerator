@@ -5,10 +5,17 @@ import { SemanticIndex } from "../semantic/semantic-index.js";
 import { normalizeFrigateEvent, attachReviewToEntity } from "./frigate-entity-normalizer.js";
 import type { FrigateRawEvent, FrigateRawReview } from "./frigate-http-client.js";
 import { invalidateRangeForAllSessions } from "../realtime/slot-invalidator.js";
+import {
+  upsertEntityToDb,
+  updateIngestState,
+  getMqttTrackedCameras,
+} from "../persistence/entity-store.js";
+import { backfillRange } from "../services/http-backfill.js";
 
 const TOPIC_PREFIX = process.env.MQTT_TOPIC_PREFIX ?? "frigate";
 
 let mqttClient: mqtt.MqttClient | null = null;
+let _hadPreviousConnect = false; // distinguish initial connect from reconnect
 let mqttStatus: {
   connected: boolean;
   lastMessageTime: number | null;
@@ -66,8 +73,13 @@ export function startMqttIngestor(index: SemanticIndex, io: SocketIOServer): voi
       }
     });
 
-    // Emit freshness update to all connected clients
-    io.emit("semantic:freshness", { status: "live" });
+    if (_hadPreviousConnect) {
+      // Reconnect: back-fill any events missed during the disconnect gap
+      fillGapAfterReconnect(index, io);
+    } else {
+      _hadPreviousConnect = true;
+      io.emit("semantic:freshness", { status: "live" });
+    }
   });
 
   mqttClient.on("message", (topic: string, payload: Buffer) => {
@@ -141,6 +153,11 @@ function handleEventMessage(data: any, index: SemanticIndex, io: SocketIOServer)
     : entity;
 
   index.upsert(merged);
+  upsertEntityToDb(merged);
+  updateIngestState("mqtt", merged.camera, {
+    lastMqttMessageTime: Date.now() / 1000,
+    lastEventTime: merged.startTime,
+  });
   mqttStatus.entitiesUpdated++;
 
   // Invalidate overlapping slots in all active viewport sessions
@@ -174,6 +191,7 @@ function handleReviewMessage(data: any, index: SemanticIndex, io: SocketIOServer
     if (entity) {
       const updated = attachReviewToEntity(entity, review);
       index.upsert(updated);
+      upsertEntityToDb(updated);
 
       invalidateRangeForAllSessions(
         io,
@@ -185,4 +203,49 @@ function handleReviewMessage(data: any, index: SemanticIndex, io: SocketIOServer
       );
     }
   }
+}
+
+/**
+ * On MQTT reconnect: read the last known message time per camera from
+ * ingest_state and back-fill any events missed during the disconnect gap.
+ */
+async function fillGapAfterReconnect(
+  index: SemanticIndex,
+  io: SocketIOServer,
+): Promise<void> {
+  let cameras: ReturnType<typeof getMqttTrackedCameras>;
+  try {
+    cameras = getMqttTrackedCameras();
+  } catch {
+    // DB not initialized or no records — skip
+    io.emit("semantic:freshness", { status: "live" });
+    return;
+  }
+
+  if (cameras.length === 0) {
+    io.emit("semantic:freshness", { status: "live" });
+    return;
+  }
+
+  console.log(`[mqtt] Reconnect gap-fill for ${cameras.length} camera(s)`);
+  io.emit("semantic:freshness", { status: "recovering" });
+
+  const nowSec = Date.now() / 1000;
+
+  for (const { camera, lastMqttMessageTime } of cameras) {
+    const gapStart = lastMqttMessageTime - 60; // 60-second overlap buffer
+    try {
+      const { eventsLoaded } = await backfillRange(
+        index,
+        [camera],
+        gapStart,
+        nowSec,
+      );
+      console.log(`[mqtt] Gap-fill ${camera}: loaded ${eventsLoaded} events`);
+    } catch (err) {
+      console.warn(`[mqtt] Gap-fill failed for ${camera}:`, err);
+    }
+  }
+
+  io.emit("semantic:freshness", { status: "live" });
 }

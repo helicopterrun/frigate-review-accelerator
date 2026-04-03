@@ -1,7 +1,7 @@
-import type { SemanticEntity } from "@frigate-review/shared-types";
 import { fetchEvents, fetchReviews } from "../adapters/frigate-http-client.js";
 import { normalizeFrigateEvent, attachReviewToEntity } from "../adapters/frigate-entity-normalizer.js";
 import { SemanticIndex } from "../semantic/semantic-index.js";
+import { upsertEntitiesBatch, updateIngestState } from "../persistence/entity-store.js";
 
 export async function backfillRange(
   index: SemanticIndex,
@@ -11,6 +11,7 @@ export async function backfillRange(
 ): Promise<{ eventsLoaded: number; reviewsLoaded: number }> {
   let eventsLoaded = 0;
   let reviewsLoaded = 0;
+  const nowSec = Date.now() / 1000;
 
   // Fetch events for each camera (Frigate API filters by single camera)
   for (const camera of cameras) {
@@ -23,10 +24,21 @@ export async function backfillRange(
         limit: 500,
       });
 
-      for (const raw of rawEvents) {
-        const entity = normalizeFrigateEvent(raw);
+      const entities = rawEvents.map(normalizeFrigateEvent);
+      for (const entity of entities) {
         index.upsert(entity);
-        eventsLoaded++;
+      }
+      upsertEntitiesBatch(entities);
+      eventsLoaded += entities.length;
+
+      if (entities.length > 0) {
+        const maxEventTime = Math.max(...entities.map((e) => e.startTime));
+        updateIngestState("http", camera, {
+          lastEventTime: maxEventTime,
+          lastBackfillTime: nowSec,
+        });
+      } else {
+        updateIngestState("http", camera, { lastBackfillTime: nowSec });
       }
     } catch (err) {
       console.warn(`[backfill] Failed to fetch events for ${camera}:`, err);
@@ -43,16 +55,19 @@ export async function backfillRange(
         limit: 200,
       });
 
+      const updated = [];
       for (const review of reviews) {
         reviewsLoaded++;
         for (const detectionId of review.data.detections) {
           const entity = index.get(detectionId);
           if (entity) {
-            const updated = attachReviewToEntity(entity, review);
-            index.upsert(updated);
+            const enriched = attachReviewToEntity(entity, review);
+            index.upsert(enriched);
+            updated.push(enriched);
           }
         }
       }
+      upsertEntitiesBatch(updated);
     } catch (err) {
       console.warn(`[backfill] Failed to fetch reviews for ${camera}:`, err);
     }
