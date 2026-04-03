@@ -7,10 +7,27 @@ export default defineConfig({
     port: 5173,
     allowedHosts: ["frigatebird.pondhouse.cloud"],
     proxy: {
-      // Proxy media requests to the Python media service
+      // Socket.IO — must proxy with ws:true so WebSocket upgrade is forwarded.
+      // Without this, useSocket.js connects to :5173 (Vite) and gets HTML back.
+      "/socket.io": {
+        target: "http://localhost:4010",
+        changeOrigin: true,
+        ws: true,
+      },
+      // Core server REST endpoints (health, etc.)
+      "/health": {
+        target: "http://localhost:4010",
+        changeOrigin: true,
+      },
+      // Media service — frames, preview strips, clips
       "/media": {
         target: "http://localhost:4020",
         changeOrigin: true,
+      },
+      "/api-media": {
+        target: "http://localhost:4020",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-media/, ""),
       },
     },
   },
