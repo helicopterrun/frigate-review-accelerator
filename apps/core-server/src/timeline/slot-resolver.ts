@@ -8,6 +8,7 @@ import { SemanticIndex } from "../semantic/semantic-index.js";
 import { resolveTypeB } from "./type-b-resolver.js";
 import { extractFrameBatch } from "../services/media-client.js";
 import { SlotCache } from "./slot-cache.js";
+import type { ScheduledSlot } from "./slot-scheduler.js";
 
 const SEMANTIC_THRESHOLD_SEC = 300; // 5 minutes — below this, Type A only
 const PROGRESSIVE_CHUNK_SIZE = 15;  // Type A slots per HTTP call to media-service
@@ -154,6 +155,60 @@ async function _resolveTypeAChunk(
   }
 
   return results;
+}
+
+/**
+ * Prefetch adjacent slots into the TypeScript cache without emitting to clients.
+ *
+ * Processes PREFETCH_FORWARD entries before PREFETCH_BACKWARD (they arrive in
+ * that order from computePrefetchSlots). Skips slots already in cache.
+ * Returns early when isCancelled() returns true (viewport changed).
+ *
+ * Only Type A is used for prefetch — Type B will be resolved when the slot
+ * becomes visible if the zoom level calls for it.
+ */
+export async function prefetchSlots(
+  camera: string,
+  scheduledSlots: ScheduledSlot[],
+  cache: SlotCache,
+  isCancelled: () => boolean,
+): Promise<number> {
+  let fetched = 0;
+
+  for (let i = 0; i < scheduledSlots.length; i += PROGRESSIVE_CHUNK_SIZE) {
+    if (isCancelled()) break;
+
+    const chunk = scheduledSlots.slice(i, i + PROGRESSIVE_CHUNK_SIZE);
+    const uncached = chunk.filter(
+      (e) => !cache.getBestForTime(camera, e.slot.tSlotCenter),
+    );
+    if (uncached.length === 0) continue;
+
+    const timestamps = uncached.map((e) => e.slot.tSlotCenter);
+    try {
+      const batchResults = await extractFrameBatch(camera, timestamps);
+      for (let j = 0; j < uncached.length; j++) {
+        const entry = uncached[j];
+        const frameResult = batchResults[j];
+        if (frameResult) {
+          cache.put(camera, entry.slot.tSlotCenter, {
+            viewportId: "",
+            slotIndex: entry.slot.index,
+            resolvedStrategy: "A",
+            mediaUrl: frameResult.media_url,
+            sourceTimestamp: frameResult.resolved_timestamp,
+            cacheHit: frameResult.cache_hit,
+            status: "clean",
+          });
+          fetched++;
+        }
+      }
+    } catch {
+      // Prefetch failures are silent — best-effort operation
+    }
+  }
+
+  return fetched;
 }
 
 /**

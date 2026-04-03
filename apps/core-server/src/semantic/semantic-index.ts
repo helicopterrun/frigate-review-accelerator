@@ -2,9 +2,6 @@ import type { SemanticEntity, EventId, CameraName } from "@frigate-review/shared
 
 const BUCKET_SIZE_SEC = 60; // 60-second time buckets
 
-function timeBucketKey(timestamp: number): string {
-  return String(Math.floor(timestamp / BUCKET_SIZE_SEC));
-}
 
 function overlaps(
   entityStart: number,
@@ -13,7 +10,7 @@ function overlaps(
   slotEnd: number,
 ): boolean {
   const effectiveEnd = entityEnd ?? Number.POSITIVE_INFINITY;
-  return entityStart < slotEnd && effectiveEnd >= slotStart;
+  return entityStart < slotEnd && effectiveEnd > slotStart;
 }
 
 export class SemanticIndex {
@@ -133,12 +130,22 @@ export class SemanticIndex {
       this.byZone.get(zone)!.add(entity.id);
     }
 
-    // Time bucket index — index by start time bucket
-    const bucket = timeBucketKey(entity.startTime);
-    if (!this.byTimeBucket.has(bucket)) {
-      this.byTimeBucket.set(bucket, new Set());
+    // Index every bucket the entity is active in so long-running entities (e.g. a car
+    // present for hours) remain candidates for queries anywhere in their lifetime.
+    // Ongoing entities (endTime = null) are indexed only at their start bucket — they
+    // are still active so queries near "now" will find them via the ±1 margin.
+    const startBucket = Math.floor(entity.startTime / BUCKET_SIZE_SEC);
+    const endBucket =
+      entity.endTime != null
+        ? Math.floor(entity.endTime / BUCKET_SIZE_SEC)
+        : startBucket;
+    for (let b = startBucket; b <= endBucket; b++) {
+      const key = String(b);
+      if (!this.byTimeBucket.has(key)) {
+        this.byTimeBucket.set(key, new Set());
+      }
+      this.byTimeBucket.get(key)!.add(entity.id);
     }
-    this.byTimeBucket.get(bucket)!.add(entity.id);
   }
 
   private removeFromIndices(entity: SemanticEntity): void {
@@ -149,7 +156,13 @@ export class SemanticIndex {
       this.byZone.get(zone)?.delete(entity.id);
     }
 
-    const bucket = timeBucketKey(entity.startTime);
-    this.byTimeBucket.get(bucket)?.delete(entity.id);
+    const startBucket = Math.floor(entity.startTime / BUCKET_SIZE_SEC);
+    const endBucket =
+      entity.endTime != null
+        ? Math.floor(entity.endTime / BUCKET_SIZE_SEC)
+        : startBucket;
+    for (let b = startBucket; b <= endBucket; b++) {
+      this.byTimeBucket.get(String(b))?.delete(entity.id);
+    }
   }
 }

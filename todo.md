@@ -53,7 +53,16 @@
 - [x] Clip export endpoint (POST /clip/prepare — local concat + Frigate HTTP fallback)
 - [x] Debug overlay (slot index, strategy A/B, score, cache hit, entity ID)
 - [x] prefetch:state dev feedback event (emitted after resolveAndEmitBatch completes)
-- [ ] Performance tuning — scheduler priority (VISIBLE > DIRTY > PREFETCH_FORWARD > PREFETCH_BACKWARD)
+- [x] Performance tuning — scheduler priority (VISIBLE > DIRTY > PREFETCH_FORWARD > PREFETCH_BACKWARD)
+
+---
+
+## Bug Fixes Applied
+- [x] SemanticIndex: long-running entities missed by time-bucket lookup (only startTime was indexed; now indexes all buckets from start to end)
+- [x] SemanticIndex: `overlaps()` used `>=` instead of `>` — entities ending exactly at a slot boundary were incorrectly included
+- [x] FrigateRawEvent: missing `entered_zones` field; `enteredZones` always mirrored `currentZones`, losing cumulative zone history
+- [x] entity-store: `??` doesn't guard against empty string in JSON.parse; changed to `||`
+- [x] ffmpeg_extractor: HTTP fallback clip filename used `:.0f` (rounds to integer), causing filename collision and potential file corruption for concurrent nearby timestamps
 
 ---
 

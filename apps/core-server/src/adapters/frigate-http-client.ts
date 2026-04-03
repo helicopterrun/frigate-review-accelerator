@@ -8,6 +8,7 @@ export interface FrigateRawEvent {
   label: string;
   sub_label?: string | null;
   zones: string[];
+  entered_zones?: string[];
   start_time: number;
   end_time: number | null;
   has_clip: boolean;

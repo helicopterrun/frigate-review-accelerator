@@ -47,8 +47,8 @@ function rowToEntity(row: Record<string, unknown>): SemanticEntity {
     stationary:
       row.stationary != null ? (row.stationary as number) === 1 : null,
     positionChanges: (row.position_changes as number | null) ?? null,
-    currentZones: JSON.parse((row.current_zones_json as string) ?? "[]"),
-    enteredZones: JSON.parse((row.entered_zones_json as string) ?? "[]"),
+    currentZones: JSON.parse((row.current_zones_json as string) || "[]"),
+    enteredZones: JSON.parse((row.entered_zones_json as string) || "[]"),
     snapshot: {
       available: (row.snapshot_available as number) === 1,
       frameTime: (row.snapshot_frame_time as number | null) ?? null,
