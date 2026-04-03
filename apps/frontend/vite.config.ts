@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    allowedHosts: ["frigatebird.pondhouse.cloud"],
     proxy: {
       // Proxy media requests to the Python media service
       "/media": {
