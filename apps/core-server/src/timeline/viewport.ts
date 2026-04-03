@@ -19,7 +19,7 @@ export function buildViewport(input: ViewportSubscribeEvent): TimelineViewport {
     tDiv,
     tViewStart,
     tViewEnd,
-    filters: input.filters,
+    filters: input.filters ?? { objectLabels: [], zones: [], confidenceMin: 0 },
   };
 }
 
