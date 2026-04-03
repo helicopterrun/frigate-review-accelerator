@@ -4,7 +4,7 @@ import { clampTs, formatHHMM } from '../utils/time.js';
 import {
   RETICLE_FRACTION, RETICLE_COLOR, RETICLE_BAR_H, RETICLE_DOT_SIZE,
   ICON_SIZE_PERSON, ICON_SIZE_ANIMAL, ICON_FALLBACK_R,
-  ARROW_W, ARROW_H, PERSON_LABELS, ANIMAL_LABELS,
+  PERSON_LABELS, ANIMAL_LABELS,
   EVENT_COLORS, ASSET_PATHS, TICK_INTERVALS, MIN_TICK_PX,
   DAMPING, K, K_TOUCH,
 } from '../utils/constants.js';
@@ -56,17 +56,16 @@ const WHEEL = {
 
 // ── PixiJS app factory ───────────────────────────────────────────────────────
 
-async function createApp(canvas, w, h) {
+async function createApp(w, h) {
   const app = new PIXI.Application();
   await app.init({
-    canvas,
     width: w,
     height: h,
     backgroundColor: 0x1a1d24,
     antialias: true,
     autoDensity: true,
     resolution: window.devicePixelRatio || 1,
-    preference: 'webgpu',
+    preference: 'webgl',
   });
   return app;
 }
@@ -302,7 +301,7 @@ export default function Timeline({
   const touchPannedRef = useRef(false);
   const animRef = useRef(null);
 
-  const [dims, setDims] = useState({ w: 420, h: 700 });
+  const [dims, setDims] = useState({ w: 1, h: 1 });
 
   const range = endTs - startTs;
   const secondsPerPixel = useMemo(() => (dims.h > 0 ? range / dims.h : 1), [range, dims.h]);
@@ -354,51 +353,50 @@ export default function Timeline({
   // Hints on BOTH left and right edges
   function buildScrollHints(container, w, h) {
     container.removeChildren();
-    const tex = texRef.current;
-    if (!tex.arrow) return;
 
-    const edgeInset = 18;
-    const arrowGap = ARROW_W * 0.6;
+    const mid = w / 2;
+    const chevW = 18;
+    const chevH = 10;
+    const color = 0x909090;
+    const alpha = 0.65;
 
-    // Helper: place a pair of arrows + label at a given edge X
-    function placeHintColumn(centerX, label, isTop) {
-      for (const xOff of [-arrowGap, arrowGap]) {
-        const s = makeSprite(tex.arrow, {
-          w: ARROW_W,
-          h: ARROW_H,
-          ax: 0.5,
-          ay: isTop ? 1 : 0,
-          tint: 0x808080,
-          alpha: 0.55,
-        });
-        if (isTop) s.scale.y = -1;
-        s.x = centerX + xOff;
-        s.y = isTop ? 42 : h - 42;
-        container.addChild(s);
-      }
+    function placeHint(y, pointUp) {
+      const g = new PIXI.Graphics();
+      const tip = pointUp ? -chevH / 2 : chevH / 2;
+      const base = pointUp ? chevH / 2 : -chevH / 2;
+      g.moveTo(-chevW / 2, base)
+        .lineTo(0, tip)
+        .lineTo(chevW / 2, base)
+        .stroke({ color, alpha, width: 2.5, cap: 'round', join: 'round' });
+      g.x = mid;
+      g.y = y;
+      container.addChild(g);
+    }
 
+    function placeLabel(y, label) {
       const txt = new PIXI.Text({
         text: label,
         style: new PIXI.TextStyle({
           fontFamily: 'IBM Plex Mono, monospace',
-          fontSize: 10,
+          fontSize: 13,
+          fontWeight: '600',
           fill: '#808080',
+          letterSpacing: 2,
         }),
       });
       txt.anchor.set(0.5, 0.5);
-      txt.rotation = -Math.PI / 2;
-      txt.x = centerX;
-      txt.y = isTop ? 14 : h - 14;
+      txt.x = mid;
+      txt.y = y;
       container.addChild(txt);
     }
 
-    // PAST hints — top, on both left and right edges
-    placeHintColumn(edgeInset, 'PAST', true);
-    placeHintColumn(w - edgeInset, 'PAST', true);
+    // PAST — top center: label above, chevron below
+    placeLabel(16, 'PAST');
+    placeHint(36, true);
 
-    // NOW hints — bottom, on both left and right edges
-    placeHintColumn(edgeInset, 'NOW', false);
-    placeHintColumn(w - edgeInset, 'NOW', false);
+    // NOW — bottom center: chevron above, label below
+    placeHint(h - 36, false);
+    placeLabel(h - 16, 'PRESENT');
   }
 
   const drawAllRef = useRef(null);
@@ -451,6 +449,9 @@ export default function Timeline({
       : 60;
     const showSeconds = tDivSec < 60;
 
+    // Center row height — hoisted so reticle bar can align with its bottom divider
+    const centerHeight = Math.max(rowPitch * 2.5, 70);
+
     // Icon zone — right portion of canvas
     const iconZoneLeft = Math.round(w * 0.58);
     const iconZoneRight = w - paddingRight;
@@ -475,21 +476,17 @@ export default function Timeline({
 
       const isCenter = i === centerSlotIdx;
 
-      // Center row gets extra height so its big readout doesn't cover adjacent rows
-      const centerHeight = Math.max(rowPitch * 2.5, 70);
-      const centerExtra = centerHeight - rowPitch;
-
       const row = createWheelRow(fontFamily);
 
-      // Position: center slot's bottom edge aligns with reticle
+      // Position: center slot's midpoint aligns with reticle (so the text is centered on it)
       if (isCenter) {
-        row.y = reticleY - centerHeight;
+        row.y = reticleY - centerHeight / 2;
       } else if (i > centerSlotIdx) {
-        // Below center: normal position (y is positive, pushes down from reticle)
-        row.y = reticleY + y - rowPitch;
+        // Below center: start from the center row's bottom edge
+        row.y = reticleY + y - rowPitch + centerHeight / 2;
       } else {
-        // Above center: shift up by centerExtra so they don't overlap the taller center
-        row.y = reticleY + y - rowPitch - centerExtra;
+        // Above center: end at the center row's top edge
+        row.y = reticleY + y - centerHeight / 2;
       }
       row.visible = true;
 
@@ -586,7 +583,7 @@ export default function Timeline({
     }
 
     buildScrollHints(hintC, w, h);
-    buildReticle(reticleC, w, reticleY);
+    buildReticle(reticleC, w, reticleY + centerHeight / 2);
 
     appRef.current?.render();
   }, [
@@ -606,29 +603,46 @@ export default function Timeline({
   // Keep drawAllRef in sync so the init effect can call it without a dep cycle
   useEffect(() => { drawAllRef.current = drawAll; }, [drawAll]);
 
-  // Init PixiJS app — only re-runs on canvas size change, NOT on drawAll identity
+  // Init PixiJS app ONCE — destroying and recreating on the same canvas causes iOS
+  // to refuse a second WebGL context. Resize via renderer.resize() instead.
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Read actual container size synchronously — layout is complete by the time
+    // effects run, so getBoundingClientRect gives the real dimensions.
+    const rect = container.getBoundingClientRect();
+    const initW = rect.width > 1 ? Math.round(rect.width) : 320;
+    const initH = rect.height > 1 ? Math.round(rect.height) : 400;
+
     let dead = false;
 
     (async () => {
-      const app = await createApp(canvas, dims.w, dims.h);
-      if (dead) {
-        app.destroy();
+      let app;
+      try {
+        app = await createApp(initW, initH);
+      } catch (e) {
+        console.error('[Timeline] Pixi init failed:', e);
         return;
       }
+      if (dead) {
+        app.destroy(true);
+        return;
+      }
+
+      // Let PixiJS own the canvas — append it to the container so it fully
+      // manages the WebGL context lifecycle without React interference.
+      app.canvas.className = 'timeline-canvas';
+      container.appendChild(app.canvas);
+      canvasRef.current = app.canvas;
 
       appRef.current = app;
 
       try {
         const tex = {};
-        // Load reticle/hint assets
         tex.rtclBar = await PIXI.Assets.load(ASSET_PATHS.rtclBar);
         tex.rtclDot = await PIXI.Assets.load(ASSET_PATHS.rtclDot);
-        tex.arrow = await PIXI.Assets.load(ASSET_PATHS.arrow);
 
-        // Load Lucide icons as PIXI textures (static imports resolved by Vite)
         tex.lucide = {};
         for (const [name, url] of Object.entries(LUCIDE_SVG_URLS)) {
           try {
@@ -652,16 +666,22 @@ export default function Timeline({
       layersRef.current = { bg, wheelC, hintC, reticleC };
 
       appReadyRef.current = true;
-      if (!dead) drawAllRef.current?.();
+
+      if (!dead) {
+        // Sync dims to actual init size so drawAll uses correct dimensions
+        setDims({ w: initW, h: initH });
+        drawAllRef.current?.();
+      }
     })();
 
     return () => {
       dead = true;
       appReadyRef.current = false;
-      appRef.current?.destroy(false);
+      canvasRef.current = null;
+      appRef.current?.destroy(true);
       appRef.current = null;
     };
-  }, [dims.w, dims.h]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Redraw when drawAll changes (cursor, zoom, data, etc.)
   useEffect(() => {
@@ -669,7 +689,7 @@ export default function Timeline({
     drawAll();
   }, [drawAll]);
 
-  // Resize renderer when canvas dimensions change
+  // Resize renderer when canvas dimensions change — never re-init
   useEffect(() => {
     if (!appReadyRef.current) return;
     appRef.current?.renderer.resize(dims.w, dims.h);
@@ -715,7 +735,7 @@ export default function Timeline({
   }, [onStepSlots]);
 
   useEffect(() => {
-    const c = canvasRef.current;
+    const c = containerRef.current;
     if (!c) return;
     c.addEventListener('wheel', handleWheel, { passive: false });
     return () => c.removeEventListener('wheel', handleWheel);
@@ -723,7 +743,7 @@ export default function Timeline({
 
   // Click on canvas → snap to nearest slot at that Y position
   const handleClick = useCallback((e) => {
-    const r = canvasRef.current?.getBoundingClientRect();
+    const r = containerRef.current?.getBoundingClientRect();
     if (!r) return;
     const ts = yToTs(e.clientY - r.top);
     if (ts != null) onSeek?.(ts);
@@ -762,7 +782,7 @@ export default function Timeline({
     if (!touchPannedRef.current) {
       // Tap (no pan) → seek to tapped position
       const t = e.changedTouches[0];
-      const r = canvasRef.current?.getBoundingClientRect();
+      const r = containerRef.current?.getBoundingClientRect();
       if (r) {
         const ts = yToTs(t.clientY - r.top);
         if (ts != null) onSeek?.(ts);
@@ -772,16 +792,14 @@ export default function Timeline({
 
   return (
     <div className="timeline-wrapper">
-      <div className="timeline-canvas-container" ref={containerRef}>
-        <canvas
-          ref={canvasRef}
-          className="timeline-canvas"
-          onClick={handleClick}
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-        />
-      </div>
+      <div
+        className="timeline-canvas-container"
+        ref={containerRef}
+        onClick={handleClick}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      />
     </div>
   );
 }

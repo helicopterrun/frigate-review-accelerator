@@ -6,7 +6,7 @@ import type {
   SlotResolvedEvent,
 } from "@frigate-review/shared-types";
 import { ViewportSession } from "./viewport-session.js";
-import { resolveSlotBatch } from "../timeline/slot-resolver.js";
+import { resolveSlotBatch, resolveSlotBatchProgressive } from "../timeline/slot-resolver.js";
 import { SemanticIndex } from "../semantic/semantic-index.js";
 import { backfillViewportRange } from "../services/http-backfill.js";
 import { getMqttStatus } from "../adapters/frigate-mqtt-ingestor.js";
@@ -169,17 +169,17 @@ export function registerSocket(server: any) {
 async function resolveAndEmitBatch(socket: any, session: ViewportSession): Promise<void> {
   const gen = session.nextGeneration();
 
-  const results = await resolveSlotBatch(
+  await resolveSlotBatchProgressive(
     session.viewport,
     session.slots,
     semanticIndex,
     session.cache,
+    (slots) => {
+      if (session.currentGeneration() !== gen) return;
+      socket.emit("slots:batch_resolved", {
+        viewportId: session.viewport.viewportId,
+        slots,
+      });
+    },
   );
-
-  if (session.currentGeneration() !== gen) return;
-
-  socket.emit("slots:batch_resolved", {
-    viewportId: session.viewport.viewportId,
-    slots: results,
-  });
 }

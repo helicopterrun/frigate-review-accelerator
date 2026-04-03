@@ -18,7 +18,7 @@ const DEBOUNCE_MS = 50;
 const SETTLE_DELAY_MS = 400;
 
 export function useTimelineAccelerator(camera, socket) {
-  const [cursorTs, setCursorTs] = useState(null);
+  const [cursorTs, setCursorTs] = useState(() => Date.now() / 1000);
   const [rangeSec, setRangeSec] = useState(3600);
   const [resolvedSlots, setResolvedSlots] = useState([]);
   const [subscribed, setSubscribed] = useState(false);
@@ -36,6 +36,7 @@ export function useTimelineAccelerator(camera, socket) {
   const updateTimerRef = useRef(null);
   const settleTimerRef = useRef(null);
   const lastEmitRef = useRef({ tCursor: 0, tWheel: 0 });
+  const initialPreviewSetRef = useRef(false);
 
   // Derived viewport (millisecond units)
   const tWheelMs = rangeSec * 1000;
@@ -55,13 +56,6 @@ export function useTimelineAccelerator(camera, socket) {
   const startTs = viewport ? viewport.tViewStart / 1000 : null;
   const endTs = viewport ? viewport.tViewEnd / 1000 : null;
 
-  // Init cursor to now
-  useEffect(() => {
-    if (camera && cursorTs == null) {
-      setCursorTs(Date.now() / 1000);
-    }
-  }, [camera, cursorTs]);
-
   // Reset on camera change
   useEffect(() => {
     setResolvedSlots([]);
@@ -72,6 +66,7 @@ export function useTimelineAccelerator(camera, socket) {
     setPreviewSrc(null);
     setPlaying(false);
     setPlaybackState('SCRUB_REVIEW');
+    initialPreviewSetRef.current = false;
   }, [camera]);
 
   // Subscribe when camera + socket are ready
@@ -106,10 +101,13 @@ export function useTimelineAccelerator(camera, socket) {
           map.set(slot.slotIndex, slot);
         }
         const sorted = Array.from(map.values()).sort((a, b) => a.slotIndex - b.slotIndex);
-        // Auto-show center slot preview if no preview set yet
-        if (!previewSrc && sorted.length > 0) {
+        // Auto-show center slot preview on first batch only
+        if (!initialPreviewSetRef.current && sorted.length > 0) {
           const center = sorted[Math.floor(sorted.length / 2)];
-          if (center?.mediaUrl) setPreviewSrc(center.mediaUrl);
+          if (center?.mediaUrl) {
+            setPreviewSrc(center.mediaUrl);
+            initialPreviewSetRef.current = true;
+          }
         }
         return sorted;
       });

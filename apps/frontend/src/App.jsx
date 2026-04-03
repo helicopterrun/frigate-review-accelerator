@@ -14,6 +14,7 @@ const CAMERAS = [
 export default function App() {
   const [camera, setCamera] = useState(CAMERAS[0]);
   const [showDebug, setShowDebug] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const { socket, status } = useSocket();
   const tl = useTimelineAccelerator(camera, socket);
 
@@ -38,9 +39,15 @@ export default function App() {
     return (
       <div className="app">
         <header className="app-header">
-          <h1>Frigate Review Accelerator</h1>
-          {cameraSelector}
-          <span className="socket-status" data-status={status}>{status}</span>
+          <h1 className="app-title">Frigate Review</h1>
+          <div className="header-controls">
+            {cameraSelector}
+            <span className="socket-status" data-status={status}>{status}</span>
+          </div>
+          <span className="socket-dot" data-status={status} title={status} />
+          <div className="header-controls-mobile">
+            {cameraSelector}
+          </div>
         </header>
         <div className="app-loading">
           {camera ? 'Loading timeline...' : 'Select a camera to begin'}
@@ -52,26 +59,70 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Frigate Review Accelerator</h1>
-        {cameraSelector}
-        <span className="socket-status" data-status={status}>{status}</span>
-        <span className="slot-count">
-          {tl.resolvedSlots.length}/60 {'\u00B7'} {typeBCount}B {tl.resolvedSlots.length - typeBCount}A
-        </span>
-        <span className="freshness-badge" data-freshness={tl.semanticFreshness}>
-          {tl.semanticFreshness}
-        </span>
-        <span className="playback-badge" data-state={tl.playbackState}>
-          {tl.playbackState.replace('_', ' ')}
-        </span>
+        <h1 className="app-title">Frigate Review</h1>
+
+        {/* Desktop: all controls inline */}
+        <div className="header-controls">
+          {cameraSelector}
+          <span className="socket-status" data-status={status}>{status}</span>
+          <span className="slot-count">
+            {tl.resolvedSlots.length}/60 {'\u00B7'} {typeBCount}B {tl.resolvedSlots.length - typeBCount}A
+          </span>
+          <span className="freshness-badge" data-freshness={tl.semanticFreshness}>
+            {tl.semanticFreshness}
+          </span>
+          <span className="playback-badge" data-state={tl.playbackState}>
+            {tl.playbackState.replace(/_/g, ' ')}
+          </span>
+          <button
+            className="debug-toggle"
+            onClick={() => setShowDebug(v => !v)}
+            title="Toggle debug panel"
+          >
+            {showDebug ? 'Hide Debug' : 'Debug'}
+          </button>
+        </div>
+
+        {/* Mobile: compact status dot + hamburger */}
+        <span className="socket-dot" data-status={status} title={status} />
         <button
-          className="debug-toggle"
-          onClick={() => setShowDebug(v => !v)}
-          title="Toggle debug panel"
+          className="hamburger-btn"
+          onClick={() => setMenuOpen(v => !v)}
+          aria-label="Menu"
+          aria-expanded={menuOpen}
         >
-          {showDebug ? 'Hide Debug' : 'Debug'}
+          {menuOpen ? '✕' : '☰'}
         </button>
       </header>
+
+      {/* Mobile slide-down menu */}
+      {menuOpen && (
+        <>
+          <div className="menu-backdrop" onClick={() => setMenuOpen(false)} />
+          <nav className="menu-drawer">
+            <div className="menu-section">
+              <span className="menu-label">Camera</span>
+              {cameraSelector}
+            </div>
+            <div className="menu-section menu-status-row">
+              <span className="socket-status" data-status={status}>{status}</span>
+              <span className="freshness-badge" data-freshness={tl.semanticFreshness}>{tl.semanticFreshness}</span>
+              <span className="playback-badge" data-state={tl.playbackState}>{tl.playbackState.replace(/_/g, ' ')}</span>
+            </div>
+            <div className="menu-section">
+              <span className="slot-count">{tl.resolvedSlots.length}/60 · {typeBCount}B {tl.resolvedSlots.length - typeBCount}A</span>
+            </div>
+            <div className="menu-section">
+              <button
+                className="debug-toggle"
+                onClick={() => { setShowDebug(v => !v); setMenuOpen(false); }}
+              >
+                {showDebug ? 'Hide Debug' : 'Show Debug'}
+              </button>
+            </div>
+          </nav>
+        </>
+      )}
       <div className="app-body">
         <aside className="timeline-panel">
           <Timeline

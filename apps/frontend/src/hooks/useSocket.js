@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
 
-const CORE_SERVER_URL = 'http://localhost:4010';
+const CORE_SERVER_URL = `http://${window.location.hostname}:4010`;
 
 export function useSocket() {
   const [status, setStatus] = useState('disconnected');

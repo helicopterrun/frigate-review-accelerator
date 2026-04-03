@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState } from 'react';
+import Hls from 'hls.js';
 
-const FRIGATE_URL = 'http://192.168.50.207:5000';
+const FRIGATE_URL = `http://${window.location.hostname}:5000`;
 const LIVE_REFRESH_MS = 1000;
 
 export default function VideoPlayer({
@@ -40,13 +41,37 @@ export default function VideoPlayer({
   }, [liveMode, camera]);
 
   // HLS/VOD playback
+  const hlsRef = useRef(null);
   useEffect(() => {
     const vid = videoRef.current;
     if (!vid || !videoSrc) return;
-    vid.src = videoSrc;
-    if (playback?.offset_sec) {
-      vid.currentTime = playback.offset_sec;
+
+    // Destroy any previous HLS instance
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
     }
+
+    if (Hls.isSupported()) {
+      const hls = new Hls();
+      hlsRef.current = hls;
+      hls.loadSource(videoSrc);
+      hls.attachMedia(vid);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (playback?.offset_sec) vid.currentTime = playback.offset_sec;
+      });
+    } else if (vid.canPlayType('application/vnd.apple.mpegurl')) {
+      // Safari native HLS
+      vid.src = videoSrc;
+      if (playback?.offset_sec) vid.currentTime = playback.offset_sec;
+    }
+
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
   }, [videoSrc, playback?.offset_sec]);
 
   useEffect(() => {
