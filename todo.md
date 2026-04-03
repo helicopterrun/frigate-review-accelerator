@@ -26,13 +26,16 @@
 ## Up Next
 
 ### M2 — Type B Semantic Hydration
-- [ ] HTTP backfill from Frigate `/events` on startup and reconnect
-- [ ] SemanticIndex populated from Frigate event history
-- [ ] TypeBResolver: score candidates by snapshot quality, area, zone match, label, motion
-- [ ] Per-slot B/A fallback: use Type B when tWheel >= 5 min, fall back to Type A
-- [ ] SQLite persistence for semantic_entities, entity_enrichments, review_items
-- [ ] Dirty slot invalidation when new entity overlaps slot range
-- [ ] `slot:dirty` / `slots:dirty` events emitted to frontend
+- [x] HTTP backfill from Frigate `/events` on viewport:subscribe
+- [x] SemanticIndex populated from Frigate event history
+- [x] TypeBResolver: score candidates by snapshot quality, area, zone match, label, motion
+- [x] Per-slot B/A fallback: use Type B when tWheel >= 5 min, fall back to Type A
+- [x] SQLite persistence for semantic_entities via entity-store.ts (upsertEntitiesBatch, upsertEntityToDb)
+- [x] Dirty slot invalidation when new entity overlaps slot range
+- [x] `slot:dirty` / `slots:dirty` events emitted to frontend
+- [x] Startup hydration: index populated from SQLite on boot (Type B ready from first subscribe)
+- [x] Ingest state tracking: last_event_time, last_backfill_time, last_mqtt_message_time per camera
+- [x] MQTT reconnect gap-fill: back-fills missed events using ingest_state window + 60s buffer
 
 ### M3 — MQTT Freshness + Dirty Slots
 - [ ] MQTT ingest: frigate/events, frigate/tracked_object_update, frigate/reviews
