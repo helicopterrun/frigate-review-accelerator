@@ -47,12 +47,12 @@
 - [x] enrichments_json persisted and hydrated (migration 3)
 
 ### M4 — Playback + Polish
-- [ ] Full playback state machine (LIVE_STREAM, SCRUBBING, SCRUB_REVIEW, PLAYBACK_RECORDING, FOLLOW_NOW_IDLE)
-- [ ] tCursor auto-advance in PLAYBACK_RECORDING mode
-- [ ] Preview strip integration (/preview/strip endpoint)
-- [ ] Clip export flow (/clip/prepare endpoint)
-- [ ] Debug overlay (slot index, strategy A/B, score, cache hit)
-- [ ] prefetch:state dev feedback event
+- [x] Full playback state machine (5 states, nextPlaybackState defined)
+- [x] tCursor auto-advance in PLAYBACK_RECORDING mode (onVideoTimeUpdate via video.timeupdate)
+- [x] Preview strip endpoint (POST /preview/strip — N-frame horizontal WebP filmstrip)
+- [x] Clip export endpoint (POST /clip/prepare — local concat + Frigate HTTP fallback)
+- [x] Debug overlay (slot index, strategy A/B, score, cache hit, entity ID)
+- [x] prefetch:state dev feedback event (emitted after resolveAndEmitBatch completes)
 - [ ] Performance tuning — scheduler priority (VISIBLE > DIRTY > PREFETCH_FORWARD > PREFETCH_BACKWARD)
 
 ---
