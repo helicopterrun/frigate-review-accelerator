@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
 import { io } from 'socket.io-client';
 
-const CORE_SERVER_URL = `http://${window.location.hostname}:4010`;
+// When VITE_CORE_URL is set (local dev), connect directly to the core server.
+// When unset (production through nginx), connect to the same origin so nginx
+// can proxy /socket.io/ over the existing HTTPS connection — no mixed content.
+const CORE_SERVER_URL = import.meta.env.VITE_CORE_URL ?? window.location.origin;
 
 export function useSocket() {
   const [status, setStatus] = useState('disconnected');
